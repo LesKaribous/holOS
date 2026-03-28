@@ -1,0 +1,23 @@
+<?xml version="1.0"?>
+<trajectories>
+    <ours>
+        <robot id="0">
+            <point id="0" x="0" y="0"></point>
+        </robot>
+
+        <robot id="1">
+            <point id="0" x="100" y="10"></point>
+        </robot>
+    </ours>
+
+    <adv>
+        <robot id="0">
+            <point id="0" x="20" y="20"></point>
+        </robot>
+
+        <robot id="1">
+            <point id="0" x="30" y="30"></point>
+        </robot>
+    </adv>
+
+</trajectories>

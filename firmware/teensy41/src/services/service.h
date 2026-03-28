@@ -1,0 +1,76 @@
+#pragma once
+#include <Arduino.h>
+#include "os/jobs/job.h"
+#include "os/singleton.h"
+#include "os/threads/tw_threads.h"
+
+using callback_ptr = void (*)();
+using wrapper_ptr = void (*)();
+
+enum ServiceID{
+    ID_LIDAR,
+    ID_CHRONO,
+    ID_IHM,
+    ID_SAFETY,
+    ID_MOTION,
+    ID_NAVIGATION,
+    ID_NEOPIXEL,
+    ID_INTERCOM,
+    ID_TERMINAL,
+    ID_ACTUATORS,
+    ID_LOCALISATION,
+    ID_VISION,       // TwinVision — caméra centrale
+    ID_JETSON,       // JetsonBridge — remote control via XBee
+    ID_NOT_A_SERVICE
+    //Add new services here
+}; 
+
+/*
+
+in header file : 
+
+class Example : public Service{
+public:
+    void onUpdate()override;
+    void onAttach()override;
+    
+    Example(): Service(EXAMPLE_ID){};
+    SINGLETON(Screen)
+};
+SINGLETON_EXTERN(Example, example)
+
+in source file : 
+
+SINGLETON_INSTANTIATE(example)
+
+*/
+
+#define SERVICE_METHOD_HEADER if(!m_enabled) return;
+
+class Service{
+protected:
+    bool m_enabled = false;
+    bool m_threaded = false;
+    bool m_debug = false;
+    const ServiceID m_ID;
+
+public:
+    Service(ServiceID id) : m_ID(id){};
+    inline ServiceID id(){return m_ID;}
+
+    virtual void attach() = 0;
+    virtual void run() = 0;
+    
+    inline bool threaded(){return m_threaded;}
+
+    inline virtual void enable(){m_enabled = true;}
+    inline virtual void disable(){m_enabled = false;}
+    
+    inline bool debug() const {return m_debug;}
+    inline void toggleDebug(){m_debug = !m_debug;}
+    inline bool enabled() const {return m_enabled;}
+
+    static ServiceID toID(String);
+    static String toString(ServiceID);
+    String toString() const;
+};

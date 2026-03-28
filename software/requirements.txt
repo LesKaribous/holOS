@@ -1,0 +1,20 @@
+# holOS Python requirements
+# Install with: pip install -r requirements.txt
+
+# Web server (simulator)
+flask>=3.0.0
+flask-socketio>=5.3.0
+gevent>=24.0.0          # async worker for SocketIO
+
+# Serial (Jetson mode only)
+pyserial>=3.5
+
+# CRC (protocol)
+crcmod>=1.7
+
+# Hot-reload (optional, for strategy/match.py auto-reload)
+watchdog>=4.0.0
+
+# Development utilities
+# pytest  (for tests)
+# black   (formatter)
