@@ -129,10 +129,11 @@ socket.on('state', state => {
     cgSetRobotConnecting();
     _serialSetConnectBusy(true);
   } else if (state.hw_mode !== undefined) {
-    cgSetRobot(state.hw_mode);
+    cgSetRobot(state.hw_mode, state.hw_type, state.hw_serial_port);
     _serialSetConnectBusy(false);
   }
   updateNetworkFromState(state);
+  if (activeView === 'modules') updateModulesView(state);
 });
 socket.on('reload', d => showToast(d.msg));
 socket.on('terminal_rx', d => appendTermLine(d.cmd, d.ok, d.res, d._fire || false, d.mode));
@@ -166,21 +167,32 @@ function cgSetWs(connected) {
   if (sv)   { sv.textContent  = connected ? 'Connected ✓' : 'Disconnected'; }
 }
 
-function cgSetRobot(hwConnected) {
+function cgSetRobot(hwConnected, hwType, hwPort) {
   const dot    = document.getElementById('cg-dot-robot');
   const link   = document.getElementById('cg-lnk-robot');
   const sub    = document.getElementById('cg-sub-robot');
   const modeEl = document.getElementById('conn-mode-val');
   if (hwConnected) {
+    const label = hwType === 'xbee' ? 'XBee' : 'USB Wired';
+    const modeStr = hwType === 'xbee'
+      ? `Hardware — XBee (${hwPort || '?'})`
+      : `Hardware — USB Wired (${hwPort || '?'})`;
     if (dot)    { dot.className  = 'cg-dot hw-active'; }
     if (link)   { link.className = 'cg-link hw'; }
-    if (sub)    { sub.className  = 'cg-sub hw'; sub.textContent = 'XBee'; }
-    if (modeEl) { modeEl.textContent = 'Hardware (XBee)'; }
+    if (sub)    { sub.className  = 'cg-sub hw'; sub.textContent = label; }
+    if (modeEl) { modeEl.textContent = modeStr; }
+    // Also update holOS sub-label to indicate local vs Jetson path
+    const serverSub = document.getElementById('cg-sub-server');
+    if (serverSub) {
+      serverSub.textContent = hwType === 'xbee' ? 'via Jetson' : 'Local';
+    }
   } else {
     if (dot)    { dot.className  = 'cg-dot sim-active'; }
     if (link)   { link.className = 'cg-link sim'; }
     if (sub)    { sub.className  = 'cg-sub sim'; sub.textContent = 'SIM'; }
     if (modeEl) { modeEl.textContent = 'Simulator'; }
+    const serverSub = document.getElementById('cg-sub-server');
+    if (serverSub) serverSub.textContent = 'Local';
   }
 }
 
@@ -223,6 +235,9 @@ function switchView(name, btn) {
     serialRefreshPorts();
   } else if (name === 'network') {
     initNetwork();
+  } else if (name === 'modules') {
+    initModulesView();
+    if (lastState) updateModulesView(lastState);
   }
 }
 
@@ -1006,11 +1021,12 @@ function serialRefreshPorts() {
 function serialConnect() {
   // Accept port from robot-panel selector OR terminal selector
   const port = (document.getElementById('serial-port-sel') || document.getElementById('t-port-sel'))?.value;
-  const baud = (document.getElementById('serial-baud-sel') || document.getElementById('t-baud-sel'))?.value || '31250';
+  const mode = (document.getElementById('serial-mode-sel') || document.getElementById('t-mode-sel'))?.value || 'xbee';
+  const baud = (mode === 'wired') ? 115200 : 31250;
   if (!port) { showToast('Select a serial port first'); return; }
   cgSetRobotConnecting();
   setSerialStatus('Connecting…', '');
-  socket.emit('serial_connect', {port, baud: parseInt(baud)});
+  socket.emit('serial_connect', {port, baud});
 }
 function serialDisconnect() {
   socket.emit('serial_disconnect');
@@ -1060,69 +1076,139 @@ function showToast(msg) {
 }
 
 // ══════════════════════════════════════════════════════════════════════════
-//  NETWORK VIEW  — canvas topology diagram + side config panel
+//  NETWORK VIEW  — Hardware topology canvas + side config panel
+//
+//  Two rows of hardware nodes:
+//   Row A (online chain):  Browser ── holOS ── Teensy 4.1 ── Teensy 4.0
+//   Row B (offline/alt):   Jetson                  ESP32-CAM
+//
+//  Each node card shows: icon / hardware name / role / SW+FW stack
+//  Each link pill shows: protocol + baud rate
+//  Click any node/link → side panel with config (IP, serial port, etc.)
 // ══════════════════════════════════════════════════════════════════════════
 
-// ── Runtime state ──────────────────────────────────────────────────────────
+// ── Runtime state ─────────────────────────────────────────────────────────
 const _ns = {
-  ws:       'disconnected',   // 'connected' | 'disconnected'
-  hw:       'sim',            // 'sim' | 'connecting' | 'connected' | 'disconnected'
-  hwType:   'sim',            // 'sim' | 'usb' | 'xbee'
-  hwLabel:  'Virtual (SIM)',
-  uart:     'unknown',        // 'connected' | 'disconnected' | 'unknown'
-  selected: null,             // hovered / selected id
-  selType:  null,             // 'link' | 'node'
+  ws:        'disconnected',
+  hw:        'sim',        // 'sim'|'connecting'|'connected'|'disconnected'
+  hwType:    'sim',        // 'sim'|'usb'|'xbee'
+  hwLabel:   'Virtual (SIM)',
+  hwPort:    null,
+  t40:       'unknown',
+  jetsonIp:  '',
+  selected:  null,
+  selType:   null,
 };
 
-// ── Node / link definitions ─────────────────────────────────────────────────
+// ── Hardware node definitions ─────────────────────────────────────────────
+// xr/yr: relative positions (fraction of canvas W/H)
+// sw: software stack lines shown inside the card
+const _NN_W = 148, _NN_H = 106, _NN_R = 10;
+
 const _nNodes = [
-  { id: 'browser', label: 'Browser',    sub: 'PC',          icon: '🖥', col: 0.10 },
-  { id: 'holos',   label: 'holOS',      sub: 'Server',      icon: '⚙',  col: 0.36 },
-  { id: 't41',     label: 'Teensy 4.1', sub: 'Main MCU',    icon: '🎛', col: 0.65 },
-  { id: 't40',     label: 'Teensy 4.0', sub: 'Secondary',   icon: '🔧', col: 0.88 },
+  { id:'browser', label:'Browser / PC',   icon:'🖥',
+    role:'Dashboard client',
+    sw:['holOS UI (HTML+JS)'],
+    xr:0.08, yr:0.30 },
+  { id:'holos',   label:'holOS Server',   icon:'⚙',
+    role:'Simulation & bridge',
+    sw:['Flask · SocketIO', 'Python 3.11 · 60 Hz'],
+    xr:0.30, yr:0.30 },
+  { id:'t41',     label:'Teensy 4.1',     icon:'🎛',
+    role:'Main MCU — 600 MHz',
+    sw:['TwinSystem firmware', 'PlatformIO · C++17'],
+    xr:0.60, yr:0.30 },
+  { id:'t40',     label:'Teensy 4.0',     icon:'🔧',
+    role:'Secondary MCU',
+    sw:['TwinActuator firmware', 'PlatformIO · C++17'],
+    xr:0.86, yr:0.30 },
+  { id:'jetson',  label:'NVIDIA Jetson',  icon:'🤖',
+    role:'Edge computer (offline)',
+    sw:['holOS Server (alt)', 'ROS2 Humble'],
+    xr:0.30, yr:0.72, offline:true },
+  { id:'espcam',  label:'ESP32-CAM',      icon:'📷',
+    role:'Vision module (offline)',
+    sw:['TwinVision firmware', 'MJPEG stream'],
+    xr:0.60, yr:0.72, offline:true },
 ];
+
+// ── Link definitions ──────────────────────────────────────────────────────
+// proto: base protocol label
+// configurable: shows connect panel when clicked
 const _nLinks = [
-  { id: 'ws',   fromIdx: 0, toIdx: 1, _hit: null },
-  { id: 'hw',   fromIdx: 1, toIdx: 2, _hit: null },
-  { id: 'uart', fromIdx: 2, toIdx: 3, _hit: null },
+  { id:'ws',     from:'browser', to:'holos',  proto:'WebSocket · Socket.IO',  baud:null,    configurable:false },
+  { id:'hw',     from:'holos',   to:'t41',    proto:'USB-CDC',                baud:115200,  configurable:true  },
+  { id:'uart',   from:'t41',     to:'t40',    proto:'UART Intercom',          baud:31250,   configurable:false },
+  { id:'xbee',   from:'jetson',  to:'t41',    proto:'XBee 868 MHz',           baud:31250,   configurable:false, offline:true },
+  { id:'espcam', from:'espcam',  to:'t41',    proto:'Serial2 / WiFi',         baud:115200,  configurable:false, offline:true },
 ];
 
 const _nsColors = {
-  connected:    '#1a8c3c', active:       '#1a8c3c',
-  sim:          '#2980b9', connecting:   '#d97706',
-  disconnected: '#94a3b8', unknown:      '#94a3b8', error: '#c0392b',
+  connected:'#1a8c3c', active:'#1a8c3c', sim:'#2980b9',
+  connecting:'#d97706', disconnected:'#94a3b8', unknown:'#94a3b8',
+  offline:'#94a3b8', error:'#c0392b',
 };
 const _nsLabels = {
-  connected: 'Connected', active: 'Active', sim: 'Simulation',
-  connecting: 'Connecting…', disconnected: 'Disconnected', unknown: 'Unknown',
+  connected:'Connected', active:'Active', sim:'Simulation',
+  connecting:'Connecting…', disconnected:'Disconnected',
+  unknown:'Unknown', offline:'Offline',
 };
-const _NN_W = 120, _NN_H = 76, _NN_R = 10;
+
 let _netAnimFrame = null;
 
-// ── Status helpers ──────────────────────────────────────────────────────────
+// ── Geometry helpers ──────────────────────────────────────────────────────
+function _ncNodeById(id)   { return _nNodes.find(n=>n.id===id); }
+function _ncCanvas()        { return document.getElementById('net-canvas'); }
+function _ncCol(st)         { return _nsColors[st] || '#94a3b8'; }
+
+function _ncBox(nd, W, H) {
+  const cx = W * nd.xr, cy = H * nd.yr;
+  return { cx, cy, x:cx-_NN_W/2, y:cy-_NN_H/2, w:_NN_W, h:_NN_H };
+}
+
+// Return point on box edge in direction of angle `ang` (from box center)
+function _ncEdgePt(box, ang) {
+  const hw = box.w/2, hh = box.h/2;
+  const ta = Math.tan(ang);
+  let x, y;
+  if (Math.abs(ta) <= hh/hw) {
+    x = (Math.cos(ang) >= 0) ? box.cx + hw : box.cx - hw;
+    y = box.cy + (x - box.cx) * ta;
+  } else {
+    y = (Math.sin(ang) >= 0) ? box.cy + hh : box.cy - hh;
+    x = box.cx + (ta !== 0 ? (y - box.cy) / ta : 0);
+  }
+  return { x, y };
+}
+
+// ── Node / link status ────────────────────────────────────────────────────
 function _nsNodeStatus(nid) {
   if (nid === 'browser') return _ns.ws === 'connected' ? 'connected' : 'disconnected';
   if (nid === 'holos')   return 'active';
   if (nid === 't41')     return _ns.hw;
-  if (nid === 't40')     return _ns.uart;
+  if (nid === 't40')     return _ns.t40;
+  if (nid === 'jetson')  return 'offline';
+  if (nid === 'espcam')  return 'offline';
   return 'unknown';
 }
 function _nsLinkStatus(lid) {
-  return lid==='ws' ? _ns.ws : lid==='hw' ? _ns.hw : lid==='uart' ? _ns.uart : 'unknown';
+  if (lid==='ws')     return _ns.ws;
+  if (lid==='hw')     return _ns.hw;
+  if (lid==='uart')   return _ns.t40;
+  if (lid==='xbee')   return 'offline';
+  if (lid==='espcam') return 'offline';
+  return 'unknown';
 }
 function _nsLinkLabel(lid) {
-  return lid==='ws' ? 'WebSocket' : lid==='hw' ? _ns.hwLabel : lid==='uart' ? 'UART' : '';
+  const lk = _nLinks.find(l=>l.id===lid); if (!lk) return '';
+  let proto = lk.proto;
+  if (lid==='hw') {
+    proto = _ns.hwType==='xbee' ? 'XBee 868 MHz' : 'USB-CDC';
+  }
+  return lk.baud ? `${proto} · ${(lk.baud/1000).toFixed(lk.baud%1000?1:0)}k` : proto;
 }
-function _nsCol(st) { return _nsColors[st] || '#94a3b8'; }
 
-// ── Canvas geometry ─────────────────────────────────────────────────────────
-function _ncBox(idx, W, H) {
-  const cx = W * _nNodes[idx].col, cy = H * 0.42;
-  return { cx, cy, x: cx-_NN_W/2, y: cy-_NN_H/2, w: _NN_W, h: _NN_H };
-}
-function _ncCanvas() { return document.getElementById('net-canvas'); }
-
-// ── Main draw ───────────────────────────────────────────────────────────────
+// ── Main draw ─────────────────────────────────────────────────────────────
 function _ncDraw() {
   _netAnimFrame = null;
   const c = _ncCanvas();
@@ -1132,249 +1218,289 @@ function _ncDraw() {
   if (!W || !H) return;
 
   ctx.clearRect(0, 0, W, H);
-  ctx.fillStyle = '#f0f4f8';
-  ctx.fillRect(0, 0, W, H);
+  ctx.fillStyle = '#f0f4f8'; ctx.fillRect(0, 0, W, H);
 
   // Dot grid
-  ctx.fillStyle = 'rgba(26,82,118,.06)';
-  for (let x = 30; x < W; x += 40)
-    for (let y = 30; y < H; y += 40) {
-      ctx.beginPath(); ctx.arc(x, y, 1.5, 0, Math.PI*2); ctx.fill();
+  ctx.fillStyle = 'rgba(26,82,118,.05)';
+  for (let x=30; x<W; x+=40)
+    for (let y=30; y<H; y+=40) {
+      ctx.beginPath(); ctx.arc(x,y,1.5,0,Math.PI*2); ctx.fill();
     }
 
-  _nLinks.forEach(lk => {
-    _ncDrawLink(ctx, lk, _ncBox(lk.fromIdx, W, H), _ncBox(lk.toIdx, W, H));
-  });
-  _nNodes.forEach((nd, i) => _ncDrawNode(ctx, nd, i, W, H));
+  // Draw links first (under nodes)
+  _nLinks.forEach(lk => _ncDrawLink(ctx, lk, W, H));
+  // Draw nodes on top
+  _nNodes.forEach(nd  => _ncDrawNode(ctx, nd, W, H));
 
   if (_ns.hw === 'connecting')
     _netAnimFrame = requestAnimationFrame(_ncDraw);
 }
 
-// ── Draw node ───────────────────────────────────────────────────────────────
-function _ncDrawNode(ctx, nd, idx, W, H) {
-  const b   = _ncBox(idx, W, H);
+// ── Draw node card ────────────────────────────────────────────────────────
+function _ncDrawNode(ctx, nd, W, H) {
+  const b   = _ncBox(nd, W, H);
   const st  = _nsNodeStatus(nd.id);
-  const col = _nsCol(st);
-  const sel = _ns.selected === nd.id && _ns.selType === 'node';
+  const col = _ncCol(st);
+  const sel = _ns.selected===nd.id && _ns.selType==='node';
+  const dim = !!(nd.offline);
 
   ctx.save();
-  ctx.shadowColor = 'rgba(26,82,118,' + (sel ? '.18' : '.09') + ')';
-  ctx.shadowBlur  = sel ? 14 : 5;
-  ctx.shadowOffsetY = 2;
-  ctx.fillStyle   = '#fff';
+  if (dim) ctx.globalAlpha = 0.55;
+
+  // Card shadow
+  ctx.shadowColor = `rgba(26,82,118,${sel?.18:.07})`; ctx.shadowBlur=sel?14:4; ctx.shadowOffsetY=2;
+  ctx.fillStyle = '#fff';
   _ncRR(ctx, b.x, b.y, b.w, b.h, _NN_R); ctx.fill();
-  ctx.restore();
+  ctx.shadowBlur = 0; ctx.shadowOffsetY = 0;
 
-  ctx.save();
-  ctx.strokeStyle = col + (sel ? 'ff' : '55');
-  ctx.lineWidth   = sel ? 2.5 : 1.5;
+  // Card border
+  ctx.strokeStyle = col + (sel?'dd':'44'); ctx.lineWidth = sel?2.5:1.5;
   _ncRR(ctx, b.x, b.y, b.w, b.h, _NN_R); ctx.stroke();
-  ctx.restore();
+
+  // Top accent bar
+  ctx.fillStyle = col + '22';
+  ctx.beginPath();
+  ctx.moveTo(b.x+_NN_R, b.y);
+  ctx.lineTo(b.x+b.w-_NN_R, b.y);
+  ctx.quadraticCurveTo(b.x+b.w, b.y, b.x+b.w, b.y+_NN_R);
+  ctx.lineTo(b.x+b.w, b.y+22);
+  ctx.lineTo(b.x, b.y+22);
+  ctx.lineTo(b.x, b.y+_NN_R);
+  ctx.quadraticCurveTo(b.x, b.y, b.x+_NN_R, b.y);
+  ctx.closePath(); ctx.fill();
 
   // Status dot
   ctx.save();
-  if (st === 'connecting') ctx.globalAlpha = .5 + .5*Math.sin(Date.now()/400);
-  ctx.fillStyle = col;
-  ctx.beginPath(); ctx.arc(b.x+b.w-11, b.y+11, 4.5, 0, Math.PI*2); ctx.fill();
+  if (st==='connecting') ctx.globalAlpha=.5+.5*Math.sin(Date.now()/400);
+  ctx.fillStyle=col; ctx.beginPath();
+  ctx.arc(b.x+b.w-10, b.y+11, 4, 0, Math.PI*2); ctx.fill();
   ctx.restore();
 
   // Icon
-  ctx.font = '22px serif';
-  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-  ctx.fillText(nd.icon, b.cx, b.y+25);
+  ctx.font='18px serif'; ctx.textAlign='center'; ctx.textBaseline='middle';
+  ctx.fillText(nd.icon, b.x+18, b.y+11);
 
-  // Labels
-  ctx.font = 'bold 12px "Segoe UI",system-ui,sans-serif';
-  ctx.fillStyle = '#1a2332';
-  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-  ctx.fillText(nd.label, b.cx, b.y+49);
-  ctx.font = '10px "Segoe UI",system-ui,sans-serif';
-  ctx.fillStyle = '#6b7a8d';
-  ctx.fillText(nd.sub, b.cx, b.y+63);
+  // Hardware label
+  ctx.font='bold 11.5px "Segoe UI",system-ui,sans-serif';
+  ctx.fillStyle='#1a2332'; ctx.textAlign='center'; ctx.textBaseline='top';
+  ctx.fillText(nd.label, b.cx, b.y+26);
+
+  // Role
+  ctx.font='10px "Segoe UI",system-ui,sans-serif';
+  ctx.fillStyle='#6b7a8d';
+  ctx.fillText(nd.role, b.cx, b.y+41);
+
+  // SW stack (1-2 lines)
+  ctx.font='9px "Segoe UI",system-ui,sans-serif';
+  ctx.fillStyle='#94a3b8';
+  (nd.sw||[]).forEach((line,i) => ctx.fillText(line, b.cx, b.y+56+i*13));
+
+  ctx.restore();
 }
 
-// ── Draw link ───────────────────────────────────────────────────────────────
-function _ncDrawLink(ctx, lk, b1, b2) {
+// ── Draw link ─────────────────────────────────────────────────────────────
+function _ncDrawLink(ctx, lk, W, H) {
+  const n1 = _ncNodeById(lk.from);
+  const n2 = _ncNodeById(lk.to);
+  if (!n1 || !n2) return;
+  const b1 = _ncBox(n1, W, H);
+  const b2 = _ncBox(n2, W, H);
   const st  = _nsLinkStatus(lk.id);
-  const col = _nsCol(st);
-  const sel = _ns.selected === lk.id && _ns.selType === 'link';
+  const col = _ncCol(st);
+  const sel = _ns.selected===lk.id && _ns.selType==='link';
 
-  const x1 = b1.cx+_NN_W/2, y1 = b1.cy;
-  const x2 = b2.cx-_NN_W/2, y2 = b2.cy;
+  const ang12 = Math.atan2(b2.cy-b1.cy, b2.cx-b1.cx);
+  const ang21 = ang12 + Math.PI;
+  const p1 = _ncEdgePt(b1, ang12);
+  const p2 = _ncEdgePt(b2, ang21);
 
   ctx.save();
   ctx.strokeStyle = col;
   ctx.lineWidth   = sel ? 3 : 2;
   ctx.lineCap     = 'round';
-  if (st === 'disconnected' || st === 'unknown') {
+  if (st==='offline'||st==='disconnected'||st==='unknown') {
+    ctx.setLineDash([5,6]); ctx.globalAlpha=.55;
+  } else if (st==='connecting') {
     ctx.setLineDash([5,6]);
-  } else if (st === 'connecting') {
-    ctx.setLineDash([5,6]);
-    ctx.lineDashOffset = -((Date.now()/80) % 11);
-    ctx.globalAlpha    = .55 + .45*Math.sin(Date.now()/250);
+    ctx.lineDashOffset = -((Date.now()/80)%11);
+    ctx.globalAlpha    = .55+.45*Math.sin(Date.now()/250);
   }
-  ctx.beginPath(); ctx.moveTo(x1,y1); ctx.lineTo(x2,y2); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(p1.x,p1.y); ctx.lineTo(p2.x,p2.y); ctx.stroke();
   ctx.restore();
 
   // Arrowhead
-  if (st !== 'disconnected' && st !== 'unknown') {
-    const ang = Math.atan2(y2-y1, x2-x1), AW = 7;
-    ctx.fillStyle = col;
+  if (st!=='offline'&&st!=='disconnected'&&st!=='unknown') {
+    const AW=7;
+    ctx.fillStyle=col;
     ctx.beginPath();
-    ctx.moveTo(x2,y2);
-    ctx.lineTo(x2-AW*Math.cos(ang-Math.PI/6), y2-AW*Math.sin(ang-Math.PI/6));
-    ctx.lineTo(x2-AW*Math.cos(ang+Math.PI/6), y2-AW*Math.sin(ang+Math.PI/6));
+    ctx.moveTo(p2.x,p2.y);
+    ctx.lineTo(p2.x-AW*Math.cos(ang12-Math.PI/6), p2.y-AW*Math.sin(ang12-Math.PI/6));
+    ctx.lineTo(p2.x-AW*Math.cos(ang12+Math.PI/6), p2.y-AW*Math.sin(ang12+Math.PI/6));
     ctx.closePath(); ctx.fill();
   }
 
-  // Label pill
-  const mx = (x1+x2)/2, my = (y1+y2)/2 - 20;
+  // Protocol label pill
+  const mx=(p1.x+p2.x)/2, my=(p1.y+p2.y)/2 - (lk.offline?0:18);
   const lbl = _nsLinkLabel(lk.id);
-  ctx.font = '10px "Segoe UI",system-ui,sans-serif';
-  const PW = ctx.measureText(lbl).width + 14, PH = 18;
   ctx.save();
+  ctx.globalAlpha = (st==='offline'||st==='unknown') ? 0.5 : 1;
+  ctx.font='9.5px "Segoe UI",system-ui,sans-serif';
+  const PW=ctx.measureText(lbl).width+14, PH=17;
   ctx.fillStyle   = sel ? col : '#fff';
-  ctx.strokeStyle = col;
+  ctx.strokeStyle = col+(st==='offline'?'66':'99');
   ctx.lineWidth   = 1;
-  _ncRR(ctx, mx-PW/2, my-PH/2, PW, PH, 9); ctx.fill(); ctx.stroke();
-  ctx.fillStyle    = sel ? '#fff' : col;
-  ctx.textAlign    = 'center'; ctx.textBaseline = 'middle';
+  _ncRR(ctx, mx-PW/2, my-PH/2, PW, PH, 8); ctx.fill(); ctx.stroke();
+  ctx.fillStyle = sel?'#fff':col; ctx.textAlign='center'; ctx.textBaseline='middle';
   ctx.fillText(lbl, mx, my);
   ctx.restore();
 
-  lk._hit = { x1, y1, x2, y2 };
+  // Store hit region
+  lk._hit = { p1, p2 };
 }
 
-// ── Rounded rect path ────────────────────────────────────────────────────────
+// ── Rounded rect ─────────────────────────────────────────────────────────
 function _ncRR(ctx, x, y, w, h, r) {
   ctx.beginPath();
-  ctx.moveTo(x+r,y); ctx.lineTo(x+w-r,y);
-  ctx.quadraticCurveTo(x+w,y, x+w,y+r); ctx.lineTo(x+w,y+h-r);
-  ctx.quadraticCurveTo(x+w,y+h, x+w-r,y+h); ctx.lineTo(x+r,y+h);
-  ctx.quadraticCurveTo(x,y+h, x,y+h-r); ctx.lineTo(x,y+r);
-  ctx.quadraticCurveTo(x,y, x+r,y); ctx.closePath();
+  ctx.moveTo(x+r,y); ctx.lineTo(x+w-r,y); ctx.quadraticCurveTo(x+w,y,x+w,y+r);
+  ctx.lineTo(x+w,y+h-r); ctx.quadraticCurveTo(x+w,y+h,x+w-r,y+h);
+  ctx.lineTo(x+r,y+h); ctx.quadraticCurveTo(x,y+h,x,y+h-r);
+  ctx.lineTo(x,y+r); ctx.quadraticCurveTo(x,y,x+r,y); ctx.closePath();
 }
 
-// ── Hit test ─────────────────────────────────────────────────────────────────
+// ── Hit test ─────────────────────────────────────────────────────────────
 function _ncHit(mx, my) {
-  const c = _ncCanvas(); if (!c) return null;
-  const W = c.width, H = c.height;
-  for (let i = 0; i < _nNodes.length; i++) {
-    const b = _ncBox(i, W, H);
-    if (mx>=b.x && mx<=b.x+b.w && my>=b.y && my<=b.y+b.h) return {type:'node', id:_nNodes[i].id};
+  const c=_ncCanvas(); if (!c) return null;
+  const W=c.width, H=c.height;
+  // Nodes first (higher priority)
+  for (const nd of _nNodes) {
+    const b=_ncBox(nd,W,H);
+    if (mx>=b.x&&mx<=b.x+b.w&&my>=b.y&&my<=b.y+b.h) return {type:'node',id:nd.id};
   }
+  // Links
   for (const lk of _nLinks) {
     if (!lk._hit) continue;
-    const {x1,y1,x2,y2} = lk._hit;
-    const dx=x2-x1,dy=y2-y1,lq=dx*dx+dy*dy;
-    const t = lq ? Math.max(0,Math.min(1,((mx-x1)*dx+(my-y1)*dy)/lq)) : 0;
-    if (Math.hypot(mx-(x1+t*dx), my-(y1+t*dy)) <= 16) return {type:'link', id:lk.id};
+    const {p1,p2}=lk._hit;
+    const dx=p2.x-p1.x, dy=p2.y-p1.y, lq=dx*dx+dy*dy;
+    const t=lq?Math.max(0,Math.min(1,((mx-p1.x)*dx+(my-p1.y)*dy)/lq)):0;
+    if (Math.hypot(mx-(p1.x+t*dx),my-(p1.y+t*dy))<=14) return {type:'link',id:lk.id};
   }
   return null;
 }
 
-// ── Resize ───────────────────────────────────────────────────────────────────
+// ── Resize & init ─────────────────────────────────────────────────────────
 function _ncResize() {
-  const c = _ncCanvas(), area = document.getElementById('net-canvas-area');
-  if (!c || !area) return;
-  c.width  = area.clientWidth;
-  c.height = area.clientHeight;
+  const c=_ncCanvas(), area=document.getElementById('net-canvas-area');
+  if (!c||!area) return;
+  c.width=area.clientWidth; c.height=area.clientHeight;
   _ncDraw();
 }
 
-// ── Init (called on switchView) ───────────────────────────────────────────────
 function initNetwork() {
-  const c = _ncCanvas(); if (!c) return;
+  const c=_ncCanvas(); if (!c) return;
   if (!c._netWired) {
-    c._netWired = true;
+    c._netWired=true;
     c.addEventListener('click', evt => {
-      const r = c.getBoundingClientRect();
-      const h = _ncHit(evt.clientX-r.left, evt.clientY-r.top);
-      _ns.selected = h ? h.id   : null;
-      _ns.selType  = h ? h.type : null;
+      const r=c.getBoundingClientRect();
+      const h=_ncHit(evt.clientX-r.left, evt.clientY-r.top);
+      _ns.selected=h?h.id:null; _ns.selType=h?h.type:null;
       _ncUpdatePanel(h); _ncDraw();
     });
     c.addEventListener('mousemove', evt => {
-      const r = c.getBoundingClientRect();
-      c.style.cursor = _ncHit(evt.clientX-r.left, evt.clientY-r.top) ? 'pointer' : 'default';
+      const r=c.getBoundingClientRect();
+      c.style.cursor=_ncHit(evt.clientX-r.left,evt.clientY-r.top)?'pointer':'default';
     });
-    new ResizeObserver(() => { if (activeView==='network') _ncResize(); })
+    new ResizeObserver(()=>{ if (activeView==='network') _ncResize(); })
       .observe(document.getElementById('net-canvas-area'));
   }
   _ncResize();
   _ncUpdatePanel(null);
 }
 
-// ── State update from socket ─────────────────────────────────────────────────
+// ── State update ──────────────────────────────────────────────────────────
 function updateNetworkFromState(state) {
-  const newHw = state.hw_connecting ? 'connecting' :
-                state.hw_mode       ? 'connected'  : 'sim';
-  const newHwType  = state.hw_type  || (state.hw_mode ? 'usb' : 'sim');
-  const newHwLabel = newHw==='sim'         ? 'Virtual (SIM)'  :
-                     newHwType==='xbee'    ? 'XBee Radio'     : 'USB Serial';
+  const newHw    = state.hw_connecting ? 'connecting' :
+                   state.hw_mode       ? 'connected'  : 'sim';
+  const newType  = state.hw_type || 'sim';
+  const newLabel = newHw==='sim'      ? 'Virtual (SIM)' :
+                   newType==='xbee'   ? 'XBee 868 MHz'  : 'USB Wired';
+  const newPort  = state.hw_serial_port || null;
+  const newT40   = state.hw_t40 || 'unknown';
+  const newJetIp = state.jetson_ip || '';
 
-  const changed = _ns.hw!==newHw || _ns.hwType!==newHwType;
-  _ns.hw = newHw; _ns.hwType = newHwType; _ns.hwLabel = newHwLabel;
+  const changed  = _ns.hw!==newHw || _ns.hwType!==newType || _ns.t40!==newT40 || _ns.hwPort!==newPort;
+  _ns.hw=newHw; _ns.hwType=newType; _ns.hwLabel=newLabel;
+  _ns.hwPort=newPort; _ns.t40=newT40; _ns.jetsonIp=newJetIp;
 
   if (!changed) return;
+  // Refresh panel live values
   const badge = document.getElementById('np-hw-badge');
   const mode  = document.getElementById('np-hw-mode');
   const btn   = document.getElementById('np-connect-btn');
-  if (badge) { badge.textContent = _nsLabels[_ns.hw]||_ns.hw; badge.className='np-badge np-'+_ns.hw; }
-  if (mode)  mode.textContent = _ns.hwLabel;
-  if (btn)   btn.disabled = _ns.hw === 'connecting';
+  if (badge) { badge.textContent=_nsLabels[_ns.hw]||_ns.hw; badge.className='np-badge np-'+_ns.hw; }
+  if (mode)  mode.textContent = _ns.hwPort ? `${_ns.hwLabel} (${_ns.hwPort})` : _ns.hwLabel;
+  if (btn)   btn.disabled = _ns.hw==='connecting';
   if (activeView==='network') {
     _ncDraw();
     if (_ns.hw==='connecting' && !_netAnimFrame)
-      _netAnimFrame = requestAnimationFrame(_ncDraw);
+      _netAnimFrame=requestAnimationFrame(_ncDraw);
   }
 }
 
-// ── Side panel generators ────────────────────────────────────────────────────
+// ── Side panel ────────────────────────────────────────────────────────────
 function _ncUpdatePanel(hit) {
-  const title = document.getElementById('net-panel-title');
-  const body  = document.getElementById('net-panel-body');
-  if (!title || !body) return;
+  const title=document.getElementById('net-panel-title');
+  const body =document.getElementById('net-panel-body');
+  if (!title||!body) return;
   if (!hit) { title.textContent='Network'; body.innerHTML=_ncPanelOverview(); return; }
-  if (hit.type === 'link') {
-    const T = {ws:'Browser ↔ holOS', hw:'holOS ↔ Teensy 4.1', uart:'Teensy 4.1 ↔ 4.0'};
-    title.textContent = T[hit.id]||hit.id;
-    if (hit.id==='ws')   body.innerHTML = _ncPanelWS();
-    if (hit.id==='hw')   { body.innerHTML = _ncPanelHW(); _ncPanelHWInit(); }
-    if (hit.id==='uart') body.innerHTML = _ncPanelUART();
+  if (hit.type==='link') {
+    const lk=_nLinks.find(l=>l.id===hit.id)||{};
+    const titles={ws:'Browser ↔ holOS',hw:'holOS ↔ Teensy 4.1',uart:'T4.1 ↔ T4.0 Intercom',
+                  xbee:'Jetson ↔ T4.1 XBee',espcam:'ESP32-CAM ↔ T4.1'};
+    title.textContent=titles[hit.id]||hit.id;
+    if (hit.id==='hw') { body.innerHTML=_ncPanelHW(); _ncPanelHWInit(); }
+    else if (hit.id==='ws')     body.innerHTML=_ncPanelWS();
+    else if (hit.id==='uart')   body.innerHTML=_ncPanelUART();
+    else if (hit.id==='xbee')   body.innerHTML=_ncPanelXBeeLink();
+    else if (hit.id==='espcam') body.innerHTML=_ncPanelEspCamLink();
   } else {
-    const nd = _nNodes.find(n=>n.id===hit.id)||{id:hit.id,icon:'?',label:hit.id,sub:''};
-    title.textContent = nd.label; body.innerHTML = _ncPanelNode(nd);
+    const nd=_ncNodeById(hit.id)||{id:hit.id,icon:'?',label:hit.id,sw:[]};
+    title.textContent=nd.label;
+    if (hit.id==='jetson') body.innerHTML=_ncPanelJetson();
+    else                   body.innerHTML=_ncPanelNode(nd);
   }
 }
 
 function _ncPanelOverview() {
-  return `<div class="np-hint">Click a node or link to inspect and configure.</div>
+  const hwPortStr = _ns.hwPort ? ` (${_ns.hwPort})` : '';
+  return `<div class="np-hint">Click a hardware node or link to inspect and configure.</div>
     <div class="np-section">
       <div class="np-row"><span>WebSocket</span><span class="np-badge np-${_ns.ws}">${_nsLabels[_ns.ws]||_ns.ws}</span></div>
       <div class="np-row"><span>holOS ↔ Teensy 4.1</span><span class="np-badge np-${_ns.hw}">${_nsLabels[_ns.hw]||_ns.hw}</span></div>
-      <div class="np-row"><span>Teensy 4.1 ↔ 4.0</span><span class="np-badge np-${_ns.uart}">${_nsLabels[_ns.uart]||_ns.uart}</span></div>
+      <div class="np-row"><span>T4.1 ↔ T4.0 Intercom</span><span class="np-badge np-${_ns.t40}">${_nsLabels[_ns.t40]||_ns.t40}</span></div>
+      <div class="np-row"><span>Jetson</span><span class="np-badge np-offline">Offline</span></div>
+      <div class="np-row"><span>ESP32-CAM</span><span class="np-badge np-offline">Offline</span></div>
     </div>
     <div class="np-section">
-      <div class="np-row"><span>Mode</span><span>${_ns.hwLabel}</span></div>
+      <div class="np-row"><span>Bridge mode</span><span>${_ns.hwLabel}${hwPortStr}</span></div>
       <div class="np-row"><span>Server</span><span>${window.location.host}</span></div>
+      ${_ns.jetsonIp ? `<div class="np-row"><span>Jetson IP</span><span>${_ns.jetsonIp}</span></div>` : ''}
     </div>`;
 }
 
 function _ncPanelWS() {
   return `<div class="np-section">
       <div class="np-row"><span>Status</span><span class="np-badge np-${_ns.ws}">${_nsLabels[_ns.ws]||_ns.ws}</span></div>
+      <div class="np-row"><span>Protocol</span><span>Socket.IO (WebSocket)</span></div>
       <div class="np-row"><span>Server</span><span>${window.location.host}</span></div>
-      <div class="np-row"><span>Transport</span><span>Socket.IO</span></div>
     </div>
-    <div class="np-hint">The WebSocket connection is established automatically and maintained by Socket.IO. If disconnected, the page will reconnect automatically.</div>`;
+    <div class="np-hint">Socket.IO reconnects automatically. If stuck, reload the page.</div>`;
 }
 
 function _ncPanelHW() {
+  const portStr = _ns.hwPort ? ` (${_ns.hwPort})` : '';
   return `<div class="np-section">
       <div class="np-row"><span>Status</span><span class="np-badge np-${_ns.hw}" id="np-hw-badge">${_nsLabels[_ns.hw]||_ns.hw}</span></div>
-      <div class="np-row"><span>Mode</span><span id="np-hw-mode">${_ns.hwLabel}</span></div>
+      <div class="np-row"><span>Mode</span><span id="np-hw-mode">${_ns.hwLabel}${portStr}</span></div>
     </div>
     <div class="np-section">
       <label class="np-label">Serial port</label>
@@ -1382,73 +1508,113 @@ function _ncPanelHW() {
         <select id="np-port-sel" class="input-sm" style="flex:1;min-width:0"></select>
         <button class="btn-tiny" onclick="_ncRefreshPorts()" title="Refresh">↺</button>
       </div>
-      <label class="np-label">Baud rate</label>
-      <select id="np-baud-sel" class="input-sm" style="width:100%;margin-bottom:10px">
-        <option value="115200" selected>115 200 — USB direct</option>
-        <option value="31250">31 250 — XBee / Jetson</option>
-        <option value="57600">57 600</option>
-        <option value="9600">9 600</option>
+      <label class="np-label">Bridge mode</label>
+      <select id="np-mode-sel" class="input-sm" style="width:100%;margin-bottom:10px">
+        <option value="wired" selected>USB Wired — 115 200 bps</option>
+        <option value="xbee">XBee / Jetson — 31 250 bps</option>
       </select>
       <div style="display:flex;gap:6px">
         <button id="np-connect-btn" class="btn green btn-sm" style="flex:1" onclick="_ncDoConnect()">Connect</button>
         <button class="btn red btn-sm" style="flex:1" onclick="serialDisconnect()">Disconnect</button>
       </div>
     </div>
-    <div class="np-hint"><b>USB direct:</b> flash with <code>USB_INTERCOM</code> @ 115 200 bd.<br><b>XBee / Jetson:</b> comment out <code>USB_INTERCOM</code>, use Serial1 @ 31 250 bd.</div>`;
+    <div class="np-hint"><b>USB Wired:</b> T4.1 connects directly over USB-CDC @ 115 200 bps.<br>
+      <b>XBee / Jetson:</b> holOS runs on the Jetson; T4.1 communicates via XBee radio @ 31 250 bps.</div>`;
 }
 
 function _ncPanelHWInit() {
   _ncRefreshPorts();
-  const mb = document.getElementById('serial-baud-sel');
-  const nb = document.getElementById('np-baud-sel');
-  if (mb && nb) nb.value = mb.value;
-  const btn = document.getElementById('np-connect-btn');
-  if (btn) btn.disabled = _ns.hw === 'connecting';
+  const mm=document.getElementById('serial-mode-sel'), nm=document.getElementById('np-mode-sel');
+  if (mm&&nm) nm.value=mm.value;
+  const btn=document.getElementById('np-connect-btn');
+  if (btn) btn.disabled=_ns.hw==='connecting';
 }
 
 function _ncRefreshPorts() {
-  const sel = document.getElementById('np-port-sel'); if (!sel) return;
-  const cur = (document.getElementById('serial-port-sel')||{}).value || '';
-  fetch('/api/serial/ports').then(r=>r.json()).then(ports => {
-    sel.innerHTML = '<option value="">— port —</option>' +
+  const sel=document.getElementById('np-port-sel'); if (!sel) return;
+  const cur=(document.getElementById('serial-port-sel')||{}).value||'';
+  fetch('/api/serial/ports').then(r=>r.json()).then(ports=>{
+    sel.innerHTML='<option value="">— port —</option>'+
       ports.map(p=>`<option value="${escHtml(p.port)}"${p.port===cur?' selected':''}>${escHtml(p.port)} — ${escHtml(p.desc)}</option>`).join('');
   });
 }
 
 function _ncDoConnect() {
-  const ps = document.getElementById('np-port-sel');
-  const bs = document.getElementById('np-baud-sel');
+  const ps=document.getElementById('np-port-sel'), ms=document.getElementById('np-mode-sel');
   if (!ps?.value) { showToast('Select a serial port first'); return; }
-  const mp = document.getElementById('serial-port-sel');
-  const mb = document.getElementById('serial-baud-sel');
-  if (mp) mp.value = ps.value;
-  if (mb) mb.value = bs ? bs.value : '115200';
+  const mp=document.getElementById('serial-port-sel'), mm=document.getElementById('serial-mode-sel');
+  if (mp) mp.value=ps.value;
+  if (mm) mm.value=ms?ms.value:'wired';
   serialConnect();
 }
 
 function _ncPanelUART() {
   return `<div class="np-section">
-      <div class="np-row"><span>Status</span><span class="np-badge np-${_ns.uart}">${_nsLabels[_ns.uart]||_ns.uart}</span></div>
-      <div class="np-row"><span>Physical</span><span>UART (hardware)</span></div>
+      <div class="np-row"><span>Status</span><span class="np-badge np-${_ns.t40}">${_nsLabels[_ns.t40]||_ns.t40}</span></div>
+      <div class="np-row"><span>Protocol</span><span>UART (Intercom)</span></div>
+      <div class="np-row"><span>Baudrate</span><span>31 250 bps</span></div>
       <div class="np-row"><span>Direction</span><span>Bidirectional</span></div>
     </div>
-    <div class="np-hint">The UART between Teensy 4.1 and 4.0 is internal. Its state will be reported by firmware telemetry when T4.1 is connected.</div>`;
+    <div class="np-hint">T4.0 status is reported by T4.1 firmware via TEL:t40 telemetry when connected.</div>`;
+}
+
+function _ncPanelXBeeLink() {
+  return `<div class="np-section">
+      <div class="np-row"><span>Status</span><span class="np-badge np-offline">Offline</span></div>
+      <div class="np-row"><span>Protocol</span><span>XBee 868 MHz UART</span></div>
+      <div class="np-row"><span>Baudrate</span><span>31 250 bps</span></div>
+    </div>
+    <div class="np-hint">This path is used when holOS is deployed on the Jetson. The Jetson relays commands to T4.1 via XBee radio. Configure the Jetson node IP to enable this route.</div>`;
+}
+
+function _ncPanelEspCamLink() {
+  return `<div class="np-section">
+      <div class="np-row"><span>Status</span><span class="np-badge np-offline">Offline</span></div>
+      <div class="np-row"><span>Protocol</span><span>Serial2 · WiFi MJPEG</span></div>
+      <div class="np-row"><span>Baudrate</span><span>115 200 bps</span></div>
+    </div>
+    <div class="np-hint">The ESP32-CAM streams MJPEG video over WiFi and receives commands via T4.1 Serial2.</div>`;
+}
+
+function _ncPanelJetson() {
+  const ip = _ns.jetsonIp || '';
+  return `<div class="np-section">
+      <div class="np-row"><span>Status</span><span class="np-badge np-offline">Offline</span></div>
+      <div class="np-row"><span>Platform</span><span>NVIDIA Jetson Nano/NX</span></div>
+      <div class="np-row"><span>Software</span><span>holOS Server · ROS2</span></div>
+    </div>
+    <div class="np-section">
+      <label class="np-label">Jetson IP address</label>
+      <div style="display:flex;gap:6px;margin-bottom:8px">
+        <input id="np-jetson-ip" type="text" class="input-sm" style="flex:1"
+               placeholder="192.168.x.x" value="${escHtml(ip)}">
+        <button class="btn-tiny green" onclick="_ncSaveJetsonIp()">Save</button>
+      </div>
+      <label class="np-label">SSH user</label>
+      <input id="np-jetson-user" type="text" class="input-sm" style="width:100%;margin-bottom:8px"
+             placeholder="robot" value="robot">
+    </div>
+    <div class="np-hint">Set the Jetson IP to enable the XBee/Jetson bridge route. holOS will connect via SSH to launch the remote server.</div>`;
+}
+
+function _ncSaveJetsonIp() {
+  const ip   = (document.getElementById('np-jetson-ip')   ||{}).value||'';
+  const user = (document.getElementById('np-jetson-user') ||{}).value||'robot';
+  fetch('/api/jetson', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({ip, user})
+  }).then(()=>{ _ns.jetsonIp=ip; showToast('Jetson config saved'); });
 }
 
 function _ncPanelNode(nd) {
-  const st   = _nsNodeStatus(nd.id);
-  const rows = {
-    browser: [['Type','Browser (client)'],['Protocol','Socket.IO / HTTP']],
-    holos:   [['Type','Flask + SocketIO'],['Host',window.location.host],['Physics','60 Hz sim']],
-    t41:     [['MCU','Teensy 4.1 (600 MHz)'],['Role','Motion + Sensors'],['FW','PlatformIO / Arduino']],
-    t40:     [['MCU','Teensy 4.0'],['Role','Actuators + I/O'],['FW','PlatformIO / Arduino']],
-  };
-  const extra = (rows[nd.id]||[]).map(([k,v])=>`<div class="np-row"><span>${k}</span><span>${v}</span></div>`).join('');
+  const st=_nsNodeStatus(nd.id);
+  const swHtml = (nd.sw||[]).map(s=>`<div class="np-row"><span style="opacity:.6">SW</span><span>${escHtml(s)}</span></div>`).join('');
   return `<div class="np-section">
       <div class="np-title-row">${nd.icon} ${nd.label}</div>
       <div class="np-divider"></div>
       <div class="np-row"><span>Status</span><span class="np-badge np-${st}">${_nsLabels[st]||st}</span></div>
-      ${extra}
+      <div class="np-row"><span>Role</span><span>${escHtml(nd.role||'')}</span></div>
+      ${swHtml}
     </div>`;
 }
 
@@ -1758,4 +1924,160 @@ function _escHtml(s) {
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;');
+}
+
+
+// ══════════════════════════════════════════════════════════════════════════
+//  MODULES VIEW
+//  Telemetry channel toggles + firmware service controls
+// ══════════════════════════════════════════════════════════════════════════
+
+const _TEL_CHANNELS = [
+  { id: 'pos',    name: 'Position',   desc: 'X / Y / θ from the odometry estimator', freq: '10 Hz' },
+  { id: 'motion', name: 'Motion',     desc: 'RUNNING / IDLE state + current target',  freq: '10 Hz' },
+  { id: 'safety', name: 'Safety',     desc: 'Obstacle detection & collision flags',   freq: '10 Hz' },
+  { id: 'chrono', name: 'Chrono',     desc: 'Match elapsed time',                     freq: '10 Hz' },
+  { id: 'occ',    name: 'Occupancy',  desc: 'Compressed lidar occupancy grid',        freq: '2 Hz'  },
+];
+
+// Firmware services we can toggle via enable(SVC) / disable(SVC)
+const _HW_SERVICES = [
+  { id: 'SAFETY',  name: 'Safety',   desc: 'Lidar-based obstacle detection & emergency stop' },
+  { id: 'LIDAR',   name: 'Lidar',    desc: 'Lidar scan processing & occupancy map update'     },
+  { id: 'MOTION',  name: 'Motion',   desc: 'PID motion controller & trajectory planner'       },
+  { id: 'CHRONO',  name: 'Chrono',   desc: 'Match timer (start / stop / reset)'               },
+];
+
+// Client-side override map: while a tel toggle command is in-flight we keep the
+// optimistic state here so the 10-Hz server push doesn't flicker the toggle back.
+const _telOverride = {};  // { channelId: { value: bool, ts: ms } }
+const TEL_OVERRIDE_TTL = 2000;  // ms — give up after 2 s if server never confirms
+
+let _modInited   = false;  // static card markup created
+let _modUpdating = false;  // guard against re-entrant updates
+
+// ── initModulesView ───────────────────────────────────────────────────────────
+// Build the static card/row markup once. Called on first switchView('modules').
+function initModulesView() {
+  if (_modInited) return;
+  _modInited = true;
+
+  // ── Telemetry cards ─────────────────────────────────────────────────────────
+  const grid = document.getElementById('tel-grid');
+  if (grid) {
+    grid.innerHTML = _TEL_CHANNELS.map(ch => `
+      <div class="tel-card" id="tel-card-${ch.id}">
+        <div class="tel-card-name">${ch.name}</div>
+        <div class="tel-card-desc">${ch.desc}</div>
+        <div class="tel-card-footer">
+          <span class="tel-freq">${ch.freq}</span>
+          <label class="toggle-sw" title="Toggle ${ch.name} telemetry">
+            <input type="checkbox" id="tel-chk-${ch.id}"
+                   onchange="modSetTelChannel('${ch.id}', this.checked)">
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
+      </div>`).join('');
+  }
+
+  // ── Service rows ─────────────────────────────────────────────────────────────
+  const list = document.getElementById('svc-list');
+  if (list) {
+    list.innerHTML = _HW_SERVICES.map(svc => `
+      <div class="svc-row" id="svc-row-${svc.id}">
+        <span class="svc-dot disabled" id="svc-dot-${svc.id}"></span>
+        <span class="svc-name">${svc.name}</span>
+        <span class="svc-desc">${svc.desc}</span>
+        <span class="svc-btns">
+          <button class="btn-svc enable"  onclick="modSvcCmd('enable','${svc.id}')"  title="Enable ${svc.name}">Enable</button>
+          <button class="btn-svc disable" onclick="modSvcCmd('disable','${svc.id}')" title="Disable ${svc.name}">Disable</button>
+        </span>
+      </div>`).join('');
+  }
+}
+
+// ── updateModulesView ─────────────────────────────────────────────────────────
+// Called on every state push (10 Hz) and on view enter.
+function updateModulesView(state) {
+  if (!_modInited || _modUpdating) return;
+  _modUpdating = true;
+
+  const connected = !!(state && state.hw_mode);
+  const telMask   = (state && state.hw_tel_mask) ? state.hw_tel_mask : {};
+
+  // ── Banner ───────────────────────────────────────────────────────────────────
+  const banner  = document.getElementById('mod-banner');
+  const dot     = document.getElementById('mod-banner-dot');
+  const bannerT = document.getElementById('mod-banner-text');
+  if (banner && dot && bannerT) {
+    if (connected) {
+      const hwType = (state.hw_type || 'usb').toUpperCase();
+      banner.classList.add('connected');
+      dot.className    = 'mod-status-dot on';
+      bannerT.textContent = `Connected — ${hwType} bridge active`;
+    } else {
+      banner.classList.remove('connected');
+      dot.className    = 'mod-status-dot';
+      bannerT.textContent = 'Not connected — connect to a robot to manage modules';
+    }
+  }
+
+  // ── Telemetry toggles ────────────────────────────────────────────────────────
+  const now = Date.now();
+  _TEL_CHANNELS.forEach(ch => {
+    const chk  = document.getElementById(`tel-chk-${ch.id}`);
+    const card = document.getElementById(`tel-card-${ch.id}`);
+    if (!chk) return;
+
+    // Honour client-side override until TTL expires or server confirms new value
+    const ov = _telOverride[ch.id];
+    let enabled;
+    if (ov && (now - ov.ts) < TEL_OVERRIDE_TTL) {
+      enabled = ov.value;
+      // If server has caught up, clear override
+      if (telMask[ch.id] !== undefined && telMask[ch.id] === ov.value) {
+        delete _telOverride[ch.id];
+      }
+    } else {
+      delete _telOverride[ch.id];
+      enabled = telMask[ch.id] !== undefined ? telMask[ch.id] : true;
+    }
+
+    chk.checked  = enabled;
+    chk.disabled = !connected;
+    if (card) {
+      card.classList.toggle('active',   enabled);
+      card.classList.toggle('inactive', !enabled);
+    }
+  });
+
+  // ── Service rows (no server state yet — just reflect connected/disconnected) ──
+  _HW_SERVICES.forEach(svc => {
+    const dot = document.getElementById(`svc-dot-${svc.id}`);
+    const btns = document.querySelectorAll(`#svc-row-${svc.id} .btn-svc`);
+    if (dot) {
+      dot.className = connected ? 'svc-dot enabled' : 'svc-dot disabled';
+    }
+    btns.forEach(b => { b.disabled = !connected; });
+  });
+
+  _modUpdating = false;
+}
+
+// ── modSetTelChannel ──────────────────────────────────────────────────────────
+// Called when a telemetry toggle is clicked.
+function modSetTelChannel(channelId, enabled) {
+  // Optimistic update — prevent the 10-Hz state push from reverting the toggle
+  _telOverride[channelId] = { value: enabled, ts: Date.now() };
+
+  const cmd = `tel(${channelId},${enabled ? 1 : 0})`;
+  socket.emit('hw_fire', { cmd });
+}
+
+// ── modSvcCmd ─────────────────────────────────────────────────────────────────
+// Enable / disable a firmware service.
+function modSvcCmd(action, serviceId) {
+  const cmd = `${action}(${serviceId})`;
+  socket.emit('hw_fire', { cmd });
+  showToast(`${action}(${serviceId}) sent`);
 }

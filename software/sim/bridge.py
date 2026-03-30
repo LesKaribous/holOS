@@ -263,6 +263,11 @@ class SimBridge:
             self._start_motion_xy(uid, Vec2(x, y), resolve_cb)
             return
 
+        if cmd.startswith("go_coc("):
+            x, y = _parse_xy(cmd[7:-1])
+            self._start_motion_xy(uid, Vec2(x, y), resolve_cb, cancel_on_collide=True)
+            return
+
         if cmd.startswith("goPolar("):
             parts = cmd[8:-1].split(",")
             hdg, dist = float(parts[0]), float(parts[1])

@@ -3,26 +3,27 @@
 #include "pin.h"
 #include "utils/geometry.h"
 
-// ── Intercom channel ──────────────────────────────────────────────────────────
-// USB_INTERCOM : PC branchée directement via USB-CDC (Serial).
-//                Décommenter pour debug depuis le dashboard PC.
-// (commenté)   : Jetson/XBee via UART Serial1 @ 31250 bd (prod).
-#define USB_INTERCOM
+// ── T4.1 ↔ T4.0 Intercom — TOUJOURS sur Serial1 @ 31250 ─────────────────────
+// Ce canal gère le ping/pong et les échanges directs avec T4.0.
+// Ne jamais rediriger sur USB : cela coupe la connexion T4.0.
+#define INTERCOM_SERIAL   Serial1   // UART physique T4.1↔T4.0
+#define INTERCOM_BAUDRATE 31250
 
-#ifdef USB_INTERCOM
-  #define INTERCOM_SERIAL   Serial    // USB-CDC — COM6 / /dev/ttyACM0
-  #define INTERCOM_BAUDRATE 115200
-#else
-  #define INTERCOM_SERIAL   Serial1   // XBee / Jetson UART
-  #define INTERCOM_BAUDRATE 31250
-#endif
+// ── Bridge holOS / Jetson ─────────────────────────────────────────────────────
+// BRIDGE_SERIAL est toujours le port USB-CDC (Serial @ 115200).
+// La détection USB / XBee est faite à l'exécution dans JetsonBridge :
+//   – USB Wired  : holOS envoie "ping\n" → firmware répond "pong\n" via BRIDGE_SERIAL
+//   – XBee/Jetson: les trames arrivent via Intercom (Serial1) ; BRIDGE_SERIAL n'est
+//                  pas utilisé pour les requêtes, seulement pour la télémétrie.
+// Aucun #define de compilation nécessaire pour changer de mode.
+#define BRIDGE_SERIAL   Serial   // USB-CDC — COM6 / /dev/ttyACM0
+#define BRIDGE_BAUDRATE 115200
 
-// TwinVision — caméra centrale (XBee sur Serial2)
-// TX=8, RX=7 sur Teensy 4.1
+// TwinVision — caméra centrale (sur Serial2)
 #define VISION_SERIAL   Serial2
 #define VISION_BAUDRATE 115200
 
-// Console debug — toujours sur USB (les lignes sans |crc sont ignorées par le parser Python)
+// Console debug — toujours sur USB (lignes sans |crc ignorées par le parser Python)
 #define CONSOLE_SERIAL   Serial
 #define CONSOLE_BAUDRATE 115200
 
@@ -117,14 +118,13 @@ namespace Settings {
         MIN_ANGLE    = 2.0f * DEG_TO_RAD; // rad — tolérance angulaire (~2°)
 
         // ---- Détection de blocage (stall) ----
-        // Paramètres par défaut — overridables via cruise_controller.stall().config
         namespace Stall {
-            constexpr uint32_t DELAY_MS         = 1000;  // ms avant la première vérification
-            constexpr uint32_t PERIOD_MS         = 500;   // ms — fenêtre glissante
-            constexpr float    TRANS_DISP_MM     = 5.0f;  // déplacement mini par fenêtre (mm)
-            constexpr float    ANGLE_DISP_RAD    = 0.02f; // rotation mini par fenêtre (rad) ~1.1°
-            constexpr float    TARGET_TRANS_MM   = 20.0f; // cible trans mini pour activer le stall
-            constexpr float    TARGET_ANGLE_RAD  = 0.05f; // cible rot  mini pour activer le stall ~2.9°
+            constexpr uint32_t DELAY_MS         = 1000;
+            constexpr uint32_t PERIOD_MS         = 500;
+            constexpr float    TRANS_DISP_MM     = 5.0f;
+            constexpr float    ANGLE_DISP_RAD    = 0.02f;
+            constexpr float    TARGET_TRANS_MM   = 20.0f;
+            constexpr float    TARGET_ANGLE_RAD  = 0.05f;
         }
     }
 
@@ -136,20 +136,20 @@ namespace Settings {
         DIR_C_POLARITY  = false;
 
         constexpr int
-        PULSE_WIDTH          = 14,    // µs — datasheet TMC2209 p.63
+        PULSE_WIDTH          = 14,
         STEPS_PER_REVOLUTION = 200,
-        STOP_DECCEL          = 3000,  // fullsteps/s²
-        MAX_ACCEL            = 3000,  // fullsteps/s²
-        MAX_SPEED            = 15000, // fullsteps/s
-        STEPPER_DELAY        = 100,   // µs — période du cycle de contrôle stepper
-        MIN_STEP_DELAY       = 20,    // µs — limite haute de vitesse
-        MIN_STEPS            = 5,     // steps — seuil d'arrêt court
-        STEPPER_COMPUTE_DELAY= 1000,  // µs — période du planificateur
-        PULL_IN              = 100,   // fullsteps/s — vitesse mini pour émettre des steps
-        PULL_OUT             = 100;   // fullsteps/s — vitesse de fin de décélération
+        STOP_DECCEL          = 3000,
+        MAX_ACCEL            = 3000,
+        MAX_SPEED            = 15000,
+        STEPPER_DELAY        = 100,
+        MIN_STEP_DELAY       = 20,
+        MIN_STEPS            = 5,
+        STEPPER_COMPUTE_DELAY= 1000,
+        PULL_IN              = 100,
+        PULL_OUT             = 100;
 
         constexpr uint8_t
-        STEP_MODE = 8;  // microstepping
+        STEP_MODE = 8;
     }
 
     namespace Lidar {

@@ -59,8 +59,7 @@ void registerCommands() {
     CommandHandler::registerCommand("print(value)", "Print the result of an expression in the terminal", command_print);
     CommandHandler::registerCommand("stats", "Print cyclic stats", command_stats);
     CommandHandler::registerCommand("help", "Display help", command_help);
-
-    
+    CommandHandler::registerCommand("debug(service)", "Toggle debug/trace for a service", command_debug);
 }
 
 void command_stats(const args_t& args){

@@ -1,5 +1,5 @@
 """
-transport/xbee.py — Real XBee serial transport for Jetson hardware.
+transport/xbee.py - Real XBee serial transport for Jetson hardware.
 
 Connects to the Teensy 4.1 via XBee modules on a serial port.
 Implements the holOS intercom protocol (CRC8-SMBUS framed requests).
@@ -22,12 +22,20 @@ from shared.config import HEARTBEAT_INTERVAL_S, JETSON_TIMEOUT_S
 
 class XBeeTransport(Transport):
     """
-    XBee serial transport.
+    XBee serial transport (XBee radio via Jetson).
 
+    For direct USB-CDC connections use WiredTransport (transport/wired.py).
+    
     Background thread reads from serial continuously.
     execute() sends a request and blocks until a reply arrives or timeout.
     Telemetry callbacks are dispatched from the reader thread.
     """
+
+    TRANSPORT_TYPE = 'xbee'
+
+    @property
+    def transport_type(self) -> str:
+        return self.TRANSPORT_TYPE
 
     def __init__(self, port: str, baudrate: int = 31250):
         self._port     = port
@@ -71,10 +79,17 @@ class XBeeTransport(Transport):
             )
             self._reader_thread.start()
 
-            # Wait for pong
+            # Wait for connection confirmation.
+            # XBee/Jetson mode (31250 baud): raw "ping\n" → firmware replies "pong\n"
+            # USB_DIRECT mode (115200 baud): firmware only understands CRC-framed
+            #   requests, so send a framed hb — any valid reply confirms connectivity.
+            _usb_direct = (self._baudrate == 115200)
             deadline = time.time() + 3.0
             while not self._connected and time.time() < deadline:
-                self._serial.write(b"ping\n")
+                if _usb_direct:
+                    self._serial.write(encode_request(0, 'hb').encode('ascii'))
+                else:
+                    self._serial.write(b"ping\n")
                 time.sleep(0.2)
 
             if self._connected:
@@ -83,8 +98,8 @@ class XBeeTransport(Transport):
                     self._on_connect()
                 return True
 
-            # No pong received — clean up fully before returning failure
-            print(f"[XBeeTransport] No response on {self._port} — closing port")
+            # No pong received - clean up fully before returning failure
+            print(f"[XBeeTransport] No response on {self._port} - closing port")
             self._cleanup()
             return False
 
@@ -212,10 +227,12 @@ class XBeeTransport(Transport):
         kind, id_or_type, data = parse_frame(line)
 
         if kind == 'ping':
+            print(f"[XBeeTransport] Received ping")
             self._write("pong\n")
             return
 
         if kind == 'pong':
+            print(f"[XBeeTransport] Received pong")
             if not self._connected:
                 self._connected = True
                 if self._on_connect:
@@ -224,6 +241,12 @@ class XBeeTransport(Transport):
 
         if kind == 'reply':
             uid = id_or_type
+            print(f"[XBeeTransport] Received reply uid={uid} data={data}")
+            if not self._connected:
+                # USB_DIRECT handshake: receiving any valid reply means the
+                # firmware is alive and the framed protocol is working.
+                self._connected = True
+                return
             with self._lock:
                 self._replies[uid] = data
                 if uid in self._pending:
@@ -232,6 +255,7 @@ class XBeeTransport(Transport):
 
         if kind == 'tel':
             ttype = id_or_type
+            print(f"[XBeeTransport] Received telemetry type={ttype} data={data}")
             # Handle motion done internally
             if ttype == 'motion' and data.startswith('DONE:'):
                 success = data == 'DONE:ok'
@@ -247,7 +271,7 @@ class XBeeTransport(Transport):
             return
 
         if kind == 'request':
-            # Teensy sending us a request (rare — e.g. asking for team)
+            # Teensy sending us a request (rare - e.g. asking for team)
             uid  = id_or_type
             content = data
             resp = self._handle_teensy_request(content)
@@ -273,7 +297,7 @@ class XBeeTransport(Transport):
             try:
                 ok, _ = self.execute("hb", timeout_ms=1000)
                 if not ok and self._connected:
-                    print("[XBeeTransport] Heartbeat failed — connection lost")
+                    print("[XBeeTransport] Heartbeat failed - connection lost")
                     self._connected = False
                     if self._on_disconnect:
                         self._on_disconnect()

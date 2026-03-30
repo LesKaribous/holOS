@@ -798,3 +798,196 @@ html, body { height: 100%; overflow: hidden; margin: 0;
 }
 .hidden { display: none !important; }
 * { scrollbar-width: thin; scrollbar-color: var(--surface3) transparent; }
+
+
+/* ══════════════════════════════════════════════════════════════════════════
+   MODULES VIEW
+══════════════════════════════════════════════════════════════════════════ */
+
+.modules-page {
+  padding: 20px 24px;
+  overflow-y: auto;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+/* ── Connection banner ──────────────────────────────────────────────────── */
+.modules-banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 16px;
+  background: var(--surface2);
+  border-radius: var(--r);
+  font-size: 12px;
+  color: var(--text-dim);
+  border: 1px solid var(--surface3);
+}
+.modules-banner.connected {
+  background: #d1fae5;
+  border-color: #6ee7b7;
+  color: #065f46;
+}
+.mod-status-dot {
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  background: var(--surface3);
+  flex-shrink: 0;
+}
+.mod-status-dot.on  { background: var(--green); }
+.mod-status-dot.off { background: var(--red);   }
+
+/* ── Section ────────────────────────────────────────────────────────────── */
+.modules-section {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.modules-section-hdr {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+}
+.modules-section-title {
+  font-weight: 700;
+  font-size: 13px;
+  color: var(--text);
+}
+.modules-section-hint {
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+/* ── Telemetry channel grid ─────────────────────────────────────────────── */
+.tel-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.tel-card {
+  background: var(--surface);
+  border: 1px solid var(--surface3);
+  border-radius: var(--r);
+  padding: 12px 14px;
+  min-width: 140px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  box-shadow: var(--shadow);
+  transition: border-color .15s, box-shadow .15s;
+}
+.tel-card.active {
+  border-color: var(--brand-light);
+  box-shadow: 0 0 0 2px rgba(41,128,185,.12);
+}
+.tel-card.inactive {
+  opacity: .65;
+}
+.tel-card-name {
+  font-weight: 600;
+  font-size: 12px;
+  color: var(--text);
+  text-transform: uppercase;
+  letter-spacing: .4px;
+}
+.tel-card-desc {
+  font-size: 11px;
+  color: var(--text-dim);
+  flex: 1;
+}
+.tel-card-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.tel-freq {
+  font-size: 10px;
+  color: var(--text-dim);
+}
+
+/* Toggle switch */
+.toggle-sw {
+  position: relative;
+  display: inline-block;
+  width: 36px; height: 20px;
+  flex-shrink: 0;
+}
+.toggle-sw input { opacity: 0; width: 0; height: 0; }
+.toggle-slider {
+  position: absolute;
+  cursor: pointer;
+  inset: 0;
+  background: var(--surface3);
+  border-radius: 20px;
+  transition: background .2s;
+}
+.toggle-slider::before {
+  content: '';
+  position: absolute;
+  width: 14px; height: 14px;
+  left: 3px; bottom: 3px;
+  background: #fff;
+  border-radius: 50%;
+  transition: transform .2s;
+  box-shadow: 0 1px 3px rgba(0,0,0,.2);
+}
+.toggle-sw input:checked + .toggle-slider { background: var(--brand-light); }
+.toggle-sw input:checked + .toggle-slider::before { transform: translateX(16px); }
+.toggle-sw input:disabled + .toggle-slider { opacity: .5; cursor: not-allowed; }
+
+/* ── Firmware services list ─────────────────────────────────────────────── */
+.svc-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.svc-row {
+  background: var(--surface);
+  border: 1px solid var(--surface3);
+  border-radius: var(--r);
+  padding: 9px 14px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  box-shadow: var(--shadow);
+}
+.svc-dot {
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.svc-dot.enabled  { background: var(--green); }
+.svc-dot.disabled { background: var(--surface3); }
+.svc-name {
+  font-weight: 600;
+  font-size: 12px;
+  min-width: 100px;
+}
+.svc-desc {
+  font-size: 11px;
+  color: var(--text-dim);
+  flex: 1;
+}
+.svc-btns {
+  display: flex;
+  gap: 4px;
+}
+.btn-svc {
+  font-size: 10px;
+  padding: 3px 8px;
+  border-radius: 4px;
+  border: 1px solid var(--surface3);
+  background: var(--surface);
+  color: var(--text);
+  cursor: pointer;
+  transition: background .12s, border-color .12s;
+}
+.btn-svc:hover { background: var(--surface2); }
+.btn-svc.enable:hover  { background: #d1fae5; border-color: #6ee7b7; color: #065f46; }
+.btn-svc.disable:hover { background: #fee2e2; border-color: #fca5a5; color: #991b1b; }
+.btn-svc.debug  { color: var(--brand-light); }
+.btn-svc:disabled { opacity: .4; cursor: not-allowed; }

@@ -1,15 +1,17 @@
 #include "request.h"
 #include "comUtilities.h"
+#include "config/settings.h"
 
 int Request::_uidCounter = 0;
 
 Request::Request(const String& content, long timeout, requestCallback_ptr func_call, callback_ptr timeout_call)
     :   _uid(0),
-        _content(content), 
-        _response(""), 
+        m_source(BridgeSource::INTERCOM),
+        _content(content),
+        _response(""),
         _lastSent(0),
         _timeout(timeout),
-        _status(Status::IDLE), 
+        _status(Status::IDLE),
         _callback(func_call),
         _timeoutCallback(timeout_call)
         {
@@ -22,22 +24,22 @@ Request::Request(const String& content, long timeout, requestCallback_ptr func_c
             _crc = String((int) CRC8.smbus((uint8_t*)payload.c_str(), payload.length()));
         }
 
-Request::Request(int id, const String& content)
+Request::Request(int id, const String& content, BridgeSource src)
     :   _uid(id),
+        m_source(src),
         _content(content),
-        _response(""), 
+        _response(""),
         _lastSent(0),
         _timeout(0),
-        _status(Status::IDLE), 
+        _status(Status::IDLE),
         _callback(nullptr),
         _timeoutCallback(nullptr)
-        {           
-            _prefix = "";
-            _prefix +=  "r";
+        {
+            _prefix = "r";
             _prefix += String(_uid) + ":";
 
             String payload = _prefix + _content;
-            
+
             _crc = String((int) CRC8.smbus((uint8_t*)payload.c_str(), payload.length()));
         }
 
@@ -61,9 +63,30 @@ void Request::reply(const String& answer){
     _status = Status::CLOSED;
     _lastSent = millis();
     _content = answer;
+
+    // Recompute CRC with new content
     String payload = _prefix + _content;
     _crc = String((int) CRC8.smbus((uint8_t*)payload.c_str(), payload.length()));
-    Intercom::instance().sendMessage(getPayload());
+
+    if (m_source == BridgeSource::USB) {
+        // Reply over USB-CDC bridge — guard against a full TX buffer which would
+        // block here and starve the main loop long enough to trigger the WDT.
+        // Try to send immediately, but if buffer is full, the JetsonBridge telemetry
+        // queue will handle retries. This is less critical than telemetry.
+        int needed = (int)(_prefix.length() + _content.length() + _crc.length() + 3);
+        if (BRIDGE_SERIAL.availableForWrite() >= needed) {
+            BRIDGE_SERIAL.print(_prefix);
+            BRIDGE_SERIAL.print(_content);
+            BRIDGE_SERIAL.print('|');
+            BRIDGE_SERIAL.print(_crc);
+            BRIDGE_SERIAL.write('\n');
+        }
+        // If the buffer is still full after this, the reply will be lost.
+        // This is acceptable — Python will time-out and the user can retry.
+        // The main priority is preventing watchdog timeouts from blocking writes.
+    } else {
+        Intercom::instance().sendMessage(getPayload());
+    }
 }
 
 

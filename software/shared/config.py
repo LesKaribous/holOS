@@ -42,8 +42,11 @@ SAFETY_CHECK_S      = 0.10   # s
 SAFETY_RESUME_S     = 1.00   # s after last detection before resume
 OBS_RADIUS          = 150.0  # mm  radius used when placing dynamic obstacles
 
-# ── Intercom / XBee ──────────────────────────────────────────────────────────
-XBEE_BAUDRATE       = 31250
+# ── Transport baudrates (mirror firmware settings.h) ─────────────────────────
+# USB_DIRECT mode  → WiredTransport @ USB_DIRECT_BAUDRATE (Teensy USB-CDC, BRIDGE_SERIAL = Serial)
+# XBee / Jetson    → XBeeTransport  @ XBEE_BAUDRATE       (INTERCOM_SERIAL = Serial1)
+USB_DIRECT_BAUDRATE   = 115200
+XBEE_BAUDRATE         = 31250
 HEARTBEAT_INTERVAL_S  = 0.5   # s between heartbeats
 JETSON_TIMEOUT_S      = 2.0   # s before Teensy considers Jetson lost
 CMD_TIMEOUT_MS        = 30000 # ms — max time to wait for a motion command to complete

@@ -77,14 +77,41 @@ brain = Brain(transport)
 # Test runner
 test_runner = TestRunner(transport, bridge, robot, occupancy)
 
-# ── Hardware transport (real XBee, optional) ──────────────────────────────────
+# ── Hardware transport (real robot, optional) ─────────────────────────────────
 # When connected, terminal/actuator/strategy commands are routed here instead
 # of the VirtualTransport.  The physics simulation continues running for map
 # visualisation, but robot state is driven by real telemetry.
 
-_hw_transport  = None   # XBeeTransport instance when connected
-_hw_brain      = None   # Brain wired to real hardware
-_hw_connecting = False  # True while a connection attempt is in progress
+_hw_transport       = None   # WiredTransport / XBeeTransport instance when connected
+_hw_brain           = None   # Brain wired to real hardware
+_hw_test_runner     = None   # TestRunner for real hardware tests
+_hw_connecting      = False  # True while a connection attempt is in progress
+_hw_serial_port     = None   # Serial port in use (e.g. 'COM6' or '/dev/ttyACM0')
+_hw_serial_mode     = 'wired' # 'wired' | 'xbee'
+
+# Telemetry channel mask — updated live from TEL:mask: frames
+_hw_tel_mask = {
+    'pos':    True,
+    'motion': True,
+    'safety': True,
+    'chrono': True,
+    'occ':    True,
+}
+
+# Latest raw telemetry strings from the robot — overrides sim values in _build_state()
+_hw_tel_data = {
+    'motion': None,   # e.g. "RUNNING,tx=1500.0,ty=800.0,dist=200.0,feed=0.80"
+    'safety': None,   # e.g. "1" or "0"
+    'chrono': None,   # e.g. "42.3" (seconds elapsed)
+    't40':    None,   # e.g. "ok" or "timeout" (T4.0 intercom health)
+}
+
+# Jetson edge-computer configuration (for XBee / remote holOS path)
+_jetson_config = {
+    'ip':   '',
+    'user': 'robot',
+    'port': 22,
+}
 
 
 def _active_transport():
@@ -99,6 +126,13 @@ def _active_brain():
     if _hw_transport is not None and _hw_transport.is_connected and _hw_brain is not None:
         return _hw_brain
     return brain
+
+
+def _active_test_runner():
+    """Return the hw TestRunner if connected, else the sim TestRunner."""
+    if _hw_transport is not None and _hw_transport.is_connected and _hw_test_runner is not None:
+        return _hw_test_runner
+    return test_runner
 
 # ── Simulator UI state ────────────────────────────────────────────────────────
 
@@ -122,9 +156,14 @@ sim_state = {
 _PHYSICS_DT = 1.0 / 60.0
 
 def _physics_loop():
+    """60 Hz state broadcaster.  When HW is connected, sim is disabled."""
     while True:
         t0 = time.perf_counter()
-        bridge.tick(_PHYSICS_DT)
+        # Only tick the simulator when there's no real hardware connection
+        # When hw is connected, state comes from telemetry, not sim
+        hw_on = _hw_transport is not None and _hw_transport.is_connected
+        if not hw_on:
+            bridge.tick(_PHYSICS_DT)
         socketio.emit('state', _build_state())
         elapsed = time.perf_counter() - t0
         sleep   = _PHYSICS_DT - elapsed
@@ -135,37 +174,71 @@ def _physics_loop():
 # ── State serialization ───────────────────────────────────────────────────────
 
 def _build_state() -> dict:
-    path_pts = [[p.x, p.y] for p in bridge.current_path()]
+    hw_on = _hw_transport is not None and _hw_transport.is_connected
+
+    # ── Parse live hardware telemetry (when connected) ───────────────────────
+    hw_motion_state = 'IDLE'
+    hw_motion_feed  = 1.0
+    if hw_on and _hw_tel_data.get('motion'):
+        parts = _hw_tel_data['motion'].split(',')
+        hw_motion_state = parts[0] if parts else 'IDLE'
+        for p in parts[1:]:
+            if p.startswith('feed='):
+                try: hw_motion_feed = float(p[5:])
+                except ValueError: pass
+
+    hw_safety_detected = False
+    if hw_on and _hw_tel_data.get('safety') is not None:
+        hw_safety_detected = _hw_tel_data['safety'].strip() == '1'
+
+    hw_chrono_elapsed = 0.0
+    if hw_on and _hw_tel_data.get('chrono') is not None:
+        try: hw_chrono_elapsed = float(_hw_tel_data['chrono'])
+        except ValueError: pass
+
+    # When hardware is connected, disable the simulator completely:
+    # - robot.pos/theta come from real telemetry via _on_pos callback
+    # - path planning, occupancy mapping, game state all cleared
+    # - return only real hardware state
+    path_pts = [] if hw_on else [[p.x, p.y] for p in bridge.current_path()]
+    occ_list = [] if hw_on else occupancy.to_list()
+    dyn_obs  = [] if hw_on else [[o.x, o.y] for o in occupancy.dynamic_obstacles]
+    objs     = [] if hw_on else game_objs.to_list()
+
     return {
         'robot':     robot.to_dict(),
         'path':      path_pts,
-        'occupancy': occupancy.to_list(),
-        'dyn_obs':   [[o.x, o.y] for o in occupancy.dynamic_obstacles],
-        'game_objs': game_objs.to_list(),
-        'motion':    {
-            'state':    bridge.motion_state(),
-            'feedrate': brain.motion.get_feedrate(),
+        'occupancy': occ_list,
+        'dyn_obs':   dyn_obs,
+        'game_objs': objs,
+        # When hardware is connected, override sim values with real telemetry
+        'motion': {
+            'state':    hw_motion_state if hw_on else bridge.motion_state(),
+            'feedrate': hw_motion_feed  if hw_on else brain.motion.get_feedrate(),
         },
         'safety': {
-            'enabled':  sim_state['features']['safety'],
-            'detected': bridge.safety_detected(),
+            'enabled':  True if hw_on else sim_state['features']['safety'],
+            'detected': hw_safety_detected if hw_on else bridge.safety_detected(),
         },
         'chrono': {
-            'elapsed': bridge.chrono_elapsed(),
-            'left':    max(0, 100.0 - bridge.chrono_elapsed()),
-            'running': bridge.chrono_running(),
+            'elapsed': hw_chrono_elapsed if hw_on else bridge.chrono_elapsed(),
+            'left':    max(0, 100.0 - hw_chrono_elapsed) if hw_on
+                       else max(0, 100.0 - bridge.chrono_elapsed()),
+            'running': hw_on or bridge.chrono_running(),
         },
         'score':    sim_state['score'],
         'team':     sim_state['team'],
         'features': sim_state['features'],
         'mode':     sim_state['mode'],
         'log':      _active_brain().get_log(30),
-        'hw_mode':       (_hw_transport is not None and _hw_transport.is_connected),
+        # ── Hardware connection metadata ──────────────────────────────────────
+        'hw_mode':       hw_on,
         'hw_connecting': _hw_connecting,
-        'hw_type':       ('xbee' if (_hw_transport is not None and _hw_transport.is_connected
-                                     and getattr(_hw_transport, '_baudrate', 0) == 31250)
-                          else 'usb' if (_hw_transport is not None and _hw_transport.is_connected)
-                          else 'sim'),
+        'hw_type':       (getattr(_hw_transport, 'transport_type', 'sim') if hw_on else 'sim'),
+        'hw_serial_port': _hw_serial_port if hw_on else None,
+        'hw_tel_mask':   dict(_hw_tel_mask),
+        'hw_t40':        (_hw_tel_data.get('t40') or 'unknown') if hw_on else 'unknown',
+        'jetson_ip':     _jetson_config.get('ip', ''),
     }
 
 
@@ -182,6 +255,51 @@ def api_colors():
 @app.route('/api/poi')
 def api_poi():
     return jsonify([{'name': n, 'x': v.x, 'y': v.y} for n, v in POI.all_named()])
+
+
+# ── Hardware modules API ───────────────────────────────────────────────────────
+
+_HW_SERVICES = [
+    'LIDAR', 'CHRONO', 'IHM', 'SAFETY', 'MOTION',
+    'NAVIGATION', 'NEOPIXEL', 'INTERCOM', 'TERMINAL',
+    'ACTUATORS', 'LOCALISATION', 'VISION', 'JETSON',
+]
+
+@app.route('/api/hw/modules', methods=['GET'])
+def api_hw_modules():
+    """Return known service list + current telemetry mask."""
+    return jsonify({
+        'services':  _HW_SERVICES,
+        'tel_mask':  dict(_hw_tel_mask),
+        'connected': _hw_transport is not None and _hw_transport.is_connected,
+    })
+
+@app.route('/api/jetson', methods=['GET', 'POST'])
+def api_jetson():
+    """Get or update Jetson edge-computer configuration."""
+    global _jetson_config
+    if request.method == 'POST':
+        data = request.get_json(force=True) or {}
+        if 'ip'   in data: _jetson_config['ip']   = str(data['ip'])
+        if 'user' in data: _jetson_config['user'] = str(data['user'])
+        if 'port' in data: _jetson_config['port'] = int(data['port'])
+        return jsonify({'ok': True, 'config': dict(_jetson_config)})
+    return jsonify(dict(_jetson_config))
+
+@app.route('/api/hw/cmd', methods=['POST'])
+def api_hw_cmd():
+    """Fire a command to the connected hardware (fire-and-forget)."""
+    if _hw_transport is None or not _hw_transport.is_connected:
+        return jsonify({'ok': False, 'error': 'not connected'}), 503
+    data = request.get_json(force=True) or {}
+    cmd  = (data.get('cmd') or '').strip()
+    if not cmd:
+        return jsonify({'ok': False, 'error': 'empty cmd'}), 400
+    try:
+        _hw_transport.fire(cmd)
+        return jsonify({'ok': True})
+    except Exception as e:
+        return jsonify({'ok': False, 'error': str(e)}), 500
 
 
 # ── Strategy file API ──────────────────────────────────────────────────────────
@@ -416,44 +534,105 @@ def on_serial_connect(data):
     emit('serial_status', {'ok': False, 'msg': f'Connecting to {port}…', 'connecting': True})
 
     def _do_connect():
-        global _hw_transport, _hw_brain, _hw_connecting
+        global _hw_transport, _hw_brain, _hw_connecting, _hw_serial_port, _hw_serial_mode
+        global _hw_tel_data
         t = None
         try:
-            from transport.xbee import XBeeTransport
-            t  = XBeeTransport(port=port, baudrate=baud)
+            from shared.config import USB_DIRECT_BAUDRATE, XBEE_BAUDRATE
+            if baud == USB_DIRECT_BAUDRATE:
+                from transport.wired import WiredTransport
+                t = WiredTransport(port=port)
+                transport_label = f'USB Wired @ {baud} bps'
+                _hw_serial_mode = 'wired'
+            else:
+                from transport.xbee import XBeeTransport
+                t = XBeeTransport(port=port, baudrate=baud)
+                transport_label = f'XBee @ {baud} bps'
+                _hw_serial_mode = 'xbee'
+
             ok = t.connect()
             if ok:
-                _hw_transport = t
-                _hw_brain     = Brain(t)
+                global _hw_test_runner
+                _hw_transport   = t
+                _hw_serial_port = port
+                # Reset live telemetry on new connection
+                _hw_tel_data = {k: None for k in _hw_tel_data}
+
+                _hw_brain = Brain(t)
                 _hw_brain.load_strategy()
-                # Mirror real telemetry → update sim robot pos for map view
+                # Also create a test runner for the hardware
+                _hw_test_runner = TestRunner(t, _hw_brain, robot, occupancy)
+
+                # ── TEL:pos → update robot position (used for map display) ────
                 def _on_pos(data_str):
                     try:
+                        print(f"[TELEMETRY] pos: {data_str}")
                         parts = dict(kv.split('=') for kv in data_str.split(','))
                         robot.pos   = Vec2(float(parts['x']), float(parts['y']))
                         robot.theta = float(parts['theta'])
+                        print(f"[TELEMETRY] Updated robot position to ({robot.pos.x:.1f}, {robot.pos.y:.1f})")
+                    except Exception as e:
+                        print(f"[TELEMETRY] pos parsing error: {e}")
+                t.subscribe_telemetry('pos', _on_pos)
+
+                # ── TEL:motion → live motion state override ───────────────────
+                def _on_motion(data_str):
+                    print(f"[TELEMETRY] motion: {data_str}")
+                    _hw_tel_data['motion'] = data_str
+                t.subscribe_telemetry('motion', _on_motion)
+
+                # ── TEL:safety → live safety override ────────────────────────
+                def _on_safety(data_str):
+                    print(f"[TELEMETRY] safety: {data_str}")
+                    _hw_tel_data['safety'] = data_str
+                t.subscribe_telemetry('safety', _on_safety)
+
+                # ── TEL:chrono → live chrono override ────────────────────────
+                def _on_chrono(data_str):
+                    print(f"[TELEMETRY] chrono: {data_str}")
+                    _hw_tel_data['chrono'] = data_str
+                t.subscribe_telemetry('chrono', _on_chrono)
+
+                # ── TEL:t40 → T4.0 intercom health ───────────────────────────
+                def _on_t40(data_str):
+                    print(f"[TELEMETRY] t40: {data_str}")
+                    _hw_tel_data['t40'] = data_str
+                t.subscribe_telemetry('t40', _on_t40)
+
+                # ── TEL:mask → update channel enable/disable state ────────────
+                def _on_mask(data_str):
+                    global _hw_tel_mask
+                    try:
+                        for kv in data_str.split(','):
+                            k, v = kv.split('=')
+                            if k in _hw_tel_mask:
+                                _hw_tel_mask[k] = (v.strip() == '1')
                     except Exception:
                         pass
-                t.subscribe_telemetry('pos', _on_pos)
+                t.subscribe_telemetry('mask', _on_mask)
+
                 socketio.emit('serial_status', {
-                    'ok': True, 'msg': f'Connected {port} @ {baud}bps'
+                    'ok': True, 'msg': f'Connected — {transport_label}'
                 })
-                brain.log(f'[XBee] Connected {port} @ {baud}bps')
+                brain.log(f'[HW] Connected — {transport_label}')
             else:
-                # t.connect() already closed the port — just report failure
-                _hw_transport = None
+                _hw_transport   = None
+                _hw_serial_port = None
+                hint = ('Check USB cable and Teensy firmware'
+                        if baud == USB_DIRECT_BAUDRATE
+                        else 'Check XBee wiring and baud rate')
                 socketio.emit('serial_status', {
                     'ok': False,
-                    'msg': f'No response from Teensy on {port} (check baud + wiring)',
+                    'msg': f'No response from Teensy on {port} — {hint}',
                 })
         except Exception as e:
-            # Ensure the port is released even if an unexpected exception occurred
             if t is not None:
                 try:
                     t.disconnect()
                 except Exception:
                     pass
-            _hw_transport = None
+            _hw_transport   = None
+            _hw_serial_port = None
             socketio.emit('serial_status', {'ok': False, 'msg': str(e)})
         finally:
             _hw_connecting = False
@@ -463,15 +642,18 @@ def on_serial_connect(data):
 
 @socketio.on('serial_disconnect')
 def on_serial_disconnect():
-    global _hw_transport, _hw_brain
+    global _hw_transport, _hw_brain, _hw_test_runner, _hw_serial_port, _hw_tel_data
     if _hw_transport is not None:
         try:
             _hw_transport.disconnect()
         except Exception:
             pass
-        _hw_transport = None
-        _hw_brain     = None
-        brain.log('[XBee] Disconnected')
+        _hw_transport   = None
+        _hw_brain       = None
+        _hw_test_runner = None
+        _hw_serial_port = None
+        _hw_tel_data    = {k: None for k in _hw_tel_data}
+        brain.log('[HW] Disconnected')
     emit('serial_status', {'ok': False, 'msg': 'Disconnected'})
 
 
@@ -485,10 +667,14 @@ def on_terminal_cmd(data):
         return
     t = _active_transport()
     mode = '[HW]' if t is not transport else '[SIM]'
+    timeout_ms = int(data.get('timeout_ms', 5000))
     try:
-        ok, res = t.execute(cmd, timeout_ms=int(data.get('timeout_ms', 5000)))
+        print(f"[TERMINAL] Sending '{cmd}' via {mode} transport (timeout={timeout_ms}ms)")
+        ok, res = t.execute(cmd, timeout_ms=timeout_ms)
+        print(f"[TERMINAL] Got response: ok={ok}, res={res}")
         emit('terminal_rx', {'cmd': cmd, 'ok': ok, 'res': res, 'mode': mode})
     except Exception as e:
+        print(f"[TERMINAL] Exception: {e}")
         emit('terminal_rx', {'cmd': cmd, 'ok': False, 'res': str(e), 'mode': mode})
 
 
@@ -562,8 +748,10 @@ def on_run_tests(data):
       'test':  'mot_hb'   → run a single test
       (neither)           → run all tests
     }
+    Routes to hw_test_runner if hardware is connected, else sim test_runner.
     """
-    if test_runner.is_running():
+    active_tr = _active_test_runner()
+    if active_tr.is_running():
         emit('test_error', {'msg': 'Tests already running'})
         return
 
@@ -580,16 +768,16 @@ def on_run_tests(data):
     test  = data.get('test')
 
     if test:
-        test_runner.run_one(test, _progress, _result, _done)
+        active_tr.run_one(test, _progress, _result, _done)
     elif suite:
-        test_runner.run_suite(suite, _progress, _result, _done)
+        active_tr.run_suite(suite, _progress, _result, _done)
     else:
-        test_runner.run_all(_progress, _result, _done)
+        active_tr.run_all(_progress, _result, _done)
 
 
 @socketio.on('stop_tests')
 def on_stop_tests():
-    test_runner.stop()
+    _active_test_runner().stop()
 
 
 @socketio.on('activate_strategy')
@@ -669,6 +857,47 @@ def on_run_macro(data):
         socketio.emit('seq_done', {'stopped': False})
 
     threading.Thread(target=_run, daemon=True, name='macro').start()
+
+
+# ── HW fire (Modules panel) ──────────────────────────────────────────────────
+
+def _apply_tel_cmd(cmd: str):
+    """Parse tel(channel, 0|1) and update _hw_tel_mask locally."""
+    global _hw_tel_mask
+    try:
+        inner = cmd[4:-1]   # strip leading 'tel(' and trailing ')'
+        comma = inner.index(',')
+        ch  = inner[:comma].strip()
+        val = inner[comma + 1:].strip() != '0'
+        if ch in _hw_tel_mask:
+            _hw_tel_mask[ch] = val
+    except Exception:
+        pass
+
+
+@socketio.on('hw_fire')
+def on_hw_fire(data):
+    """Fire-and-forget command to real hardware (used by Modules panel)."""
+    cmd = (data.get('cmd') or '').strip()
+    if not cmd:
+        return
+
+    # Always apply tel() changes locally so the dashboard mask stays in sync.
+    if cmd.startswith('tel(') and cmd.endswith(')'):
+        _apply_tel_cmd(cmd)
+
+    if _hw_transport is not None and _hw_transport.is_connected:
+        try:
+            _hw_transport.fire(cmd)
+            brain.log(f'[HW] {cmd}')
+        except Exception as e:
+            emit('hw_ack', {'ok': False, 'cmd': cmd, 'err': str(e)})
+            return
+    else:
+        if not cmd.startswith('tel('):
+            transport.fire(cmd)
+        brain.log(f'[SIM] {cmd}')
+    emit('hw_ack', {'ok': True, 'cmd': cmd})
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────

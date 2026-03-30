@@ -32,43 +32,37 @@ void Intercom::run() {
 void Intercom::enable(){
     Service::enable();
     INTERCOM_SERIAL.begin(INTERCOM_BAUDRATE);
-    sendMessage("ping");
-    while(_stream.available()) _stream.read(); // Clear residual
+    delay(10);  // Let UART settle before touching the buffer
+    while(_stream.available()) _stream.read(); // Clear residual garbage
+    _inBuf = "";  // reset accumulator
+    sendMessage("ping");  // Now send ping on a clean line
 }
 
 void Intercom::disable(){
-#ifndef USB_INTERCOM
-    // On USB_INTERCOM mode we must NOT end Serial — it would drop the USB connection.
     INTERCOM_SERIAL.end();
-#endif
     Service::disable();
 }
 
+// FW-003: Non-blocking sendMessage — drop if TX buffer full (telemetry is best-effort)
 void Intercom::sendMessage(const char* message) {
-    long trial = millis();
-    while(!_stream.availableForWrite() && millis() - trial < 100);
-    if(millis() - trial > 100){
-        THROW("Msg cannot be sent");
-        return;
-    }
+    if (!_stream.availableForWrite()) return;
     _stream.print(message);
     _stream.write('\n');
     if(debug) Console::trace("Intercom") << ">" << message << Console::endl;
 }
 
 void Intercom::sendMessage(const String& message) {
-    long trial = millis();
-    while(!_stream.availableForWrite() && millis() - trial < 100);
-    if(millis() - trial > 100){
-        THROW("Msg cannot be sent");
-        return;
-    }
+    if (!_stream.availableForWrite()) return;
     _stream.print(message);
     _stream.write('\n');
     if(debug) Console::trace("Intercom") << ">" << message.c_str() << Console::endl;
 }
 
 int Intercom::sendRequest(const String& payload, long timeout,  requestCallback_ptr cbfunc,  callback_ptr func){
+    // FW-002: guard against unbounded map growth
+    if (_sentRequests.size() >= 200) {
+        _sentRequests.erase(_sentRequests.begin());
+    }
     Request req(payload, timeout, cbfunc, func);
     req.send();
     _sentRequests.insert({req.ID(), req});
@@ -131,63 +125,72 @@ void Intercom::connectionSuccess(){
     }
 }
 
+// FW-001: Non-blocking char-by-char accumulation (mirrors _readBridgeSerial pattern)
 void Intercom::_processIncomingData() {
     while (_stream.available()) {
-       
-        String incomingMessage = _stream.readStringUntil('\n'); //We read all bytes hoping that no \n pop before the end
-        incomingMessage.trim(); // Remove any leading/trailing whitespace or newline characters
+        char c = (char)_stream.read();
+        if (c == '\n' || c == '\r') {
+            _inBuf.trim();
+            if (_inBuf.length() == 0) { _inBuf = ""; continue; }
 
-        if (incomingMessage.startsWith("ping")) {
-            pingReceived();
-        } else if (incomingMessage.startsWith("pong")) {
-            if(!_connected){
-                _connected = true;
-                connectionSuccess();
-            }
-        }else if (incomingMessage.startsWith("r") && !_sentRequests.empty()){ //reply incomming
-            int id_separatorIndex = incomingMessage.indexOf(':');
-            int crc_separatorIndex = incomingMessage.indexOf('|');
+            const String& incomingMessage = _inBuf;
 
-            if (id_separatorIndex != 0 && crc_separatorIndex != 0) {
-                int responseId = incomingMessage.substring(1, id_separatorIndex).toInt(); //get uuid and ignore the 'r'
-                String responseData = incomingMessage.substring(id_separatorIndex + 1, crc_separatorIndex); //without crc
-                int crc = incomingMessage.substring(crc_separatorIndex + 1).toInt(); //without crc
-                
-                if(!checkCRC(incomingMessage.substring(0, crc_separatorIndex), crc)){
-                    if(debug) Console::trace("Intercom") << "Bad crc for message " << incomingMessage << Console::endl;
-                    continue;
+            if (incomingMessage.startsWith("ping")) {
+                pingReceived();
+            } else if (incomingMessage.startsWith("pong")) {
+                if(!_connected){
+                    _connected = true;
+                    connectionSuccess();
+                }
+            }else if (incomingMessage.startsWith("r") && !_sentRequests.empty()){ //reply incoming
+                int id_separatorIndex = incomingMessage.indexOf(':');
+                int crc_separatorIndex = incomingMessage.indexOf('|');
+
+                if (id_separatorIndex != 0 && crc_separatorIndex != 0) {
+                    int responseId = incomingMessage.substring(1, id_separatorIndex).toInt();
+                    String responseData = incomingMessage.substring(id_separatorIndex + 1, crc_separatorIndex);
+                    int crc = incomingMessage.substring(crc_separatorIndex + 1).toInt();
+                    
+                    if(!checkCRC(incomingMessage.substring(0, crc_separatorIndex), crc)){
+                        if(debug) Console::trace("Intercom") << "Bad crc for message " << incomingMessage << Console::endl;
+                        _inBuf = "";
+                        continue;
+                    }
+
+                    auto requestIt = _sentRequests.find(responseId);
+                    if (requestIt != _sentRequests.end()) {
+                        Request& request = requestIt->second;
+                        request.onResponse(responseData);
+                        if(debug) Console::trace("Intercom") << "<" << incomingMessage << Console::endl;
+                    }else{
+                        if(debug) Console::trace("Intercom")<< "not found" << Console::endl;
+                    }
                 }
 
-                auto requestIt = _sentRequests.find(responseId);
-                if (requestIt != _sentRequests.end()) {
-                    Request& request = requestIt->second;
-                    request.onResponse(responseData);
-                    if(debug) Console::trace("Intercom") << "<" << incomingMessage << Console::endl;
-                }else{
-                    if(debug) Console::trace("Intercom")<< "not found" << Console::endl;
+            }else{ //request is coming
+                int id_separatorIndex = incomingMessage.indexOf(':');
+                int crc_separatorIndex = incomingMessage.indexOf('|');
+                if (id_separatorIndex != 0 && crc_separatorIndex != 0) {
+                    int responseId = incomingMessage.substring(0, id_separatorIndex).toInt();
+                    String responseData = incomingMessage.substring(id_separatorIndex + 1, crc_separatorIndex);
+                    int crc = incomingMessage.substring(crc_separatorIndex + 1).toInt();
+                    
+                    if(!checkCRC(incomingMessage.substring(0, crc_separatorIndex), crc)){
+                        Console::error("Intercom") << "Bad crc for message " << incomingMessage << Console::endl;
+                        _inBuf = "";
+                        continue;
+                    }
+
+                    Request request(responseId, responseData);
+                    if(onRequestCallback != nullptr) onRequestCallback(request);
                 }
             }
 
-            
-        }else{ //request is coming
-            int id_separatorIndex = incomingMessage.indexOf(':');
-            int crc_separatorIndex = incomingMessage.indexOf('|');
-            if (id_separatorIndex != 0 && crc_separatorIndex != 0) {
-                int responseId = incomingMessage.substring(0, id_separatorIndex).toInt(); //get uuid and ignore the 'r'
-                String responseData = incomingMessage.substring(id_separatorIndex + 1, crc_separatorIndex); //without crc
-                int crc = incomingMessage.substring(crc_separatorIndex + 1).toInt(); //without crc
-                
-                if(!checkCRC(incomingMessage.substring(0, crc_separatorIndex), crc)){
-                    Console::error("Intercom") << "Bad crc for message " << incomingMessage << Console::endl;
-                    continue;
-                }
-
-                Request request(responseId, responseData);
-                if(onRequestCallback != nullptr) onRequestCallback(request);
-            }
+            _inBuf = "";
+        } else {
+            if (_inBuf.length() < 512) _inBuf += c;  // guard against runaway frames
         }
     }
-    INTERCOM_SERIAL.clear();
 }
 
 void Intercom::_processPendingRequests() {

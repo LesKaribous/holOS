@@ -55,6 +55,8 @@ private:
     void _processIncomingData();
     void _processPendingRequests();
 
+    String _inBuf;  ///< Non-blocking line accumulator for incoming serial data
+
     SINGLETON(Intercom)
 };
 SINGLETON_EXTERN(Intercom, intercom)

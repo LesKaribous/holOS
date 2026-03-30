@@ -172,7 +172,11 @@ class MotionService:
         # via points
         for v in self._pending_via:
             parts.append(f"via({v.x:.1f},{v.y:.1f})")
-        parts.append(f"go({target.x:.1f},{target.y:.1f})")
+        # Use go_coc (cancel-on-collide variant) when the flag is set
+        if self._pending_cancel_on_collide:
+            parts.append(f"go_coc({target.x:.1f},{target.y:.1f})")
+        else:
+            parts.append(f"go({target.x:.1f},{target.y:.1f})")
         cmd = ";".join(parts)
         # feedrate option
         if self._pending_feedrate > 0:

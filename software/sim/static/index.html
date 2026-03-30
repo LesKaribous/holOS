@@ -97,12 +97,9 @@
     <select id="serial-port-sel" class="input-sm" style="flex:1;min-width:130px">
       <option value="">— port —</option>
     </select>
-    <select id="serial-baud-sel" class="input-sm" style="width:88px">
-      <option value="115200" selected>115 200 (USB)</option>
-      <option value="31250">31 250 (XBee)</option>
-      <option value="57600">57 600</option>
-      <option value="38400">38 400</option>
-      <option value="9600">9 600</option>
+    <select id="serial-mode-sel" class="input-sm" style="width:104px">
+      <option value="wired" selected>USB Wired</option>
+      <option value="xbee">XBee / Jetson</option>
     </select>
     <button class="btn-tiny" onclick="serialRefreshPorts()" title="Refresh ports">↺</button>
   </div>
@@ -112,7 +109,8 @@
     <span id="serial-status-val" style="font-size:11px;color:var(--text-dim)">not connected</span>
   </div>
   <div class="conn-panel-row" style="font-size:10px;color:var(--text-dim);line-height:1.4">
-    Via XBee (31 250 bd) or USB serial.<br>
+    USB Wired: direct USB serial @ 115 200 bd.<br>
+    XBee / Jetson: radio link @ 31 250 bd.<br>
     Robot telemetry mirrors to the map view.
   </div>
 </div>
@@ -154,6 +152,9 @@
         </svg>
       </span>
       <span class="nav-lbl">Network</span>
+    </button>
+    <button class="nav-btn" data-view="modules" onclick="switchView('modules',this)">
+      <span class="nav-icon">⚙</span><span class="nav-lbl">Modules</span>
     </button>
   </nav>
 
@@ -416,11 +417,9 @@
         <select id="t-port-sel" class="input-sm" style="flex:1;max-width:180px">
           <option value="">— none —</option>
         </select>
-        <select id="t-baud-sel" class="input-sm" style="width:82px">
-          <option value="115200">115200</option>
-          <option value="31250">31250</option>
-          <option value="57600">57600</option>
-          <option value="9600">9600</option>
+        <select id="t-mode-sel" class="input-sm" style="width:104px">
+          <option value="wired" selected>USB Wired</option>
+          <option value="xbee">XBee / Jetson</option>
         </select>
         <button class="btn-tiny" onclick="serialRefreshPorts()">↺</button>
         <button class="btn-tiny green" onclick="serialConnect()">Connect</button>
@@ -495,6 +494,42 @@
 
       </div>
     </div><!-- /view-network -->
+
+
+    <!-- ── MODULES VIEW ──────────────────────────────────────────────────────── -->
+    <div id="view-modules" class="view">
+      <div class="modules-page">
+
+        <!-- Connection status banner -->
+        <div class="modules-banner" id="mod-banner">
+          <span id="mod-banner-dot" class="mod-status-dot"></span>
+          <span id="mod-banner-text">Not connected — connect to a robot to manage modules</span>
+        </div>
+
+        <!-- ── Telemetry channels ──────────────────────────────────────────── -->
+        <div class="modules-section">
+          <div class="modules-section-hdr">
+            <span class="modules-section-title">Telemetry Channels</span>
+            <span class="modules-section-hint">Toggle data streams sent by the robot firmware</span>
+          </div>
+          <div class="tel-grid" id="tel-grid">
+            <!-- Cards injected by JS -->
+          </div>
+        </div>
+
+        <!-- ── Firmware Services ────────────────────────────────────────────── -->
+        <div class="modules-section">
+          <div class="modules-section-hdr">
+            <span class="modules-section-title">Firmware Services</span>
+            <span class="modules-section-hint">Enable / disable individual robot subsystems</span>
+          </div>
+          <div class="svc-list" id="svc-list">
+            <!-- Rows injected by JS -->
+          </div>
+        </div>
+
+      </div>
+    </div><!-- /view-modules -->
 
 
   </div><!-- /views -->

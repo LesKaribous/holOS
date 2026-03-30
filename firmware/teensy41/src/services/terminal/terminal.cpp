@@ -11,13 +11,15 @@ void Terminal::attach(){
 
 void Terminal::run(){
     if(!enabled()) return;
-    
-    if (CONSOLE_SERIAL.available() > 0) {
-        String command = CONSOLE_SERIAL.readString();
-        _pendingCommands.push_back(command);
-        if(_pendingCommands.size() > 10) _pendingCommands.pop_front();
-        
-    }
+
+    // CONSOLE_SERIAL and BRIDGE_SERIAL are both Serial (USB-CDC).
+    // JetsonBridge owns the port exclusively for ping/pong + framed commands.
+    // Terminal must never read from it — stealing bytes would corrupt the bridge
+    // handshake and trigger a firmware crash.
+    // Terminal input is handled by JetsonBridge::handleRequest() via the 'cmd'
+    // command over the same USB channel.
+    (void)this;  // suppress unused-warning if optimised out
+    return;
 }   
 
 String Terminal::dequeCommand(){
