@@ -316,28 +316,33 @@ String JetsonBridge::_buildPositionTel() const {
 }
 
 void JetsonBridge::_pushFrame(const String& msg) {
+    // Append CRC8 to match the wire protocol Python expects:
+    //   TEL:pos:x=100,y=200|<crc>\n
+    // Without CRC, parse_frame() in protocol.py rejects the frame.
+    uint8_t crc = CRC8.smbus((const uint8_t*)msg.c_str(), msg.length());
+    String framed = msg + "|" + String((int)crc);
+
     if (m_bridgeSource == BridgeSource::USB) {
         // Guard against a full TX FIFO: a blocking write here would stall the
         // main loop for milliseconds and eventually trip the hardware WDT.
         // If buffer is full, queue the frame instead of silently dropping it.
-        // +1 for the trailing '\n'.
-        int needed = (int)(msg.length() + 1);
+        int needed = (int)(framed.length() + 1);  // +1 for '\n'
         if (BRIDGE_SERIAL.availableForWrite() >= needed) {
-            BRIDGE_SERIAL.print(msg);
+            BRIDGE_SERIAL.print(framed);
             BRIDGE_SERIAL.write('\n');
         } else {
-            // Queue the frame for retry when buffer is available
+            // Queue the fully-framed message for retry when buffer is available
             if (_telQueue.size() < TEL_QUEUE_MAX) {
-                _telQueue.push_back(msg);
-            }
-            // If queue is full, drop oldest frame to make room (sacrifice old data for fresh)
-            else {
+                _telQueue.push_back(framed);
+            } else {
+                // Drop oldest frame to make room (sacrifice old data for fresh)
                 _telQueue.pop_front();
-                _telQueue.push_back(msg);
+                _telQueue.push_back(framed);
             }
         }
     } else {
         // XBee / Jetson path — relay over Intercom (Serial1 @ 31250).
+        // Intercom has its own framing, no CRC needed here.
         intercom.sendMessage(msg);
     }
 }

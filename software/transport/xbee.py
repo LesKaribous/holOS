@@ -279,6 +279,18 @@ class XBeeTransport(Transport):
             self._write(reply_frame)
             return
 
+        # ── Unframed console output ───────────────────────────────────────────
+        # CONSOLE_SERIAL == BRIDGE_SERIAL on USB mode.  Commands like "help"
+        # print raw text to Serial without CRC framing.  Forward these lines
+        # to the '_console' subscribers so the terminal UI can display them.
+        stripped = line.strip()
+        if stripped and kind is None:
+            for cb in self._tel_subs.get('_console', []):
+                try:
+                    cb(stripped)
+                except Exception:
+                    pass
+
     def _handle_teensy_request(self, content: str) -> str:
         """Handle incoming requests from Teensy (e.g. team query)."""
         # Can be overridden by brain

@@ -128,8 +128,8 @@ socket.on('state', state => {
   if (state.hw_connecting) {
     cgSetRobotConnecting();
     _serialSetConnectBusy(true);
-  } else if (state.hw_mode !== undefined) {
-    cgSetRobot(state.hw_mode, state.hw_type, state.hw_serial_port);
+  } else if (state.connection_mode !== undefined) {
+    cgSetConnectionMode(state.connection_mode, state.hw_type, state.hw_serial_port);
     _serialSetConnectBusy(false);
   }
   updateNetworkFromState(state);
@@ -167,33 +167,46 @@ function cgSetWs(connected) {
   if (sv)   { sv.textContent  = connected ? 'Connected ✓' : 'Disconnected'; }
 }
 
-function cgSetRobot(hwConnected, hwType, hwPort) {
+// connection_mode: 'idle' | 'sim' | 'usb' | 'xbee'
+let _currentConnectionMode = 'idle';
+
+function cgSetConnectionMode(mode, hwType, hwPort) {
+  _currentConnectionMode = mode;
   const dot    = document.getElementById('cg-dot-robot');
   const link   = document.getElementById('cg-lnk-robot');
   const sub    = document.getElementById('cg-sub-robot');
   const modeEl = document.getElementById('conn-mode-val');
-  if (hwConnected) {
-    const label = hwType === 'xbee' ? 'XBee' : 'USB Wired';
-    const modeStr = hwType === 'xbee'
+  const serverSub = document.getElementById('cg-sub-server');
+
+  if (mode === 'usb' || mode === 'xbee') {
+    const label = mode === 'xbee' ? 'XBee' : 'USB Wired';
+    const modeStr = mode === 'xbee'
       ? `Hardware — XBee (${hwPort || '?'})`
       : `Hardware — USB Wired (${hwPort || '?'})`;
     if (dot)    { dot.className  = 'cg-dot hw-active'; }
     if (link)   { link.className = 'cg-link hw'; }
     if (sub)    { sub.className  = 'cg-sub hw'; sub.textContent = label; }
     if (modeEl) { modeEl.textContent = modeStr; }
-    // Also update holOS sub-label to indicate local vs Jetson path
-    const serverSub = document.getElementById('cg-sub-server');
-    if (serverSub) {
-      serverSub.textContent = hwType === 'xbee' ? 'via Jetson' : 'Local';
-    }
-  } else {
+    if (serverSub) serverSub.textContent = mode === 'xbee' ? 'via Jetson' : 'Local';
+  } else if (mode === 'sim') {
     if (dot)    { dot.className  = 'cg-dot sim-active'; }
     if (link)   { link.className = 'cg-link sim'; }
     if (sub)    { sub.className  = 'cg-sub sim'; sub.textContent = 'SIM'; }
     if (modeEl) { modeEl.textContent = 'Simulator'; }
-    const serverSub = document.getElementById('cg-sub-server');
+    if (serverSub) serverSub.textContent = 'Local';
+  } else {
+    // idle — nothing connected
+    if (dot)    { dot.className  = 'cg-dot'; }
+    if (link)   { link.className = 'cg-link'; }
+    if (sub)    { sub.className  = 'cg-sub'; sub.textContent = 'idle'; }
+    if (modeEl) { modeEl.textContent = 'Not connected'; }
     if (serverSub) serverSub.textContent = 'Local';
   }
+}
+
+// Legacy wrapper
+function cgSetRobot(hwConnected, hwType, hwPort) {
+  cgSetConnectionMode(hwConnected ? (hwType === 'xbee' ? 'xbee' : 'usb') : 'idle', hwType, hwPort);
 }
 
 function cgSetRobotConnecting() {
@@ -1030,8 +1043,13 @@ function serialConnect() {
 }
 function serialDisconnect() {
   socket.emit('serial_disconnect');
-  setSerialStatus('Disconnected', '');
-  cgSetRobot(false);
+  setSerialStatus('Disconnected — idle', '');
+  cgSetConnectionMode('idle');
+}
+function connectSim() {
+  socket.emit('connect_sim');
+  setSerialStatus('Simulator active', 'ok');
+  cgSetConnectionMode('sim');
 }
 function setSerialStatus(msg, cls) {
   ['serial-status-val', 't-serial-status'].forEach(id => {
@@ -1090,9 +1108,9 @@ function showToast(msg) {
 // ── Runtime state ─────────────────────────────────────────────────────────
 const _ns = {
   ws:        'disconnected',
-  hw:        'sim',        // 'sim'|'connecting'|'connected'|'disconnected'
-  hwType:    'sim',        // 'sim'|'usb'|'xbee'
-  hwLabel:   'Virtual (SIM)',
+  hw:        'idle',       // 'idle'|'sim'|'connecting'|'connected'|'disconnected'
+  hwType:    'idle',       // 'idle'|'sim'|'usb'|'xbee'
+  hwLabel:   'Not connected',
   hwPort:    null,
   t40:       'unknown',
   jetsonIp:  '',
@@ -1103,55 +1121,62 @@ const _ns = {
 // ── Hardware node definitions ─────────────────────────────────────────────
 // xr/yr: relative positions (fraction of canvas W/H)
 // sw: software stack lines shown inside the card
+//
+// Layout:
+//   Row 1: PC (browser+holOS local) ─── T4.1 ─── T4.0
+//   Row 2: Sim ── Jetson (holOS Server) ── ESP32-CAM
+//   Links: PC↔T4.1 (USB), T4.1↔T4.0 (UART), Jetson↔T4.1 (XBee),
+//          ESP32-CAM↔Jetson (WiFi), ESP32-CAM↔PC (WiFi), Sim↔PC (internal)
 const _NN_W = 148, _NN_H = 106, _NN_R = 10;
 
 const _nNodes = [
-  { id:'browser', label:'Browser / PC',   icon:'🖥',
-    role:'Dashboard client',
-    sw:['holOS UI (HTML+JS)'],
-    xr:0.08, yr:0.30 },
-  { id:'holos',   label:'holOS Server',   icon:'⚙',
-    role:'Simulation & bridge',
-    sw:['Flask · SocketIO', 'Python 3.11 · 60 Hz'],
-    xr:0.30, yr:0.30 },
-  { id:'t41',     label:'Teensy 4.1',     icon:'🎛',
+  { id:'pc',      label:'PC',              icon:'🖥',
+    role:'Browser + holOS Local',
+    sw:['holOS UI (HTML+JS)', 'Flask · SocketIO · Python'],
+    xr:0.12, yr:0.25 },
+  { id:'t41',     label:'Teensy 4.1',      icon:'🎛',
     role:'Main MCU — 600 MHz',
     sw:['TwinSystem firmware', 'PlatformIO · C++17'],
-    xr:0.60, yr:0.30 },
-  { id:'t40',     label:'Teensy 4.0',     icon:'🔧',
+    xr:0.50, yr:0.25 },
+  { id:'t40',     label:'Teensy 4.0',      icon:'🔧',
     role:'Secondary MCU',
     sw:['TwinActuator firmware', 'PlatformIO · C++17'],
-    xr:0.86, yr:0.30 },
-  { id:'jetson',  label:'NVIDIA Jetson',  icon:'🤖',
-    role:'Edge computer (offline)',
-    sw:['holOS Server (alt)', 'ROS2 Humble'],
-    xr:0.30, yr:0.72, offline:true },
-  { id:'espcam',  label:'ESP32-CAM',      icon:'📷',
-    role:'Vision module (offline)',
+    xr:0.88, yr:0.25 },
+  { id:'sim',     label:'Simulator',       icon:'🎮',
+    role:'Virtual robot',
+    sw:['SimBridge · Physics', 'VirtualTransport'],
+    xr:0.12, yr:0.75 },
+  { id:'jetson',  label:'NVIDIA Jetson',   icon:'🤖',
+    role:'Edge computer',
+    sw:['holOS Server', 'ROS2 Humble'],
+    xr:0.50, yr:0.75, offline:true },
+  { id:'espcam',  label:'ESP32-CAM',       icon:'📷',
+    role:'Vision module',
     sw:['TwinVision firmware', 'MJPEG stream'],
-    xr:0.60, yr:0.72, offline:true },
+    xr:0.88, yr:0.75, offline:true },
 ];
 
 // ── Link definitions ──────────────────────────────────────────────────────
 // proto: base protocol label
 // configurable: shows connect panel when clicked
 const _nLinks = [
-  { id:'ws',     from:'browser', to:'holos',  proto:'WebSocket · Socket.IO',  baud:null,    configurable:false },
-  { id:'hw',     from:'holos',   to:'t41',    proto:'USB-CDC',                baud:115200,  configurable:true  },
-  { id:'uart',   from:'t41',     to:'t40',    proto:'UART Intercom',          baud:31250,   configurable:false },
-  { id:'xbee',   from:'jetson',  to:'t41',    proto:'XBee 868 MHz',           baud:31250,   configurable:false, offline:true },
-  { id:'espcam', from:'espcam',  to:'t41',    proto:'Serial2 / WiFi',         baud:115200,  configurable:false, offline:true },
+  { id:'hw',      from:'pc',     to:'t41',     proto:'USB-CDC',               baud:115200,  configurable:true  },
+  { id:'uart',    from:'t41',    to:'t40',     proto:'UART Intercom',         baud:31250,   configurable:false },
+  { id:'sim',     from:'sim',    to:'pc',      proto:'VirtualTransport',      baud:null,    configurable:false },
+  { id:'xbee',    from:'jetson', to:'t41',     proto:'XBee 868 MHz',          baud:31250,   configurable:false, offline:true },
+  { id:'espcam_j',from:'espcam', to:'jetson',  proto:'WiFi · MJPEG',          baud:null,    configurable:false, offline:true },
+  { id:'espcam_p',from:'espcam', to:'pc',      proto:'WiFi · MJPEG',          baud:null,    configurable:false, offline:true },
 ];
 
 const _nsColors = {
-  connected:'#1a8c3c', active:'#1a8c3c', sim:'#2980b9',
+  connected:'#1a8c3c', active:'#1a8c3c', sim:'#2980b9', idle:'#64748b',
   connecting:'#d97706', disconnected:'#94a3b8', unknown:'#94a3b8',
-  offline:'#94a3b8', error:'#c0392b',
+  offline:'#94a3b8', error:'#c0392b', ok:'#1a8c3c',
 };
 const _nsLabels = {
-  connected:'Connected', active:'Active', sim:'Simulation',
+  connected:'Connected', active:'Active', sim:'Simulation', idle:'Idle',
   connecting:'Connecting…', disconnected:'Disconnected',
-  unknown:'Unknown', offline:'Offline',
+  unknown:'Unknown', offline:'Offline', ok:'OK', error:'Error',
 };
 
 let _netAnimFrame = null;
@@ -1183,20 +1208,25 @@ function _ncEdgePt(box, ang) {
 
 // ── Node / link status ────────────────────────────────────────────────────
 function _nsNodeStatus(nid) {
-  if (nid === 'browser') return _ns.ws === 'connected' ? 'connected' : 'disconnected';
-  if (nid === 'holos')   return 'active';
-  if (nid === 't41')     return _ns.hw;
-  if (nid === 't40')     return _ns.t40;
-  if (nid === 'jetson')  return 'offline';
+  if (nid === 'pc')      return _ns.ws === 'connected' ? 'connected' : 'disconnected';
+  if (nid === 'sim')     return _ns.hwType === 'sim' ? 'active' : 'disconnected';
+  if (nid === 't41') {
+    if (_ns.hw === 'connected') return 'connected';
+    if (_ns.hw === 'connecting') return 'connecting';
+    return 'disconnected';
+  }
+  if (nid === 't40')     return _ns.t40 === 'ok' ? 'connected' : (_ns.t40 === 'unknown' ? 'unknown' : 'error');
+  if (nid === 'jetson')  return _ns.hwType === 'xbee' ? 'connected' : 'offline';
   if (nid === 'espcam')  return 'offline';
   return 'unknown';
 }
 function _nsLinkStatus(lid) {
-  if (lid==='ws')     return _ns.ws;
-  if (lid==='hw')     return _ns.hw;
-  if (lid==='uart')   return _ns.t40;
-  if (lid==='xbee')   return 'offline';
-  if (lid==='espcam') return 'offline';
+  if (lid==='hw')       return (_ns.hwType==='usb') ? 'connected' : ((_ns.hwType==='xbee') ? 'disconnected' : 'disconnected');
+  if (lid==='uart')     return _ns.t40 === 'ok' ? 'connected' : (_ns.t40 === 'unknown' ? 'unknown' : 'disconnected');
+  if (lid==='sim')      return _ns.hwType === 'sim' ? 'active' : 'disconnected';
+  if (lid==='xbee')     return _ns.hwType === 'xbee' ? 'connected' : 'offline';
+  if (lid==='espcam_j') return 'offline';
+  if (lid==='espcam_p') return 'offline';
   return 'unknown';
 }
 function _nsLinkLabel(lid) {
@@ -1418,11 +1448,14 @@ function initNetwork() {
 
 // ── State update ──────────────────────────────────────────────────────────
 function updateNetworkFromState(state) {
+  const mode = state.connection_mode || 'idle';
   const newHw    = state.hw_connecting ? 'connecting' :
-                   state.hw_mode       ? 'connected'  : 'sim';
-  const newType  = state.hw_type || 'sim';
-  const newLabel = newHw==='sim'      ? 'Virtual (SIM)' :
-                   newType==='xbee'   ? 'XBee 868 MHz'  : 'USB Wired';
+                   (mode==='usb'||mode==='xbee') ? 'connected' :
+                   mode==='sim' ? 'sim' : 'idle';
+  const newType  = mode;
+  const newLabel = mode==='sim'       ? 'Virtual (SIM)' :
+                   mode==='xbee'      ? 'XBee 868 MHz'  :
+                   mode==='usb'       ? 'USB Wired'      : 'Not connected';
   const newPort  = state.hw_serial_port || null;
   const newT40   = state.hw_t40 || 'unknown';
   const newJetIp = state.jetson_ip || '';
@@ -1434,10 +1467,10 @@ function updateNetworkFromState(state) {
   if (!changed) return;
   // Refresh panel live values
   const badge = document.getElementById('np-hw-badge');
-  const mode  = document.getElementById('np-hw-mode');
+  const modeEl = document.getElementById('np-hw-mode');
   const btn   = document.getElementById('np-connect-btn');
   if (badge) { badge.textContent=_nsLabels[_ns.hw]||_ns.hw; badge.className='np-badge np-'+_ns.hw; }
-  if (mode)  mode.textContent = _ns.hwPort ? `${_ns.hwLabel} (${_ns.hwPort})` : _ns.hwLabel;
+  if (modeEl) modeEl.textContent = _ns.hwPort ? `${_ns.hwLabel} (${_ns.hwPort})` : _ns.hwLabel;
   if (btn)   btn.disabled = _ns.hw==='connecting';
   if (activeView==='network') {
     _ncDraw();
@@ -1454,14 +1487,14 @@ function _ncUpdatePanel(hit) {
   if (!hit) { title.textContent='Network'; body.innerHTML=_ncPanelOverview(); return; }
   if (hit.type==='link') {
     const lk=_nLinks.find(l=>l.id===hit.id)||{};
-    const titles={ws:'Browser ↔ holOS',hw:'holOS ↔ Teensy 4.1',uart:'T4.1 ↔ T4.0 Intercom',
-                  xbee:'Jetson ↔ T4.1 XBee',espcam:'ESP32-CAM ↔ T4.1'};
+    const titles={hw:'PC ↔ Teensy 4.1',uart:'T4.1 ↔ T4.0 Intercom',sim:'Simulator ↔ PC',
+                  xbee:'Jetson ↔ T4.1 XBee',espcam_j:'ESP32-CAM ↔ Jetson',espcam_p:'ESP32-CAM ↔ PC'};
     title.textContent=titles[hit.id]||hit.id;
-    if (hit.id==='hw') { body.innerHTML=_ncPanelHW(); _ncPanelHWInit(); }
-    else if (hit.id==='ws')     body.innerHTML=_ncPanelWS();
+    if (hit.id==='hw')          { body.innerHTML=_ncPanelHW(); _ncPanelHWInit(); }
+    else if (hit.id==='sim')    body.innerHTML=_ncPanelSimLink();
     else if (hit.id==='uart')   body.innerHTML=_ncPanelUART();
     else if (hit.id==='xbee')   body.innerHTML=_ncPanelXBeeLink();
-    else if (hit.id==='espcam') body.innerHTML=_ncPanelEspCamLink();
+    else if (hit.id==='espcam_j'||hit.id==='espcam_p') body.innerHTML=_ncPanelEspCamLink();
   } else {
     const nd=_ncNodeById(hit.id)||{id:hit.id,icon:'?',label:hit.id,sw:[]};
     title.textContent=nd.label;
@@ -1472,28 +1505,26 @@ function _ncUpdatePanel(hit) {
 
 function _ncPanelOverview() {
   const hwPortStr = _ns.hwPort ? ` (${_ns.hwPort})` : '';
-  return `<div class="np-hint">Click a hardware node or link to inspect and configure.</div>
+  const simSt = _ns.hwType==='sim' ? 'active' : 'disconnected';
+  const jetSt = _ns.hwType==='xbee' ? 'connected' : 'offline';
+  const t40St = _ns.t40==='ok' ? 'connected' : _ns.t40;
+  return `<div class="np-hint">Click a node or link to inspect and configure.</div>
     <div class="np-section">
-      <div class="np-row"><span>WebSocket</span><span class="np-badge np-${_ns.ws}">${_nsLabels[_ns.ws]||_ns.ws}</span></div>
-      <div class="np-row"><span>holOS ↔ Teensy 4.1</span><span class="np-badge np-${_ns.hw}">${_nsLabels[_ns.hw]||_ns.hw}</span></div>
-      <div class="np-row"><span>T4.1 ↔ T4.0 Intercom</span><span class="np-badge np-${_ns.t40}">${_nsLabels[_ns.t40]||_ns.t40}</span></div>
-      <div class="np-row"><span>Jetson</span><span class="np-badge np-offline">Offline</span></div>
+      <div class="np-row"><span>Connection</span><span class="np-badge np-${_ns.hw}">${_ns.hwLabel}${hwPortStr}</span></div>
+      <div class="np-row"><span>Simulator</span><span class="np-badge np-${simSt}">${simSt==='active'?'Active':'Off'}</span></div>
+      <div class="np-row"><span>PC ↔ T4.1</span><span class="np-badge np-${_ns.hw}">${_nsLabels[_ns.hw]||_ns.hw}</span></div>
+      <div class="np-row"><span>T4.1 ↔ T4.0</span><span class="np-badge np-${t40St}">${_nsLabels[t40St]||t40St}</span></div>
+      <div class="np-row"><span>Jetson</span><span class="np-badge np-${jetSt}">${jetSt==='connected'?'Connected':'Offline'}</span></div>
       <div class="np-row"><span>ESP32-CAM</span><span class="np-badge np-offline">Offline</span></div>
     </div>
     <div class="np-section">
-      <div class="np-row"><span>Bridge mode</span><span>${_ns.hwLabel}${hwPortStr}</span></div>
       <div class="np-row"><span>Server</span><span>${window.location.host}</span></div>
       ${_ns.jetsonIp ? `<div class="np-row"><span>Jetson IP</span><span>${_ns.jetsonIp}</span></div>` : ''}
     </div>`;
 }
 
 function _ncPanelWS() {
-  return `<div class="np-section">
-      <div class="np-row"><span>Status</span><span class="np-badge np-${_ns.ws}">${_nsLabels[_ns.ws]||_ns.ws}</span></div>
-      <div class="np-row"><span>Protocol</span><span>Socket.IO (WebSocket)</span></div>
-      <div class="np-row"><span>Server</span><span>${window.location.host}</span></div>
-    </div>
-    <div class="np-hint">Socket.IO reconnects automatically. If stuck, reload the page.</div>`;
+  return `<div class="np-hint">WebSocket link no longer shown — browser and holOS server are both on the PC node.</div>`;
 }
 
 function _ncPanelHW() {
@@ -1514,12 +1545,16 @@ function _ncPanelHW() {
         <option value="xbee">XBee / Jetson — 31 250 bps</option>
       </select>
       <div style="display:flex;gap:6px">
-        <button id="np-connect-btn" class="btn green btn-sm" style="flex:1" onclick="_ncDoConnect()">Connect</button>
+        <button id="np-connect-btn" class="btn green btn-sm" style="flex:1" onclick="_ncDoConnect()">Connect HW</button>
         <button class="btn red btn-sm" style="flex:1" onclick="serialDisconnect()">Disconnect</button>
+      </div>
+      <div style="margin-top:8px;padding-top:8px;border-top:1px solid rgba(255,255,255,.1)">
+        <button class="btn btn-sm" style="width:100%;background:#6366f1;color:#fff" onclick="connectSim()">▶ Start Simulator</button>
       </div>
     </div>
     <div class="np-hint"><b>USB Wired:</b> T4.1 connects directly over USB-CDC @ 115 200 bps.<br>
-      <b>XBee / Jetson:</b> holOS runs on the Jetson; T4.1 communicates via XBee radio @ 31 250 bps.</div>`;
+      <b>XBee / Jetson:</b> holOS runs on the Jetson; T4.1 communicates via XBee radio @ 31 250 bps.<br>
+      <b>Simulator:</b> Virtual robot with physics — no hardware needed.</div>`;
 }
 
 function _ncPanelHWInit() {
@@ -1556,6 +1591,19 @@ function _ncPanelUART() {
       <div class="np-row"><span>Direction</span><span>Bidirectional</span></div>
     </div>
     <div class="np-hint">T4.0 status is reported by T4.1 firmware via TEL:t40 telemetry when connected.</div>`;
+}
+
+function _ncPanelSimLink() {
+  const active = _ns.hwType === 'sim';
+  return `<div class="np-section">
+      <div class="np-row"><span>Status</span><span class="np-badge np-${active?'active':'disconnected'}">${active?'Active':'Inactive'}</span></div>
+      <div class="np-row"><span>Type</span><span>In-process VirtualTransport</span></div>
+      <div class="np-row"><span>Physics</span><span>60 Hz loop (SimBridge)</span></div>
+    </div>
+    <div class="np-section">
+      <button class="btn btn-sm" style="width:100%;background:#6366f1;color:#fff" onclick="connectSim()">▶ Start Simulator</button>
+    </div>
+    <div class="np-hint">The simulator runs the full robot physics locally: motion, pathfinding, occupancy mapping, and game objects.</div>`;
 }
 
 function _ncPanelXBeeLink() {

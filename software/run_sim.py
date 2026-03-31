@@ -82,6 +82,13 @@ test_runner = TestRunner(transport, bridge, robot, occupancy)
 # of the VirtualTransport.  The physics simulation continues running for map
 # visualisation, but robot state is driven by real telemetry.
 
+# ── Connection mode ───────────────────────────────────────────────────────────
+# 'idle' — nothing connected, frozen state (default at startup)
+# 'sim'  — simulator running (user explicitly chose Sim)
+# 'usb'  — hardware connected via USB-CDC
+# 'xbee' — hardware connected via XBee
+_connection_mode    = 'idle'
+
 _hw_transport       = None   # WiredTransport / XBeeTransport instance when connected
 _hw_brain           = None   # Brain wired to real hardware
 _hw_test_runner     = None   # TestRunner for real hardware tests
@@ -156,13 +163,13 @@ sim_state = {
 _PHYSICS_DT = 1.0 / 60.0
 
 def _physics_loop():
-    """60 Hz state broadcaster.  When HW is connected, sim is disabled."""
+    """60 Hz state broadcaster.  Only ticks sim when in 'sim' mode."""
     while True:
         t0 = time.perf_counter()
-        # Only tick the simulator when there's no real hardware connection
-        # When hw is connected, state comes from telemetry, not sim
-        hw_on = _hw_transport is not None and _hw_transport.is_connected
-        if not hw_on:
+        # Only tick the simulator in explicit 'sim' mode
+        # In 'idle' mode: frozen (no physics, but still broadcast state)
+        # In 'usb'/'xbee' mode: state comes from real telemetry
+        if _connection_mode == 'sim':
             bridge.tick(_PHYSICS_DT)
         socketio.emit('state', _build_state())
         elapsed = time.perf_counter() - t0
@@ -174,7 +181,8 @@ def _physics_loop():
 # ── State serialization ───────────────────────────────────────────────────────
 
 def _build_state() -> dict:
-    hw_on = _hw_transport is not None and _hw_transport.is_connected
+    hw_on = _connection_mode in ('usb', 'xbee')
+    sim_on = _connection_mode == 'sim'
 
     # ── Parse live hardware telemetry (when connected) ───────────────────────
     hw_motion_state = 'IDLE'
@@ -196,14 +204,11 @@ def _build_state() -> dict:
         try: hw_chrono_elapsed = float(_hw_tel_data['chrono'])
         except ValueError: pass
 
-    # When hardware is connected, disable the simulator completely:
-    # - robot.pos/theta come from real telemetry via _on_pos callback
-    # - path planning, occupancy mapping, game state all cleared
-    # - return only real hardware state
-    path_pts = [] if hw_on else [[p.x, p.y] for p in bridge.current_path()]
-    occ_list = [] if hw_on else occupancy.to_list()
-    dyn_obs  = [] if hw_on else [[o.x, o.y] for o in occupancy.dynamic_obstacles]
-    objs     = [] if hw_on else game_objs.to_list()
+    # Sim data only available in 'sim' mode
+    path_pts = [[p.x, p.y] for p in bridge.current_path()] if sim_on else []
+    occ_list = occupancy.to_list()                          if sim_on else []
+    dyn_obs  = [[o.x, o.y] for o in occupancy.dynamic_obstacles] if sim_on else []
+    objs     = game_objs.to_list()                          if sim_on else []
 
     return {
         'robot':     robot.to_dict(),
@@ -211,34 +216,34 @@ def _build_state() -> dict:
         'occupancy': occ_list,
         'dyn_obs':   dyn_obs,
         'game_objs': objs,
-        # When hardware is connected, override sim values with real telemetry
         'motion': {
-            'state':    hw_motion_state if hw_on else bridge.motion_state(),
-            'feedrate': hw_motion_feed  if hw_on else brain.motion.get_feedrate(),
+            'state':    hw_motion_state if hw_on else (bridge.motion_state() if sim_on else 'IDLE'),
+            'feedrate': hw_motion_feed  if hw_on else (brain.motion.get_feedrate() if sim_on else 1.0),
         },
         'safety': {
             'enabled':  True if hw_on else sim_state['features']['safety'],
-            'detected': hw_safety_detected if hw_on else bridge.safety_detected(),
+            'detected': hw_safety_detected if hw_on else (bridge.safety_detected() if sim_on else False),
         },
         'chrono': {
-            'elapsed': hw_chrono_elapsed if hw_on else bridge.chrono_elapsed(),
+            'elapsed': hw_chrono_elapsed if hw_on else (bridge.chrono_elapsed() if sim_on else 0.0),
             'left':    max(0, 100.0 - hw_chrono_elapsed) if hw_on
-                       else max(0, 100.0 - bridge.chrono_elapsed()),
-            'running': hw_on or bridge.chrono_running(),
+                       else max(0, 100.0 - bridge.chrono_elapsed()) if sim_on else 100.0,
+            'running': hw_on or (bridge.chrono_running() if sim_on else False),
         },
         'score':    sim_state['score'],
         'team':     sim_state['team'],
         'features': sim_state['features'],
         'mode':     sim_state['mode'],
         'log':      _active_brain().get_log(30),
-        # ── Hardware connection metadata ──────────────────────────────────────
-        'hw_mode':       hw_on,
-        'hw_connecting': _hw_connecting,
-        'hw_type':       (getattr(_hw_transport, 'transport_type', 'sim') if hw_on else 'sim'),
-        'hw_serial_port': _hw_serial_port if hw_on else None,
-        'hw_tel_mask':   dict(_hw_tel_mask),
-        'hw_t40':        (_hw_tel_data.get('t40') or 'unknown') if hw_on else 'unknown',
-        'jetson_ip':     _jetson_config.get('ip', ''),
+        # ── Connection metadata ──────────────────────────────────────────────
+        'connection_mode': _connection_mode,     # idle | sim | usb | xbee
+        'hw_mode':         hw_on,
+        'hw_connecting':   _hw_connecting,
+        'hw_type':         (getattr(_hw_transport, 'transport_type', 'sim') if hw_on else 'sim'),
+        'hw_serial_port':  _hw_serial_port if hw_on else None,
+        'hw_tel_mask':     dict(_hw_tel_mask),
+        'hw_t40':          (_hw_tel_data.get('t40') or 'unknown') if hw_on else 'unknown',
+        'jetson_ip':       _jetson_config.get('ip', ''),
     }
 
 
@@ -535,7 +540,7 @@ def on_serial_connect(data):
 
     def _do_connect():
         global _hw_transport, _hw_brain, _hw_connecting, _hw_serial_port, _hw_serial_mode
-        global _hw_tel_data
+        global _hw_tel_data, _connection_mode
         t = None
         try:
             from shared.config import USB_DIRECT_BAUDRATE, XBEE_BAUDRATE
@@ -611,6 +616,18 @@ def on_serial_connect(data):
                         pass
                 t.subscribe_telemetry('mask', _on_mask)
 
+                # ── Raw console output (help, errors, etc.) ──────────────
+                def _on_console(line):
+                    # Forward unframed Console::println() output to terminal UI
+                    socketio.emit('terminal_rx', {
+                        'cmd': '', 'ok': True,
+                        'res': line, 'mode': '[FW]'
+                    })
+                t.subscribe_telemetry('_console', _on_console)
+
+                # Set connection mode based on transport type
+                _connection_mode = 'usb' if _hw_serial_mode == 'wired' else 'xbee'
+
                 socketio.emit('serial_status', {
                     'ok': True, 'msg': f'Connected — {transport_label}'
                 })
@@ -643,6 +660,7 @@ def on_serial_connect(data):
 @socketio.on('serial_disconnect')
 def on_serial_disconnect():
     global _hw_transport, _hw_brain, _hw_test_runner, _hw_serial_port, _hw_tel_data
+    global _connection_mode
     if _hw_transport is not None:
         try:
             _hw_transport.disconnect()
@@ -654,7 +672,21 @@ def on_serial_disconnect():
         _hw_serial_port = None
         _hw_tel_data    = {k: None for k in _hw_tel_data}
         brain.log('[HW] Disconnected')
-    emit('serial_status', {'ok': False, 'msg': 'Disconnected'})
+    # Go to idle — do NOT fall back to sim automatically
+    _connection_mode = 'idle'
+    emit('serial_status', {'ok': False, 'msg': 'Disconnected — idle'})
+
+
+@socketio.on('connect_sim')
+def on_connect_sim():
+    """Explicitly connect to the simulator."""
+    global _connection_mode
+    # Disconnect hardware if any
+    if _hw_transport is not None:
+        on_serial_disconnect()
+    _connection_mode = 'sim'
+    brain.log('[SIM] Simulator started')
+    emit('serial_status', {'ok': True, 'msg': 'Simulator active'})
 
 
 # ── Terminal & actuator events ────────────────────────────────────────────────
