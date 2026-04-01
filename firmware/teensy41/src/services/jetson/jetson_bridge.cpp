@@ -5,7 +5,11 @@
 #include "services/motion/motion.h"
 #include "services/safety/safety.h"
 #include "services/chrono/chrono.h"
+#include "services/lidar/lidar.h"
 #include "services/lidar/occupancy.h"
+#include "services/actuators/actuators.h"
+#include "services/vision/vision.h"
+#include "services/localisation/localisation.h"
 #include "services/intercom/intercom.h"
 #include "services/intercom/comUtilities.h"
 #include "config/settings.h"
@@ -59,21 +63,29 @@ void JetsonBridge::disable() {
 void JetsonBridge::run() {
     if (!enabled()) return;
 
+    // PR-1: Flush any pending command reply (reply queue from request.cpp)
+    Request::flushPendingReply();
+
+    // PR-2: Retransmit DONE event until host acknowledges
+    if (m_donePending && millis() - m_doneRetryMs > DONE_RETRY_MS) {
+        _pushFrame(m_lastDoneBuf);
+        m_doneRetryMs = millis();
+    }
+
     // Always poll BRIDGE_SERIAL — if USB is connected it reads frames,
     // if nothing is connected it costs nothing (available() returns 0).
     _readBridgeSerial();
 
     _checkWatchdog();
 
-    // Drain queued telemetry periodically when USB buffer has space
-    if (millis() - m_lastTelDrainMs > TEL_DRAIN_PERIOD_MS) {
-        while (!_telQueue.empty() && BRIDGE_SERIAL.availableForWrite() >= 128) {
-            String frame = _telQueue.front();
-            _telQueue.pop_front();
-            BRIDGE_SERIAL.print(frame);
-            BRIDGE_SERIAL.write('\n');
-        }
-        m_lastTelDrainMs = millis();
+    // JB-1: Drain ring buffer every run() call (was: every 10ms timer)
+    while (_tqCount > 0) {
+        int flen = (int)strlen(_tqPool[_tqHead]);
+        if (BRIDGE_SERIAL.availableForWrite() < flen + 1) break;
+        BRIDGE_SERIAL.write((const uint8_t*)_tqPool[_tqHead], flen);
+        BRIDGE_SERIAL.write('\n');
+        _tqHead = (_tqHead + 1) % TQUEUE_SLOTS;
+        --_tqCount;
     }
 
     // Push telemetry at fixed rate
@@ -101,33 +113,89 @@ void JetsonBridge::run() {
 // ─────────────────────────────────────────────────────────────────────────────
 
 void JetsonBridge::handleRequest(Request& req) {
-    const String& cmd = req.getContent();
+    // IC-3: Create one String from content for dispatch — this is acceptable since it's
+    // only one allocation per incoming command (not per telemetry tick).
+    const String cmd = String(req.getContent());
     // NOTE: Console::trace intentionally omitted here — this is a hot path
     // called at up to 10 Hz.  Each trace call allocates a temporary String on
     // the Arduino heap which, over time, fragments free memory and triggers the
     // watchdog.  Use Console::info selectively only for state-change events.
 
-    // ── Heartbeat ─────────────────────────────────────────────────────────────
-    if (cmd == "hb") {
+    // ── Heartbeat (PR-3: tunable timeout via hb(ms)) ──────────────────────
+    if (cmd == "hb" || cmd.startsWith("hb(")) {
         m_lastHeartbeatMs = millis();
+        if (cmd.startsWith("hb(")) {
+            // PR-3: host declares its heartbeat tolerance
+            unsigned long ms = (unsigned long)cmd.substring(3, cmd.length() - 1).toInt();
+            if (ms >= 1000 && ms <= 30000) m_heartbeatTimeoutMs = ms;
+        }
         if (!m_jetsonConnected) {
             m_jetsonConnected = true;
             m_inFallback      = false;
-            Console::info("JetsonBridge") << "Jetson connected." << Console::endl;
+            Console::info("JetsonBridge") << "Jetson connected (timeout=" << (int)m_heartbeatTimeoutMs << "ms)" << Console::endl;
         }
         req.reply("ok");
         return;
     }
 
+    // ── Acknowledge DONE event (PR-2) ─────────────────────────────────────────
+    if (cmd == "ack_done") {
+        m_donePending = false;
+        req.reply("ok");
+        return;
+    }
+
+    // ── State sync — call after any reconnection (PR-4) ───────────────────────
+    if (cmd == "sync") {
+        Vec3        pos    = motion.estimatedPosition();
+        const char* mstate = m_donePending
+                             ? (m_lastDoneWasOk ? "DONE_OK" : "DONE_FAIL")
+                             : (motion.isMoving() ? "RUNNING" : "IDLE");
+        char buf[128];
+        snprintf(buf, sizeof(buf), "%s,%.1f,%.1f,%.2f", mstate, pos.x, pos.y, pos.c);
+        req.reply(buf);
+        return;
+    }
+
+    // ── Full service health snapshot ──────────────────────────────────────────
+    // Returns compact key=val pairs for all 13 services + runtime flags.
+    // Format: "mo=1,mv=0,sa=0,ob=0,ch=0,el=0,ac=1,li=1,ic=1,ic_ok=1,jt=1,jt_ok=1,vi=0,lo=1"
+    if (cmd == "health") {
+        char buf[Request::CONTENT_MAX];
+        snprintf(buf, sizeof(buf),
+            "mo=%d,mv=%d,sa=%d,ob=%d,ch=%d,el=%ld,"
+            "ac=%d,li=%d,ic=%d,ic_ok=%d,jt=%d,jt_ok=%d,vi=%d,lo=%d",
+            motion.enabled()              ? 1 : 0,
+            motion.isMoving()             ? 1 : 0,
+            safety.enabled()              ? 1 : 0,
+            safety.obstacleDetected()     ? 1 : 0,
+            chrono.enabled()              ? 1 : 0,
+            chrono.getElapsedTime(),
+            actuators.enabled()           ? 1 : 0,
+            lidar.enabled()               ? 1 : 0,
+            intercom.enabled()            ? 1 : 0,
+            intercom.isConnected()        ? 1 : 0,
+            jetsonBridge.enabled()        ? 1 : 0,
+            jetsonBridge.jetsonConnected()? 1 : 0,
+            vision.enabled()              ? 1 : 0,
+            localisation.enabled()        ? 1 : 0);
+        req.reply(buf);
+        return;
+    }
+
     // ── Telemetry snapshot ────────────────────────────────────────────────────
     if (cmd == "tel") {
-        req.reply(_buildPositionTel());
+        char tel_buf[64];
+        Vec3 pos = motion.estimatedPosition();
+        snprintf(tel_buf, sizeof(tel_buf), "x=%.1f,y=%.1f,theta=%.4f",
+                 pos.x, pos.y, pos.c);
+        req.reply(tel_buf);
         return;
     }
 
     // ── Occupancy map ─────────────────────────────────────────────────────────
     if (cmd == "occ") {
-        req.reply(occupancy.compress());
+        req.reply(occupancy.compress().c_str());
         return;
     }
 
@@ -219,17 +287,21 @@ void JetsonBridge::_executeCommand(const String& cmd, Request& req) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 void JetsonBridge::_replyMotionDone(bool success) {
-    // Push TEL:motion telemetry so Jetson's transport layer unblocks
-    String tel = "TEL:motion:DONE:";
-    tel += success ? "ok" : "fail";
-
-    // Include last move stats for remote debug visibility
     Motion::MoveStats stats = motion.getLastStats();
-    tel += ",dur=";   tel += String(stats.durationMs);
-    tel += ",dist=";  tel += String(stats.traveledMm, 1);
-    tel += ",stall="; tel += (stats.stalled ? "1" : "0");
 
-    _pushFrame(tel);
+    // PR-2: build into persistent buffer for retransmit until ack_done
+    snprintf(m_lastDoneBuf, sizeof(m_lastDoneBuf),
+        "TEL:motion:DONE:%s,dur=%lu,dist=%.1f,stall=%d",
+        success ? "ok" : "fail",
+        (unsigned long)stats.durationMs,
+        stats.traveledMm,
+        stats.stalled ? 1 : 0);
+
+    m_donePending   = true;
+    m_lastDoneWasOk = success;
+    m_doneRetryMs   = millis();
+
+    _pushFrame(m_lastDoneBuf);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -239,7 +311,7 @@ void JetsonBridge::_replyMotionDone(bool success) {
 void JetsonBridge::_checkWatchdog() {
     if (!m_jetsonConnected) return;
 
-    if (millis() - m_lastHeartbeatMs > HEARTBEAT_TIMEOUT_MS) {
+    if (millis() - m_lastHeartbeatMs > m_heartbeatTimeoutMs) {
         Console::warn("JetsonBridge")
             << "Jetson heartbeat timeout! Activating fallback." << Console::endl;
         m_jetsonConnected = false;
@@ -264,85 +336,81 @@ bool JetsonBridge::jetsonConnected() const {
 // ─────────────────────────────────────────────────────────────────────────────
 
 void JetsonBridge::pushTelemetry() {
-    if (m_telPos)    _pushFrame("TEL:pos:"    + _buildPositionTel());
+    char buf[128];
 
-    // Enriched motion telemetry: state + target + feedrate + stall info
-    if (m_telMotion) {
-        String motionTel = "TEL:motion:";
-        if (motion.isMoving()) {
-            motionTel += "RUNNING";
-            Vec3 tgt = motion.getAbsTarget();
-            motionTel += ",tx=";  motionTel += String(tgt.x, 1);
-            motionTel += ",ty=";  motionTel += String(tgt.y, 1);
-            motionTel += ",dist="; motionTel += String(motion.getTargetDistance(), 1);
-        } else {
-            motionTel += "IDLE";
-        }
-        motionTel += ",feed="; motionTel += String(motion.getFeedrate(), 2);
-        _pushFrame(motionTel);
+    if (m_telPos) {
+        Vec3 pos = motion.estimatedPosition();
+        snprintf(buf, sizeof(buf), "TEL:pos:x=%.1f,y=%.1f,theta=%.4f",
+            pos.x, pos.y, pos.c);
+        _pushFrame(buf);
     }
 
-    if (m_telSafety) _pushFrame(String("TEL:safety:") + (safety.obstacleDetected() ? "1" : "0"));
-    if (m_telChrono) _pushFrame("TEL:chrono:" + String(chrono.getElapsedTime()));
+    if (m_telMotion) {
+        if (motion.isMoving()) {
+            Vec3 tgt = motion.getAbsTarget();
+            snprintf(buf, sizeof(buf), "TEL:motion:RUNNING,tx=%.1f,ty=%.1f,dist=%.1f,feed=%.2f",
+                tgt.x, tgt.y, motion.getTargetDistance(), motion.getFeedrate());
+        } else {
+            snprintf(buf, sizeof(buf), "TEL:motion:IDLE,feed=%.2f", motion.getFeedrate());
+        }
+        _pushFrame(buf);
+    }
 
-    // FW-006: only push mask when it changed
+    if (m_telSafety) {
+        snprintf(buf, sizeof(buf), "TEL:safety:%d", safety.obstacleDetected() ? 1 : 0);
+        _pushFrame(buf);
+    }
+
+    if (m_telChrono) {
+        snprintf(buf, sizeof(buf), "TEL:chrono:%lu", (unsigned long)chrono.getElapsedTime());
+        _pushFrame(buf);
+    }
+
+    // FW-006: only push mask when dirty
     if (m_maskDirty) {
-        String mask = "TEL:mask:pos=";
-        mask += (m_telPos    ? "1" : "0"); mask += ",motion=";
-        mask += (m_telMotion ? "1" : "0"); mask += ",safety=";
-        mask += (m_telSafety ? "1" : "0"); mask += ",chrono=";
-        mask += (m_telChrono ? "1" : "0"); mask += ",occ=";
-        mask += (m_telOcc    ? "1" : "0");
-        _pushFrame(mask);
+        snprintf(buf, sizeof(buf), "TEL:mask:pos=%d,motion=%d,safety=%d,chrono=%d,occ=%d",
+            m_telPos ? 1 : 0, m_telMotion ? 1 : 0,
+            m_telSafety ? 1 : 0, m_telChrono ? 1 : 0, m_telOcc ? 1 : 0);
+        _pushFrame(buf);
         m_maskDirty = false;
     }
 }
 
 void JetsonBridge::pushOccupancy() {
     if (!m_telOcc) return;
+    // occupancy.compress() returns a String — one unavoidable alloc until T4.0 API changes
     String compressed = occupancy.compress();
-    _pushFrame("TEL:occ:" + compressed);
+    char buf[128];
+    snprintf(buf, sizeof(buf), "TEL:occ:%s", compressed.c_str());
+    _pushFrame(buf);
 }
 
-String JetsonBridge::_buildPositionTel() const {
-    Vec3 pos = motion.estimatedPosition();
-    String s = "x=";
-    s += String(pos.x, 1);
-    s += ",y=";
-    s += String(pos.y, 1);
-    s += ",theta=";
-    s += String(pos.c, 4);
-    return s;
-}
-
-void JetsonBridge::_pushFrame(const String& msg) {
-    // Append CRC8 to match the wire protocol Python expects:
-    //   TEL:pos:x=100,y=200|<crc>\n
-    // Without CRC, parse_frame() in protocol.py rejects the frame.
-    uint8_t crc = CRC8.smbus((const uint8_t*)msg.c_str(), msg.length());
-    String framed = msg + "|" + String((int)crc);
+void JetsonBridge::_pushFrame(const char* msg) {
+    // Compute CRC and build framed message into a stack buffer
+    char framed[128];
+    uint8_t crc = CRC8.smbus((const uint8_t*)msg, strlen(msg));
+    int n = snprintf(framed, sizeof(framed), "%s|%d", msg, (int)crc);
+    if (n <= 0 || n >= (int)sizeof(framed)) return;  // truncated — drop
 
     if (m_bridgeSource == BridgeSource::USB) {
-        // Guard against a full TX FIFO: a blocking write here would stall the
-        // main loop for milliseconds and eventually trip the hardware WDT.
-        // If buffer is full, queue the frame instead of silently dropping it.
-        int needed = (int)(framed.length() + 1);  // +1 for '\n'
+        int needed = n + 1;  // +1 for '\n'
         if (BRIDGE_SERIAL.availableForWrite() >= needed) {
-            BRIDGE_SERIAL.print(framed);
+            BRIDGE_SERIAL.write((const uint8_t*)framed, n);
             BRIDGE_SERIAL.write('\n');
         } else {
-            // Queue the fully-framed message for retry when buffer is available
-            if (_telQueue.size() < TEL_QUEUE_MAX) {
-                _telQueue.push_back(framed);
+            // JB-1: push to ring buffer — drop oldest if full
+            strncpy(_tqPool[_tqTail], framed, TQUEUE_FRAME - 1);
+            _tqPool[_tqTail][TQUEUE_FRAME - 1] = '\0';
+            _tqTail = (_tqTail + 1) % TQUEUE_SLOTS;
+            if (_tqCount < TQUEUE_SLOTS) {
+                ++_tqCount;
             } else {
-                // Drop oldest frame to make room (sacrifice old data for fresh)
-                _telQueue.pop_front();
-                _telQueue.push_back(framed);
+                // Full: advance head (drop oldest)
+                _tqHead = (_tqHead + 1) % TQUEUE_SLOTS;
             }
         }
     } else {
-        // XBee / Jetson path — relay over Intercom (Serial1 @ 31250).
-        // Intercom has its own framing, no CRC needed here.
+        // XBee / Intercom path — Intercom adds its own framing
         intercom.sendMessage(msg);
     }
 }
@@ -402,7 +470,7 @@ void JetsonBridge::_readBridgeSerial() {
                     *crcSep = '|';
 
                     m_bridgeSource = BridgeSource::USB;
-                    Request req(id, content, BridgeSource::USB);
+                    Request req(id, content.c_str(), BridgeSource::USB);
                     handleRequest(req);
                 } else {
                     Console::warn("JetsonBridge") << "Bad CRC on bridge line" << Console::endl;
@@ -436,10 +504,10 @@ void JetsonBridge::triggerFallback(FallbackID id) {
     m_inFallback = true;
     Console::warn("JetsonBridge") << "Fallback triggered: " << idx << Console::endl;
 
-    // Emit telemetry so remote side sees the fallback event
-    String tel = "TEL:error:fallback=";
-    tel += String(idx);
-    _pushFrame(tel);
+    // Emit telemetry so remote side sees the fallback event (JB-2: no String alloc)
+    char buf[48];
+    snprintf(buf, sizeof(buf), "TEL:error:fallback=%d", (int)idx);
+    _pushFrame(buf);
 
     if (idx < 5 && m_fallbacks[idx]) {
         m_fallbacks[idx]();

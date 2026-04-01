@@ -169,9 +169,11 @@ class XBeeTransport(Transport):
         if response.startswith("err"):
             return (False, response)
 
-        # For motion commands, additionally wait for motion DONE telemetry
+        # For motion commands, additionally wait for motion DONE telemetry.
+        # Use the caller-specified timeout (minimum 30 s so strategy code with
+        # the default 5 s command timeout still has a reasonable motion window).
         if is_motion_cmd and self._waiting_motion:
-            motion_timeout = max(timeout_ms / 1000.0, 60.0)
+            motion_timeout = max(timeout_ms / 1000.0, 30.0)
             finished = self._motion_done_evt.wait(timeout=motion_timeout)
             self._waiting_motion = False
             if not finished:
@@ -223,6 +225,15 @@ class XBeeTransport(Transport):
                     print(f"[XBeeTransport] Reader error: {e}")
                 break
 
+        # If the loop exited while we were still supposed to be running,
+        # it means the serial port dropped unexpectedly (USB unplugged, firmware
+        # reset, etc.).  Signal disconnection so the server can update the UI.
+        if self._running and self._connected:
+            print("[XBeeTransport] Reader loop exited unexpectedly — signaling disconnect")
+            self._cleanup()
+            if self._on_disconnect:
+                self._on_disconnect()
+
     def _process_line(self, line: str) -> None:
         kind, id_or_type, data = parse_frame(line)
 
@@ -256,9 +267,11 @@ class XBeeTransport(Transport):
         if kind == 'tel':
             ttype = id_or_type
             print(f"[XBeeTransport] Received telemetry type={ttype} data={data}")
-            # Handle motion done internally
+            # Handle motion done internally.
+            # Firmware sends "DONE:ok,dur=…,dist=…,stall=0" (with stats appended),
+            # so we must use startswith(), NOT ==, to detect a successful DONE.
             if ttype == 'motion' and data.startswith('DONE:'):
-                success = data == 'DONE:ok'
+                success = data.startswith('DONE:ok')
                 if self._waiting_motion:
                     self._motion_done_ok = success
                     self._motion_done_evt.set()

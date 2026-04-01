@@ -47,6 +47,10 @@ from sim.physics   import RobotPhysics
 from sim.world     import OccupancyGrid, Pathfinder, GameObjects
 from sim.bridge    import SimBridge
 from sim.tests     import TestRunner, SUITES, ALL_TESTS
+from tests.hardware_tests import (
+    HardwareTestRunner,
+    SUITES as HW_SUITES,
+)
 from transport.virtual import VirtualTransport
 from brain import Brain
 
@@ -95,6 +99,18 @@ _hw_test_runner     = None   # TestRunner for real hardware tests
 _hw_connecting      = False  # True while a connection attempt is in progress
 _hw_serial_port     = None   # Serial port in use (e.g. 'COM6' or '/dev/ttyACM0')
 _hw_serial_mode     = 'wired' # 'wired' | 'xbee'
+
+# ── Interactive test prompt — web-safe alternative to input() ────────────────
+# The test thread calls _web_prompt(msg), which emits 'test_prompt' to the
+# browser and blocks on this Event until the user clicks Continue (which
+# triggers a 'test_prompt_ack' SocketIO event that sets the event).
+_prompt_evt = threading.Event()
+
+def _web_prompt(msg: str) -> None:
+    """Emit a prompt to the browser, block until the user acknowledges it."""
+    _prompt_evt.clear()
+    socketio.emit('test_prompt', {'msg': msg})
+    _prompt_evt.wait(timeout=120.0)   # user has 2 minutes to confirm
 
 # Telemetry channel mask — updated live from TEL:mask: frames
 _hw_tel_mask = {
@@ -565,8 +581,8 @@ def on_serial_connect(data):
 
                 _hw_brain = Brain(t)
                 _hw_brain.load_strategy()
-                # Also create a test runner for the hardware
-                _hw_test_runner = TestRunner(t, _hw_brain, robot, occupancy)
+                # Hardware test runner — uses real transport, web-safe prompt
+                _hw_test_runner = HardwareTestRunner(t, prompt_fn=_web_prompt)
 
                 # ── TEL:pos → update robot position (used for map display) ────
                 def _on_pos(data_str):
@@ -628,9 +644,32 @@ def on_serial_connect(data):
                 # Set connection mode based on transport type
                 _connection_mode = 'usb' if _hw_serial_mode == 'wired' else 'xbee'
 
+                # ── Unexpected disconnect handler ─────────────────────────────
+                # Called from the reader thread when the serial port drops
+                # while we're still supposed to be connected (USB unplugged,
+                # firmware reset, etc.).  NOT called after an explicit
+                # serial_disconnect event.
+                def _on_hw_disconnect():
+                    global _hw_transport, _hw_brain, _hw_test_runner
+                    global _hw_serial_port, _hw_tel_data, _connection_mode
+                    _hw_transport   = None
+                    _hw_brain       = None
+                    _hw_test_runner = None
+                    _hw_serial_port = None
+                    _hw_tel_data    = {k: None for k in _hw_tel_data}
+                    _connection_mode = 'idle'
+                    socketio.emit('serial_status', {
+                        'ok': False, 'msg': '⚠ Connexion perdue — reconnectez le robot'
+                    })
+                    socketio.emit('tests_catalog_changed', {'mode': 'idle'})
+                    brain.log('[HW] Connexion perdue (déconnexion inattendue)')
+
+                t.on_disconnect(_on_hw_disconnect)
+
                 socketio.emit('serial_status', {
                     'ok': True, 'msg': f'Connected — {transport_label}'
                 })
+                socketio.emit('tests_catalog_changed', {'mode': _connection_mode})
                 brain.log(f'[HW] Connected — {transport_label}')
             else:
                 _hw_transport   = None
@@ -675,6 +714,7 @@ def on_serial_disconnect():
     # Go to idle — do NOT fall back to sim automatically
     _connection_mode = 'idle'
     emit('serial_status', {'ok': False, 'msg': 'Disconnected — idle'})
+    emit('tests_catalog_changed', {'mode': 'idle'})
 
 
 @socketio.on('connect_sim')
@@ -761,15 +801,31 @@ def on_stop_sequence():
 
 @app.route('/api/tests/catalog')
 def api_tests_catalog():
-    """Return the full test catalog (suites + tests)."""
+    """Return the test catalog appropriate for the current connection mode.
+
+    Hardware connected (usb/xbee) → hardware test suites
+    Simulator (sim)               → sim test suites
+    Idle (no connection)          → empty dict (tests not available)
+    """
+    if _connection_mode == 'idle':
+        return jsonify({})   # no tests when nothing is connected
+
+    is_hw = _hw_transport is not None and _hw_transport.is_connected
+    catalog = HW_SUITES if is_hw else SUITES
     return jsonify({
         sid: {
             'label': s['label'],
-            'icon':  s['icon'],
+            'icon':  s.get('icon', '⚙'),
             'tests': s['tests'],
         }
-        for sid, s in SUITES.items()
+        for sid, s in catalog.items()
     })
+
+
+@socketio.on('test_prompt_ack')
+def on_test_prompt_ack():
+    """Browser clicked Continue on an interactive test prompt."""
+    _prompt_evt.set()
 
 
 @socketio.on('run_tests')

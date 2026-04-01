@@ -4,11 +4,12 @@
 #include "services/motion/motion.h"
 #include "services/intercom/intercom.h"
 #include "utils/timer/timer.h"
+#include <stdio.h>
 
 SINGLETON_INSTANTIATE(Safety, safety)
 
 void getDistanceCallback(Request& req){
-    int d = req.getResponse().toInt();
+    int d = atoi(req.getResponse());
 
     /*
     if(d > 200 && d < 3000) safety.setSafeDistance(d);
@@ -45,7 +46,9 @@ void Safety::run(){
             if(distanceToGo > 600) distanceToGo = 600;
             if(distanceToGo < 300) distanceToGo = 300;
 
-            intercom.sendRequest("ob("+ String(streer) + "," + String(distanceToGo) + ")", 300, getDistanceCallback);
+            char buf[64];
+            snprintf(buf, sizeof(buf), "ob(%d,%d)", streer, distanceToGo);
+            intercom.sendRequest(buf, 300, getDistanceCallback);
             //intercom.sendRequest("pos(" + String(pos.x)  + "," + String(pos.y) + "," + String(pos.z*RAD_TO_DEG) + ")");
         }
 

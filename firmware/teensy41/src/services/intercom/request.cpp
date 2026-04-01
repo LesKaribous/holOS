@@ -1,150 +1,176 @@
 #include "request.h"
+#include "intercom.h"
 #include "comUtilities.h"
 #include "config/settings.h"
+#include <string.h>
+#include <stdio.h>
 
 int Request::_uidCounter = 0;
 
-Request::Request(const String& content, long timeout, requestCallback_ptr func_call, callback_ptr timeout_call)
-    :   _uid(0),
-        m_source(BridgeSource::INTERCOM),
-        _content(content),
-        _response(""),
-        _lastSent(0),
-        _timeout(timeout),
-        _status(Status::IDLE),
-        _callback(func_call),
-        _timeoutCallback(timeout_call)
-        {
-            _uid = _uidCounter++;
-            _prefix = "";
-            _prefix += String(_uid) + ":";
+// PR-1: Single-slot pending reply buffer — prevents silent reply drop on full TX buffer
+static char s_pendingReply[Request::PAYLOAD_MAX + 4] = {};
+static bool s_hasPendingReply = false;
 
-            String payload = _prefix + _content;
+// ─────────────────────────────────────────────────────────────────────────────
+//  Constructors
+// ─────────────────────────────────────────────────────────────────────────────
 
-            _crc = String((int) CRC8.smbus((uint8_t*)payload.c_str(), payload.length()));
-        }
-
-Request::Request(int id, const String& content, BridgeSource src)
-    :   _uid(id),
-        m_source(src),
-        _content(content),
-        _response(""),
-        _lastSent(0),
-        _timeout(0),
-        _status(Status::IDLE),
-        _callback(nullptr),
-        _timeoutCallback(nullptr)
-        {
-            _prefix = "r";
-            _prefix += String(_uid) + ":";
-
-            String payload = _prefix + _content;
-
-            _crc = String((int) CRC8.smbus((uint8_t*)payload.c_str(), payload.length()));
-        }
-
-void Request::setTimeoutCallback(callback_ptr func){
-    _timeoutCallback = func;
+/// Default constructor (for pool pre-allocation in Intercom::_pool[MAX_PENDING])
+Request::Request()
+    : _uid(-1),
+      m_source(BridgeSource::INTERCOM),
+      _crcVal(0),
+      _firstSent(0),
+      _lastSent(0),
+      _responseTime(0),
+      _timeout(0),
+      _status(Status::IDLE),
+      _callback(nullptr),
+      _timeoutCallback(nullptr)
+{
+    _content[0]  = '\0';
+    _response[0] = '\0';
+    _payload[0]  = '\0';
 }
 
-void Request::setCallback(requestCallback_ptr func){
-    _callback = func;
+/// Receive-side: firmware received this request, needs to reply
+Request::Request(int id, const char* content, BridgeSource src)
+    : _uid(id),
+      m_source(src),
+      _crcVal(0),
+      _firstSent(0),
+      _lastSent(0),
+      _responseTime(0),
+      _timeout(0),
+      _status(Status::IDLE),
+      _callback(nullptr),
+      _timeoutCallback(nullptr)
+{
+    strncpy(_content,  content, CONTENT_MAX - 1);  _content[CONTENT_MAX - 1]  = '\0';
+    _response[0] = '\0';
+    // Reply payload built in reply() — not needed at construction
+    _payload[0] = '\0';
 }
 
-void Request::send(){
-    _status = Status::SENT;
+/// Send-side: firmware wants to send a request outward (to T4.0 via Intercom)
+Request::Request(const char* content, long timeout,
+                 requestCallback_ptr func_call, callback_ptr timeout_call)
+    : _uid(0),
+      m_source(BridgeSource::INTERCOM),
+      _crcVal(0),
+      _firstSent(0),
+      _lastSent(0),
+      _responseTime(0),
+      _timeout((unsigned long)timeout),
+      _status(Status::IDLE),
+      _callback(func_call),
+      _timeoutCallback(timeout_call)
+{
+    _uid = _uidCounter++;
+    strncpy(_content,  content, CONTENT_MAX - 1);  _content[CONTENT_MAX - 1]  = '\0';
+    _response[0] = '\0';
+    _buildPayload();
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  _buildPayload — build "uid:content|crc" into _payload
+// ─────────────────────────────────────────────────────────────────────────────
+void Request::_buildPayload() {
+    // Temporary buffer to compute CRC over "uid:content"
+    char tmp[PAYLOAD_MAX];
+    int n = snprintf(tmp, sizeof(tmp), "%d:%s", _uid, _content);
+    _crcVal = CRC8.smbus((uint8_t*)tmp, (size_t)n);
+    snprintf(_payload, sizeof(_payload), "%s|%d", tmp, (int)_crcVal);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  PR-1 — flush pending reply
+// ─────────────────────────────────────────────────────────────────────────────
+bool Request::flushPendingReply() {
+    if (!s_hasPendingReply) return false;
+    int len = (int)strlen(s_pendingReply);
+    if (BRIDGE_SERIAL.availableForWrite() >= len + 1) {
+        BRIDGE_SERIAL.print(s_pendingReply);
+        BRIDGE_SERIAL.write('\n');
+        s_hasPendingReply = false;
+        return true;
+    }
+    return false;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  Callbacks
+// ─────────────────────────────────────────────────────────────────────────────
+void Request::setTimeoutCallback(callback_ptr func)      { _timeoutCallback = func; }
+void Request::setCallback(requestCallback_ptr func)       { _callback = func; }
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  send — transmit this request via Intercom
+// ─────────────────────────────────────────────────────────────────────────────
+void Request::send() {
+    _status   = Status::SENT;
     _lastSent = millis();
-    if(_firstSent == 0)
-        _firstSent = millis();
-    Intercom::instance().sendMessage(getPayload());
+    if (_firstSent == 0) _firstSent = millis();
+    Intercom::instance().sendMessage(_payload);
 }
 
-void Request::reply(const String& answer){
-    _status = Status::CLOSED;
+// ─────────────────────────────────────────────────────────────────────────────
+//  reply — send reply back to the originator of this request
+// ─────────────────────────────────────────────────────────────────────────────
+void Request::reply(const char* answer) {
+    _status   = Status::CLOSED;
     _lastSent = millis();
-    _content = answer;
+    strncpy(_content, answer, CONTENT_MAX - 1);  _content[CONTENT_MAX - 1] = '\0';
 
-    // Recompute CRC with new content
-    String payload = _prefix + _content;
-    _crc = String((int) CRC8.smbus((uint8_t*)payload.c_str(), payload.length()));
+    // Build reply payload: "rUID:answer|crc"
+    char tmp[PAYLOAD_MAX];
+    int n = snprintf(tmp, sizeof(tmp), "r%d:%s", _uid, _content);
+    uint8_t crc = CRC8.smbus((uint8_t*)tmp, (size_t)n);
+    snprintf(_payload, sizeof(_payload), "%s|%d", tmp, (int)crc);
 
     if (m_source == BridgeSource::USB) {
-        // Reply over USB-CDC bridge — guard against a full TX buffer which would
-        // block here and starve the main loop long enough to trigger the WDT.
-        // Try to send immediately, but if buffer is full, the JetsonBridge telemetry
-        // queue will handle retries. This is less critical than telemetry.
-        int needed = (int)(_prefix.length() + _content.length() + _crc.length() + 3);
+        int needed = (int)strlen(_payload) + 1;
         if (BRIDGE_SERIAL.availableForWrite() >= needed) {
-            BRIDGE_SERIAL.print(_prefix);
-            BRIDGE_SERIAL.print(_content);
-            BRIDGE_SERIAL.print('|');
-            BRIDGE_SERIAL.print(_crc);
+            BRIDGE_SERIAL.print(_payload);
             BRIDGE_SERIAL.write('\n');
+        } else {
+            // PR-1: queue for retry — never silently drop a reply
+            strncpy(s_pendingReply, _payload, sizeof(s_pendingReply) - 1);
+            s_pendingReply[sizeof(s_pendingReply) - 1] = '\0';
+            s_hasPendingReply = true;
         }
-        // If the buffer is still full after this, the reply will be lost.
-        // This is acceptable — Python will time-out and the user can retry.
-        // The main priority is preventing watchdog timeouts from blocking writes.
     } else {
-        Intercom::instance().sendMessage(getPayload());
+        Intercom::instance().sendMessage(_payload);
     }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+//  close / status
+// ─────────────────────────────────────────────────────────────────────────────
+void Request::close()                  { _status = Status::CLOSED; }
+void Request::setStatus(Status status) { _status = status; }
 
-void Request::close(){
-    _status = Status::CLOSED;
-}
-
-void Request::onResponse(const String& response){
-    _status = Status::OK;
+void Request::onResponse(const char* response) {
+    _status       = Status::OK;
     _responseTime = millis() - _lastSent;
-    _response = response;
-    if(_callback) _callback(*this);
+    strncpy(_response, response, CONTENT_MAX - 1);  _response[CONTENT_MAX - 1] = '\0';
+    if (_callback) _callback(*this);
 }
 
-void Request::onTimeout(){
+void Request::onTimeout() {
     _status = Status::TIMEOUT;
-    if(_timeoutCallback) _timeoutCallback();
+    if (_timeoutCallback) _timeoutCallback();
 }
 
-void Request::setStatus(Status status){
-    _status = status;
-}
-    
-int Request::ID() const{
-    return _uid;
-}
+// ─────────────────────────────────────────────────────────────────────────────
+//  Accessors
+// ─────────────────────────────────────────────────────────────────────────────
+int           Request::ID()              const { return _uid; }
+Request::Status Request::getStatus()     const { return _status; }
+unsigned long Request::getTimeout()      const { return _timeout; }
+unsigned long Request::getResponseTime() const { return _responseTime; }
+unsigned long Request::getLastSent()     const { return _lastSent; }
 
-Request::Status Request::getStatus() const{
-    return _status;
+bool Request::isTimedOut() const {
+    return (_timeout > 0) && (millis() - _firstSent >= _timeout);
 }
-
-const String& Request::getContent() const{
-    return _content;
-}
-
-const String& Request::getResponse() const{
-
-    return _response;
-}
-
-//uuidcontentcrc
-String Request::getPayload() const{
-    return _prefix + _content + "|" + _crc;
-}
-
-bool Request::isTimedOut() const{
-    return millis() - _firstSent >= _timeout;
-}
-
-unsigned long Request::getTimeout() const{
-    return _timeout;
-}
-
-unsigned long Request::getResponseTime() const{
-    return _responseTime;
-}
-
-unsigned long Request::getLastSent() const{
-    return _lastSent;
-}
-

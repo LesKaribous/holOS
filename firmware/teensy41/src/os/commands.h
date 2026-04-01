@@ -66,3 +66,6 @@ void command_print(const args_t& args);
 
 void command_wake(const args_t& args);
 void command_sleep(const args_t& args);
+
+// Diagnostics
+void command_health(const args_t& args);

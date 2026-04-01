@@ -4,7 +4,6 @@
 #include "config/settings.h"
 #include "utils/timer/timer.h"
 #include <functional>
-#include <deque>
 
 // ============================================================
 //  JetsonBridge — Service de communication avec le Jetson.
@@ -92,9 +91,7 @@ private:
 
     // ── Telemetry helpers ─────────────────────────────────────────────────────
 
-    String _buildTelemetry() const;
-    String _buildPositionTel() const;
-    void   _pushFrame(const String& msg);
+    void   _pushFrame(const char* msg);
     void   _readBridgeSerial();   ///< Parse incoming requests from USB-CDC bridge
 
     // ── State ─────────────────────────────────────────────────────────────────
@@ -102,6 +99,13 @@ private:
     bool   m_jetsonConnected    = false;
     bool   m_inFallback         = false;
     bool   m_motionPending      = false;
+
+    // PR-2: Persistent DONE state — retransmitted until host acks
+    char          m_lastDoneBuf[80]  = {};
+    bool          m_donePending      = false;
+    bool          m_lastDoneWasOk    = false;
+    unsigned long m_doneRetryMs      = 0;
+    static constexpr unsigned long DONE_RETRY_MS = 2000;
 
     // ── Telemetry channel mask ─────────────────────────────────────────────────
     bool   m_telPos    = true;   ///< TEL:pos   (position)
@@ -123,9 +127,13 @@ private:
     char     _bridgeBuf[512];
     uint16_t _bridgeBufLen = 0;
 
-    // Telemetry queue — buffers frames when USB TX FIFO is full to prevent loss
-    std::deque<String> _telQueue;
-    static constexpr size_t TEL_QUEUE_MAX = 32;  // ~4KB when full (max 128 bytes per frame)
+    // JB-1: Fixed ring buffer — zero heap allocation for queued telemetry
+    static constexpr uint8_t  TQUEUE_SLOTS = 16;
+    static constexpr uint16_t TQUEUE_FRAME = 128;
+    char    _tqPool[TQUEUE_SLOTS][TQUEUE_FRAME];
+    uint8_t _tqHead  = 0;
+    uint8_t _tqTail  = 0;
+    uint8_t _tqCount = 0;
 
     // ID of the request currently waiting for motion completion
     int    m_motionRequestId    = -1;
@@ -133,12 +141,10 @@ private:
     unsigned long m_lastHeartbeatMs  = 0;
     unsigned long m_lastTelPushMs    = 0;
     unsigned long m_lastOccPushMs    = 0;
-    unsigned long m_lastTelDrainMs   = 0;  // Last time we tried to drain queued telemetry
 
-    static constexpr unsigned long HEARTBEAT_TIMEOUT_MS = 2000;
+    unsigned long m_heartbeatTimeoutMs = 5000;  // PR-3: tunable, default 5s for strategy mode
     static constexpr unsigned long TEL_PERIOD_MS        = 100;  // 10Hz
     static constexpr unsigned long OCC_PERIOD_MS        = 500;  // 2Hz
-    static constexpr unsigned long TEL_DRAIN_PERIOD_MS  = 10;   // Try to drain queue every 10ms
 
     // Fallback registry
     fallback_fn m_fallbacks[5] = {};

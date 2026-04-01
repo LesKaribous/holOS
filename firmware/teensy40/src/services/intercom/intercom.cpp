@@ -32,6 +32,9 @@ void Intercom::onUpdate() {
 void Intercom::enable(){
     Service::enable();
     INTERCOM_SERIAL.begin(INTERCOM_BAUDRATE);
+    delay(10);
+    while(_stream.available()) _stream.read();  // drain stale bytes
+    _inBufLen = 0;
     sendMessage("ping");
 }
 
@@ -41,24 +44,14 @@ void Intercom::disable(){
 }
 
 void Intercom::sendMessage(const char* message) {
-    long trial = millis();
-    while(!_stream.availableForWrite() && millis() - trial < 100);
-    if(millis() - trial > 100){
-        THROW("Msg cannot be sent");
-        return;
-    }
+    if (!_stream.availableForWrite()) return;  // non-blocking: drop if full
     _stream.print(message);
     _stream.write('\n');
     Console::trace("Intercom") << ">" << message << Console::endl;
 }
 
 void Intercom::sendMessage(const String& message) {
-    long trial = millis();
-    while(!_stream.availableForWrite() && millis() - trial < 100);
-    if(millis() - trial > 100){
-        THROW("Msg cannot be sent");
-        return;
-    }
+    if (!_stream.availableForWrite()) return;
     _stream.print(message);
     _stream.write('\n');
     Console::trace("Intercom") << ">" << message.c_str() << Console::endl;
@@ -124,59 +117,93 @@ void Intercom::connectionSuccess(){
 }
 
 void Intercom::_processIncomingData() {
+    // IC-4: discard partial frames older than 200ms
+    if (_inBufLen > 0 && millis() - _inBufStartMs > 200) {
+        Console::warn("Intercom") << "Partial frame discarded (" << (int)_inBufLen << " bytes)" << Console::endl;
+        _inBufLen = 0;
+    }
+
     while (_stream.available()) {
-       
-        String incomingMessage = _stream.readStringUntil('\n'); //We read all bytes hoping that no \n pop before the end
-        incomingMessage.trim(); // Remove any leading/trailing whitespace or newline characters
+        char c = (char)_stream.read();
 
-        if (incomingMessage.startsWith("ping")) {
-            pingReceived();
-        } else if (incomingMessage.startsWith("pong")) {
-            if(!isConnected())connectionSuccess();
+        if (c == '\n' || c == '\r') {
+            if (_inBufLen == 0) continue;
 
-        }else if (incomingMessage.startsWith("r") && !_sentRequests.empty()){ //reply incomming
-            int id_separatorIndex = incomingMessage.indexOf(':');
-            int crc_separatorIndex = incomingMessage.indexOf('|');
+            _inBuf[_inBufLen] = '\0';
+            // Trim trailing whitespace
+            while (_inBufLen > 0 && (_inBuf[_inBufLen - 1] == ' ' || _inBuf[_inBufLen - 1] == '\r')) {
+                _inBuf[--_inBufLen] = '\0';
+            }
+            if (_inBufLen == 0) { _inBufLen = 0; continue; }
 
-            if (id_separatorIndex != 0 && crc_separatorIndex != 0) {
-                int responseId = incomingMessage.substring(1, id_separatorIndex).toInt(); //get uuid and ignore the 'r'
-                String responseData = incomingMessage.substring(id_separatorIndex + 1, crc_separatorIndex); //without crc
-                int crc = incomingMessage.substring(crc_separatorIndex + 1).toInt(); //without crc
-                
-                if(!checkCRC(incomingMessage.substring(0, crc_separatorIndex), crc)){
-                    Console::trace("Intercom") << "Bad crc for message " << incomingMessage << Console::endl;
-                    continue;
-                }
+            // ── Connection handshake ─────────────────────────────────────────
+            if (strncmp(_inBuf, "ping", 4) == 0) {
+                pingReceived();
+                _inBufLen = 0;
+                continue;
+            }
+            if (strncmp(_inBuf, "pong", 4) == 0) {
+                if (!isConnected()) connectionSuccess();
+                _inBufLen = 0;
+                continue;
+            }
+
+            // ── Find delimiters ──────────────────────────────────────────────
+            char* sep    = strchr (_inBuf, ':');
+            char* crcSep = strrchr(_inBuf, '|');
+
+            if (!sep || !crcSep || crcSep <= sep) {
+                _inBufLen = 0;
+                continue;
+            }
+
+            // Validate CRC
+            int     crcVal   = atoi(crcSep + 1);
+            uint8_t computed = CRC8.smbus((uint8_t*)_inBuf, (size_t)(crcSep - _inBuf));
+            if ((uint8_t)crcVal != computed) {
+                Console::warn("Intercom") << "Bad CRC" << Console::endl;
+                _inBufLen = 0;
+                continue;
+            }
+
+            // Split in-place
+            *sep    = '\0';
+            *crcSep = '\0';
+
+            if (_inBuf[0] == 'r' && !_sentRequests.empty()) {
+                // ── Reply: r{uid}:{content}|{crc} ───────────────────────────
+                int responseId = atoi(_inBuf + 1);
+                String responseData = String(sep + 1);  // one unavoidable alloc
 
                 auto requestIt = _sentRequests.find(responseId);
                 if (requestIt != _sentRequests.end()) {
-                    Request& request = requestIt->second;
-                    request.onResponse(responseData);
-                }else{
-                    Console::trace("Intercom")<< "not found" << Console::endl;
+                    requestIt->second.onResponse(responseData);
+                } else {
+                    Console::trace("Intercom") << "Reply UID " << responseId << " not found" << Console::endl;
                 }
+            } else {
+                // ── Incoming request: {uid}:{content}|{crc} ─────────────────
+                int    uid     = atoi(_inBuf);
+                String content = String(sep + 1);  // one unavoidable alloc
+
+                Request request(uid, content);
+                if (onRequestCallback != nullptr) onRequestCallback(request);
             }
 
-            
-        }else{ //request is coming
-            int id_separatorIndex = incomingMessage.indexOf(':');
-            int crc_separatorIndex = incomingMessage.indexOf('|');
-            if (id_separatorIndex != 0 && crc_separatorIndex != 0) {
-                int responseId = incomingMessage.substring(0, id_separatorIndex).toInt(); //get uuid and ignore the 'r'
-                String responseData = incomingMessage.substring(id_separatorIndex + 1, crc_separatorIndex); //without crc
-                int crc = incomingMessage.substring(crc_separatorIndex + 1).toInt(); //without crc
-                //Console::println(responseData);
-                if(!checkCRC(incomingMessage.substring(0, crc_separatorIndex), crc)){
-                    Console::trace("Intercom") << "Bad crc for message " << incomingMessage << Console::endl;
-                    continue;
-                }
+            // Restore delimiters
+            *sep    = ':';
+            *crcSep = '|';
+            _inBufLen = 0;
 
-                Request request(responseId, responseData);
-                if(onRequestCallback != nullptr) onRequestCallback(request);
+        } else if (c != '\r') {
+            if (_inBufLen < 511) {
+                if (_inBufLen == 0) _inBufStartMs = millis();
+                _inBuf[_inBufLen++] = c;
             }
         }
     }
-    INTERCOM_SERIAL.clear();
+    // NOTE: Removed INTERCOM_SERIAL.clear() — it was discarding bytes
+    // that arrived during processing, causing silent data loss.
 }
 
 void Intercom::_processPendingRequests() {
@@ -209,10 +236,10 @@ void Intercom::_processPendingRequests() {
             Console::trace("Intercom") << int(_sentRequests.size()) << "currently in the buffer" << Console::endl;
             it = _sentRequests.erase(it); // Remove the request from the map
 
-        }  else if (status == Request::Status::TIMEOUT) {
+        } else if (status == Request::Status::TIMEOUT) {
             request.close();
-            //Serial.print(request.getPayload());
-            Console::trace("Intercom") << "request " << request.getPayload() << " timedout." << Console::endl;
+            it = _sentRequests.erase(it);  // IC-6: was missing erase+advance
+            continue;
         } else if (status == Request::Status::ERROR) {
             request.close();
             Console::error("Intercom") << "request " << request.getContent() << " unknown error." << Console::endl;

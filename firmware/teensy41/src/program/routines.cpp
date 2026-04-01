@@ -318,7 +318,7 @@ void onIntercomRequest(Request& req) {
  * Currently used to receive occupancy map from Teensy 4.0.
  */
 void onIntercomRequestReply(Request& req) {
-    if (req.getContent().startsWith("oM")) {
+    if (strncmp(req.getContent(), "oM", 2) == 0) {
         occupancy.decompress(req.getResponse());
     }
 }

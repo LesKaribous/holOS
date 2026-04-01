@@ -1,6 +1,5 @@
-
 #pragma once
-#include "intercom.h"
+#include "services/service.h"
 
 class Request;
 
@@ -10,17 +9,17 @@ using requestCallback_ptr = void (*)(Request&);
 class Intercom;
 
 // ── BridgeSource ──────────────────────────────────────────────────────────────
-// Identifies which physical channel a Request arrived on.
-// Set at construction time so Request::reply() can route back correctly
-// without any compile-time #ifdef USB_DIRECT.
 enum class BridgeSource : uint8_t {
-    INTERCOM = 0,   ///< XBee / Jetson path — reply via Intercom (Serial1)
-    USB      = 1,   ///< USB-CDC direct path — reply via BRIDGE_SERIAL
+    INTERCOM = 0,
+    USB      = 1,
 };
 
 class Request {
 public:
-    enum class Status{
+    static constexpr uint8_t CONTENT_MAX = 128;  // increased from 80 to support health response
+    static constexpr uint8_t PAYLOAD_MAX = 144;  // CONTENT_MAX + 16 overhead for "uid:content|crc"
+
+    enum class Status {
         IDLE,
         SENT,
         TIMEOUT,
@@ -30,12 +29,15 @@ public:
         ERROR
     };
 
+    /// Default constructor (for pool pre-allocation in Intercom)
+    Request();
+
     /// Receive-side constructor (used by Intercom parser & JetsonBridge)
-    Request(int id, const String& content,
+    Request(int id, const char* content,
             BridgeSource src = BridgeSource::INTERCOM);
 
     /// Send-side constructor (used internally to send requests outward)
-    Request(const String& payload, long timeout = 0,
+    Request(const char* payload, long timeout = 0,
             requestCallback_ptr callback = nullptr,
             callback_ptr timeout_callback = nullptr);
 
@@ -43,40 +45,45 @@ public:
     void setCallback(requestCallback_ptr func);
 
     void send();
-    void reply(const String& answer);
+    void reply(const char* answer);
     void close();
     void setStatus(Status status);
-    
+
+    /// PR-1: Flush any queued reply when TX buffer was full. Called by JetsonBridge::run().
+    static bool flushPendingReply();
+
     void onTimeout();
-    void onResponse(const String& response);
-    
+    void onResponse(const char* response);
+
     bool isTimedOut() const;
 
-    int          ID()         const;
+    int          ID()      const;
     Status       getStatus() const;
-    BridgeSource source()    const { return m_source; }
-    String       getPayload() const;
+    BridgeSource source()  const { return m_source; }
 
-    const String& getContent()  const;
-    const String& getResponse() const;
-    
-    unsigned long getTimeout() const;
+    const char* getContent()  const { return _content; }
+    const char* getResponse() const { return _response; }
+    const char* getPayload()  const { return _payload; }
+
+    unsigned long getTimeout()      const;
     unsigned long getResponseTime() const;
-    unsigned long getLastSent() const;
-    
+    unsigned long getLastSent()     const;
+
 private:
-    int          _uid;
-    BridgeSource m_source;
-    String       _prefix;
-    String       _crc;
-    String       _content;
-    String       _response;
-    unsigned long _firstSent = 0;
-    unsigned long _lastSent;
-    unsigned long _responseTime;
+    void _buildPayload();  ///< Rebuild _payload from current _uid + _content
+
+    int           _uid;
+    BridgeSource  m_source;
+    char          _content [CONTENT_MAX];
+    char          _response[CONTENT_MAX];
+    char          _payload [PAYLOAD_MAX];  ///< Pre-built "uid:content|crc" ready to send
+    uint8_t       _crcVal;
+    unsigned long _firstSent    = 0;
+    unsigned long _lastSent     = 0;
+    unsigned long _responseTime = 0;
     unsigned long _timeout;
-    static int _uidCounter;
-    Status _status;
+    static int    _uidCounter;
+    Status        _status;
     requestCallback_ptr _callback;
-    callback_ptr _timeoutCallback;
+    callback_ptr        _timeoutCallback;
 };

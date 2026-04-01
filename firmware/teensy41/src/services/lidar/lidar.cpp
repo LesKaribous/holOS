@@ -3,6 +3,7 @@
 #include "services/intercom/intercom.h"
 //#include "services/navigation/navigation.h"
 #include "services/motion/motion.h"
+#include <stdio.h>
 
 SINGLETON_INSTANTIATE(Lidar, lidar)
 
@@ -22,7 +23,9 @@ void Lidar::run(){
             m_lastPosUpdate = millis();
             //pos = nav.getPosition();
             pos = motion.estimatedPosition();
-            intercom.sendRequest("pos(" + String(pos.x)  + "," + String(pos.y) + "," + String(pos.z*RAD_TO_DEG) + ")");
+            char buf[80];
+            snprintf(buf, sizeof(buf), "pos(%.1f,%.1f,%.1f)", pos.x, pos.y, pos.z*RAD_TO_DEG);
+            intercom.sendRequest(buf);
         }
         /*
         if(millis() - m_lastOccupancyRequest > 150){

@@ -2,241 +2,283 @@
 #include "os/console.h"
 #include "config/settings.h"
 #include "comUtilities.h"
+#include <string.h>
 
 SINGLETON_INSTANTIATE(Intercom, intercom)
 
-Intercom::Intercom() : Service(ID_INTERCOM),  _stream(INTERCOM_SERIAL) {}
+Intercom::Intercom() : Service(ID_INTERCOM), _stream(INTERCOM_SERIAL) {
+    memset(_poolActive, 0, sizeof(_poolActive));
+    // Placement-initialise pool entries so they are valid objects
+    // (they are default-constructed by the compiler — no extra action needed)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  Lifecycle
+// ─────────────────────────────────────────────────────────────────────────────
 
 void Intercom::attach() {
     Console::info() << "Intercom activated" << Console::endl;
 }
 
 void Intercom::run() {
-    if(!enabled()) return;
+    if (!enabled()) return;
 
     if (_stream.available()) {
         _lastStream = millis();
-        _processIncomingData();         
+        _processIncomingData();
     }
     _processPendingRequests();
 
-    if(millis() - _lastPing > 500 && (!_connected || (_connected && millis() - _lastStream > 1000))){
+    if (millis() - _lastPing > 500 &&
+        (!_connected || (_connected && millis() - _lastStream > 1000))) {
         sendMessage("ping");
         _lastPing = millis();
     }
-    if(_connected && millis() - _lastStream > 2000){
+    if (_connected && millis() - _lastStream > 2000) {
         connectionLost();
     }
 }
 
-void Intercom::enable(){
+void Intercom::enable() {
     Service::enable();
     INTERCOM_SERIAL.begin(INTERCOM_BAUDRATE);
-    delay(10);  // Let UART settle before touching the buffer
-    while(_stream.available()) _stream.read(); // Clear residual garbage
-    _inBuf = "";  // reset accumulator
-    sendMessage("ping");  // Now send ping on a clean line
+    delay(10);
+    while (_stream.available()) _stream.read();
+    _inBufLen = 0;
+    sendMessage("ping");
 }
 
-void Intercom::disable(){
+void Intercom::disable() {
     INTERCOM_SERIAL.end();
     Service::disable();
 }
 
-// FW-003: Non-blocking sendMessage — drop if TX buffer full (telemetry is best-effort)
+// ─────────────────────────────────────────────────────────────────────────────
+//  sendMessage — non-blocking, drop if TX full
+// ─────────────────────────────────────────────────────────────────────────────
+
 void Intercom::sendMessage(const char* message) {
     if (!_stream.availableForWrite()) return;
     _stream.print(message);
     _stream.write('\n');
-    if(debug) Console::trace("Intercom") << ">" << message << Console::endl;
+    if (debug) Console::trace("Intercom") << ">" << message << Console::endl;
 }
 
 void Intercom::sendMessage(const String& message) {
-    if (!_stream.availableForWrite()) return;
-    _stream.print(message);
-    _stream.write('\n');
-    if(debug) Console::trace("Intercom") << ">" << message.c_str() << Console::endl;
+    sendMessage(message.c_str());
 }
 
-int Intercom::sendRequest(const String& payload, long timeout,  requestCallback_ptr cbfunc,  callback_ptr func){
-    // FW-002: guard against unbounded map growth
-    if (_sentRequests.size() >= 200) {
-        _sentRequests.erase(_sentRequests.begin());
+// ─────────────────────────────────────────────────────────────────────────────
+//  sendRequest — IC-2: uses fixed-size pool, no heap alloc
+// ─────────────────────────────────────────────────────────────────────────────
+
+int Intercom::sendRequest(const char* payload, long timeout,
+                          requestCallback_ptr cbfunc, callback_ptr func) {
+    // Find a free slot
+    for (uint8_t i = 0; i < MAX_PENDING; ++i) {
+        if (!_poolActive[i]) {
+            // Construct Request in-place in the pool
+            _pool[i] = Request(payload, timeout, cbfunc, func);
+            _pool[i].send();
+            _poolActive[i] = true;
+            return _pool[i].ID();
+        }
     }
-    Request req(payload, timeout, cbfunc, func);
-    req.send();
-    _sentRequests.insert({req.ID(), req});
-    return req.ID();
-}
-
-void Intercom::pingReceived() {
-    sendMessage("pong");
+    // No free slot — evict oldest (first active slot)
+    Console::warn("Intercom") << "Request pool full, evicting oldest" << Console::endl;
+    for (uint8_t i = 0; i < MAX_PENDING; ++i) {
+        if (_poolActive[i]) {
+            _poolActive[i] = false;
+            _pool[i] = Request(payload, timeout, cbfunc, func);
+            _pool[i].send();
+            _poolActive[i] = true;
+            return _pool[i].ID();
+        }
+    }
+    return -1;
 }
 
 bool Intercom::closeRequest(int uid) {
-    if(_sentRequests.count(uid)){
-        _sentRequests.find(uid)->second.close();
-        return true;
-    }else{
-        Console::warn("Intercom") << __FILE__ << " at line " << __LINE__ << " request " << int(uid) << " does not exist" << Console::endl;
-        return false;
-    };
+    for (uint8_t i = 0; i < MAX_PENDING; ++i) {
+        if (_poolActive[i] && _pool[i].ID() == uid) {
+            _pool[i].close();
+            _poolActive[i] = false;
+            return true;
+        }
+    }
+    Console::warn("Intercom") << "closeRequest: UID " << uid << " not found" << Console::endl;
+    return false;
 }
 
-bool Intercom::isConnected(){
-    return _connected;
+const char* Intercom::getRequestResponse(int uid) {
+    for (uint8_t i = 0; i < MAX_PENDING; ++i) {
+        if (_poolActive[i] && _pool[i].ID() == uid) {
+            return _pool[i].getResponse();
+        }
+    }
+    Console::warn("Intercom") << "getRequestResponse: UID " << uid << " not found" << Console::endl;
+    return "";
 }
 
-void Intercom::setConnectLostCallback(callback_ptr callback){
-    onConnectionLost = callback;
-}
+// ─────────────────────────────────────────────────────────────────────────────
+//  Connection management
+// ─────────────────────────────────────────────────────────────────────────────
 
-void Intercom::setRequestCallback(requestCallback_ptr callback){
-     onRequestCallback = callback;
-}
-
-void Intercom::setConnectionSuccessCallback(callback_ptr callback){
-    onConnectionSuccess = callback;
-}
-
-
-String Intercom::getRequestResponse(int uid) {
-    if(_sentRequests.count(uid) > 0){
-        return _sentRequests.find(uid)->second.getResponse();
-    }else{
-        Console::warn("Intercom") << __FILE__ << " at line " << __LINE__ << " request " << int(uid)   << " does not exist" << Console::endl;
-        return "ERROR";
-    };
-}
+void Intercom::pingReceived()  { sendMessage("pong"); }
+bool Intercom::isConnected()   { return _connected; }
 
 void Intercom::connectionLost() {
     Console::warn("Intercom") << "Connection lost." << Console::endl;
     _connected = false;
-    if(onConnectionLost!=nullptr){
-        onConnectionLost();
-    }
+    if (onConnectionLost) onConnectionLost();
 }
 
-void Intercom::connectionSuccess(){
+void Intercom::connectionSuccess() {
     Console::info("Intercom") << "Connection successful." << Console::endl;
     _connected = true;
-    if(onConnectionSuccess!=nullptr){
-        onConnectionSuccess();
-    }
+    if (onConnectionSuccess) onConnectionSuccess();
 }
 
-// FW-001: Non-blocking char-by-char accumulation (mirrors _readBridgeSerial pattern)
+void Intercom::setConnectLostCallback(callback_ptr cb)       { onConnectionLost    = cb; }
+void Intercom::setRequestCallback(requestCallback_ptr cb)    { onRequestCallback   = cb; }
+void Intercom::setConnectionSuccessCallback(callback_ptr cb) { onConnectionSuccess = cb; }
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  _processIncomingData — IC-1/IC-4: char array, non-blocking, partial timeout
+// ─────────────────────────────────────────────────────────────────────────────
 void Intercom::_processIncomingData() {
+    // IC-4: discard partial frames older than 200ms
+    if (_inBufLen > 0 && millis() - _inBufStartMs > 200) {
+        Console::warn("Intercom") << "Partial frame discarded (" << (int)_inBufLen << " bytes)" << Console::endl;
+        _inBufLen = 0;
+    }
+
     while (_stream.available()) {
         char c = (char)_stream.read();
+
         if (c == '\n' || c == '\r') {
-            _inBuf.trim();
-            if (_inBuf.length() == 0) { _inBuf = ""; continue; }
+            if (_inBufLen == 0) continue;
 
-            const String& incomingMessage = _inBuf;
+            _inBuf[_inBufLen] = '\0';
+            // Trim trailing whitespace
+            while (_inBufLen > 0 && (_inBuf[_inBufLen - 1] == ' ' || _inBuf[_inBufLen - 1] == '\r')) {
+                _inBuf[--_inBufLen] = '\0';
+            }
+            if (_inBufLen == 0) { _inBufLen = 0; continue; }
 
-            if (incomingMessage.startsWith("ping")) {
+            if (strncmp(_inBuf, "ping", 4) == 0) {
                 pingReceived();
-            } else if (incomingMessage.startsWith("pong")) {
-                if(!_connected){
-                    _connected = true;
-                    connectionSuccess();
-                }
-            }else if (incomingMessage.startsWith("r") && !_sentRequests.empty()){ //reply incoming
-                int id_separatorIndex = incomingMessage.indexOf(':');
-                int crc_separatorIndex = incomingMessage.indexOf('|');
-
-                if (id_separatorIndex != 0 && crc_separatorIndex != 0) {
-                    int responseId = incomingMessage.substring(1, id_separatorIndex).toInt();
-                    String responseData = incomingMessage.substring(id_separatorIndex + 1, crc_separatorIndex);
-                    int crc = incomingMessage.substring(crc_separatorIndex + 1).toInt();
-                    
-                    if(!checkCRC(incomingMessage.substring(0, crc_separatorIndex), crc)){
-                        if(debug) Console::trace("Intercom") << "Bad crc for message " << incomingMessage << Console::endl;
-                        _inBuf = "";
-                        continue;
-                    }
-
-                    auto requestIt = _sentRequests.find(responseId);
-                    if (requestIt != _sentRequests.end()) {
-                        Request& request = requestIt->second;
-                        request.onResponse(responseData);
-                        if(debug) Console::trace("Intercom") << "<" << incomingMessage << Console::endl;
-                    }else{
-                        if(debug) Console::trace("Intercom")<< "not found" << Console::endl;
-                    }
-                }
-
-            }else{ //request is coming
-                int id_separatorIndex = incomingMessage.indexOf(':');
-                int crc_separatorIndex = incomingMessage.indexOf('|');
-                if (id_separatorIndex != 0 && crc_separatorIndex != 0) {
-                    int responseId = incomingMessage.substring(0, id_separatorIndex).toInt();
-                    String responseData = incomingMessage.substring(id_separatorIndex + 1, crc_separatorIndex);
-                    int crc = incomingMessage.substring(crc_separatorIndex + 1).toInt();
-                    
-                    if(!checkCRC(incomingMessage.substring(0, crc_separatorIndex), crc)){
-                        Console::error("Intercom") << "Bad crc for message " << incomingMessage << Console::endl;
-                        _inBuf = "";
-                        continue;
-                    }
-
-                    Request request(responseId, responseData);
-                    if(onRequestCallback != nullptr) onRequestCallback(request);
-                }
+                _inBufLen = 0;
+                continue;
+            }
+            if (strncmp(_inBuf, "pong", 4) == 0) {
+                if (!_connected) { _connected = true; connectionSuccess(); }
+                _inBufLen = 0;
+                continue;
             }
 
-            _inBuf = "";
-        } else {
-            if (_inBuf.length() < 512) _inBuf += c;  // guard against runaway frames
+            char* sep    = strchr (_inBuf, ':');
+            char* crcSep = strrchr(_inBuf, '|');
+
+            if (!sep || !crcSep || crcSep <= sep) {
+                if (debug) Console::trace("Intercom") << "Unparseable frame" << Console::endl;
+                _inBufLen = 0;
+                continue;
+            }
+
+            // Validate CRC
+            int     crcVal   = atoi(crcSep + 1);
+            uint8_t computed = CRC8.smbus((uint8_t*)_inBuf, (size_t)(crcSep - _inBuf));
+            if ((uint8_t)crcVal != computed) {
+                Console::warn("Intercom") << "Bad CRC" << Console::endl;
+                _inBufLen = 0;
+                continue;
+            }
+
+            // Split in-place
+            *sep    = '\0';
+            *crcSep = '\0';
+
+            if (_inBuf[0] == 'r') {
+                // Reply: r{uid}:{content}
+                int  responseId = atoi(_inBuf + 1);
+                const char* responseData = sep + 1;
+
+                for (uint8_t i = 0; i < MAX_PENDING; ++i) {
+                    if (_poolActive[i] && _pool[i].ID() == responseId) {
+                        _pool[i].onResponse(responseData);
+                        if (debug) Console::trace("Intercom") << "<r" << responseId << Console::endl;
+                        break;
+                    }
+                }
+            } else {
+                // Incoming request: {uid}:{content}
+                int        uid     = atoi(_inBuf);
+                const char* content = sep + 1;
+                Request request(uid, content);
+                if (onRequestCallback) onRequestCallback(request);
+            }
+
+            // Restore (defensive)
+            *sep    = ':';
+            *crcSep = '|';
+            _inBufLen = 0;
+
+        } else if (c != '\r') {
+            if (_inBufLen < 511) {
+                if (_inBufLen == 0) _inBufStartMs = millis();
+                _inBuf[_inBufLen++] = c;
+            }
         }
     }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+//  _processPendingRequests — IC-2: iterate fixed array, IC-6: correct cleanup
+// ─────────────────────────────────────────────────────────────────────────────
 void Intercom::_processPendingRequests() {
-    for (auto it = _sentRequests.begin(); it != _sentRequests.end();) {
+    for (uint8_t i = 0; i < MAX_PENDING; ++i) {
+        if (!_poolActive[i]) continue;
 
-        Request& request = it->second;
-        Request::Status status = request.getStatus();
-    
-        if(status != Request::Status::CLOSED && status != Request::Status::IDLE && millis() - request.getLastSent() > 300){
-            //if(debug) Console::trace("Intercom") << ": request " << request.getContent() << "too old, cleared." << Console::endl;
-            request.close();
-            ++it;
+        Request& req    = _pool[i];
+        Request::Status status = req.getStatus();
+
+        // Hard timeout: clear requests that have been in flight > 300ms
+        if (status != Request::Status::CLOSED &&
+            status != Request::Status::IDLE   &&
+            millis() - req.getLastSent() > 300) {
+            req.close();
+            _poolActive[i] = false;
             continue;
         }
 
-        const size_t MAX_REQUESTS = 200;  // Or any reasonable number
-        
-        if (status == Request::Status::IDLE) {
-            request.send();
-            ++it;
-        } else if (status == Request::Status::SENT) {
-            if (request.isTimedOut()) {
-                request.onTimeout();
-            } else {
-                if(millis() - request.getLastSent() > 100)  request.send();
-                ++it;
-            }
-        } else if (status == Request::Status::OK) {
-            ++it;
-            request.close();
-        } else if (status == Request::Status::CLOSED) {
-            //if(debug) Console::trace("Intercom") << int(_sentRequests.size()) << "currently in the buffer" << Console::endl;
-            it = _sentRequests.erase(it); // Remove the request from the map
+        switch (status) {
+            case Request::Status::IDLE:
+                req.send();
+                break;
 
-        } else if (_sentRequests.size() > MAX_REQUESTS) {
-            //if (debug) Console::warn("Intercom") << "Request buffer exceeded max size. Dropping oldest." << Console::endl;
-            _sentRequests.erase(_sentRequests.begin()); // Assumes it's ordered by insertion
-        }else if (status == Request::Status::TIMEOUT) {
-            request.close();
-            //CONSOLE_SERIAL.print(request.getPayload());
-            //if(debug) Console::trace("Intercom") << "request " << request.getPayload() << " timedout." << Console::endl;
-        } else if (status == Request::Status::ERROR) {
-            request.close();
-            Console::error("Intercom") << "request " << request.getContent() << " unknown error." << Console::endl;
-        } else {
-            ++it;
+            case Request::Status::SENT:
+                if (req.isTimedOut()) {
+                    req.onTimeout();
+                    _poolActive[i] = false;  // clean up timed-out request
+                } else if (millis() - req.getLastSent() > 100) {
+                    req.send();  // retry
+                }
+                break;
+
+            case Request::Status::OK:
+                req.close();
+                _poolActive[i] = false;
+                break;
+
+            case Request::Status::TIMEOUT:
+            case Request::Status::CLOSED:
+            case Request::Status::ERROR:
+                _poolActive[i] = false;
+                break;
+
+            default:
+                break;
         }
     }
 }

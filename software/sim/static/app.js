@@ -1707,11 +1707,13 @@ let _testRunning   = false;
 let _selectedSuite = null;       // suite highlighted in sidebar
 
 const TEST_ICONS = {
-  idle:    '○',
-  running: '⋯',
-  passed:  '✓',
-  failed:  '✗',
-  stopped: '—',
+  idle:     '○',
+  running:  '⋯',
+  passed:   '✓',
+  failed:   '✗',
+  stopped:  '—',
+  skipped:  '⊖',
+  prompt:   '⏸',
 };
 
 // ── Init ─────────────────────────────────────────────────────────────────────
@@ -1754,6 +1756,25 @@ function initTests() {
     _updateButtons();
     _updateSummary();
   });
+
+  // Re-fetch catalog when connection mode changes (sim ↔ hardware ↔ idle)
+  socket.on('tests_catalog_changed', data => {
+    _testStatus   = {};
+    _testDuration = {};
+    _testCatalog  = {};
+    _testRunning  = false;
+    _updateButtons();
+    if (data && data.mode === 'idle') {
+      clearTestLog();
+      _logHeader('⚠ Connexion perdue — reconnectez le robot');
+    }
+    initTests();
+  });
+
+  // Interactive test prompt — show overlay, wait for user to click Continue
+  socket.on('test_prompt', data => {
+    _showTestPrompt(data.msg || '');
+  });
 }
 
 // ── Catalog UI ───────────────────────────────────────────────────────────────
@@ -1761,6 +1782,28 @@ function _buildCatalogUI() {
   const container = document.getElementById('tests-catalog');
   if (!container) return;
   container.innerHTML = '';
+
+  // Show "not connected" placeholder when catalog is empty
+  if (Object.keys(_testCatalog).length === 0) {
+    container.innerHTML = `
+      <div style="
+        padding:32px 16px;
+        text-align:center;
+        color:var(--text-dim);
+        font-size:12px;
+        line-height:1.7;
+      ">
+        <div style="font-size:2rem;margin-bottom:10px">🔌</div>
+        <div style="font-weight:600;margin-bottom:6px">Robot non connecté</div>
+        <div>Connectez-vous au robot (USB ou XBee)<br>pour accéder aux tests matériels.</div>
+      </div>`;
+    // Also disable toolbar buttons
+    ['btn-run-all','btn-run-suite'].forEach(id => {
+      const b = document.getElementById(id);
+      if (b) b.disabled = true;
+    });
+    return;
+  }
 
   Object.entries(_testCatalog).forEach(([suiteId, suite]) => {
     const suiteEl = document.createElement('div');
@@ -1841,7 +1884,7 @@ function _logEntry(id, status, msg, durMs) {
   entry.className = `tlog-entry ${status}`;
   entry.id = `tlog-${id}`;
 
-  const icon = { running:'⋯', passed:'✓', failed:'✗', stopped:'—' }[status] || '?';
+  const icon = { running:'⋯', passed:'✓', failed:'✗', stopped:'—', skipped:'⊖' }[status] || '?';
   const durStr = durMs != null
     ? (durMs < 1000 ? `${durMs}ms` : `${(durMs/1000).toFixed(1)}s`)
     : '';
@@ -1872,6 +1915,84 @@ function _logHeader(text) {
 function clearTestLog() {
   const log = document.getElementById('tests-log');
   if (log) log.innerHTML = '';
+}
+
+// ── Interactive test prompt overlay ──────────────────────────────────────────
+function _showTestPrompt(msg) {
+  // Reuse existing overlay or create one
+  let overlay = document.getElementById('test-prompt-overlay');
+  if (!overlay) {
+    overlay = document.createElement('div');
+    overlay.id = 'test-prompt-overlay';
+    overlay.style.cssText = [
+      'position:fixed', 'inset:0', 'z-index:9999',
+      'display:flex', 'align-items:center', 'justify-content:center',
+      'background:rgba(0,0,0,0.60)', 'backdrop-filter:blur(4px)',
+    ].join(';');
+    document.body.appendChild(overlay);
+  }
+
+  // Detect step indicators like "ÉTAPE 1/3 — Title\n\n..." and render them nicely
+  let title = '';
+  let body  = _escHtml(msg);
+  const stepMatch = msg.match(/^(ÉTAPE\s+\d+\/\d+\s*[—\-–]\s*[^\n]+)\n+([\s\S]*)$/);
+  if (stepMatch) {
+    title = _escHtml(stepMatch[1]);
+    body  = _escHtml(stepMatch[2].trim());
+  }
+
+  overlay.innerHTML = `
+    <div style="
+      background:#1a2235;
+      border:1px solid #3a4a65;
+      border-radius:12px;
+      padding:28px 32px;
+      max-width:520px;
+      width:92%;
+      box-shadow:0 12px 48px rgba(0,0,0,0.7);
+      text-align:center;
+    ">
+      <div style="font-size:2rem;margin-bottom:10px">⏸</div>
+      ${title ? `<div style="
+        font-size:0.85rem;
+        font-weight:700;
+        letter-spacing:.06em;
+        text-transform:uppercase;
+        color:#7eb8e8;
+        margin-bottom:14px;
+      ">${title}</div>` : ''}
+      <div style="
+        font-size:0.93rem;
+        color:#d8e4f2;
+        margin-bottom:26px;
+        line-height:1.65;
+        white-space:pre-wrap;
+        text-align:left;
+      ">${body}</div>
+      <button onclick="_testPromptAck()" style="
+        background:#2980b9;
+        color:#ffffff;
+        border:none;
+        border-radius:6px;
+        padding:10px 32px;
+        font-size:0.95rem;
+        font-weight:600;
+        cursor:pointer;
+        letter-spacing:.03em;
+      ">Continuer ▶</button>
+    </div>`;
+
+  overlay.style.display = 'flex';
+
+  // Also add a log entry so the test log shows the pause
+  _logHeader('⏸ ' + (title || msg).split('\n')[0]);
+}
+
+function _testPromptAck() {
+  const overlay = document.getElementById('test-prompt-overlay');
+  if (overlay) overlay.style.display = 'none';
+  socket.emit('test_prompt_ack');
+  _logHeader('▶ Continuer');
 }
 
 // ── Summary badge ────────────────────────────────────────────────────────────

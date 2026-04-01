@@ -34,9 +34,9 @@ public:
 
 private:
 
-    void pingReceived(); 
-    void connectionLost(); 
-    void connectionSuccess(); 
+    void pingReceived();
+    void connectionLost();
+    void connectionSuccess();
 
     Stream& _stream;
     std::map<int,Request> _sentRequests;
@@ -49,6 +49,10 @@ private:
     unsigned long _lastStream = 0;
     unsigned long _lastPing = 0;
     bool _connected = false;
+
+    char          _inBuf[512];
+    uint16_t      _inBufLen     = 0;
+    unsigned long _inBufStartMs = 0;
 
     void _sendRequest(Request& req);
     void _processIncomingData();

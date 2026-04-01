@@ -58,6 +58,7 @@ void registerCommands() {
     CommandHandler::registerCommand("recalage()", "Execute recalage routine", command_recalage);
     CommandHandler::registerCommand("print(value)", "Print the result of an expression in the terminal", command_print);
     CommandHandler::registerCommand("stats", "Print cyclic stats", command_stats);
+    CommandHandler::registerCommand("health", "Print full service health snapshot", command_health);
     CommandHandler::registerCommand("help", "Display help", command_help);
     CommandHandler::registerCommand("debug(service)", "Toggle debug/trace for a service", command_debug);
 }
@@ -481,6 +482,31 @@ void command_wake(const args_t& args){
 void command_sleep(const args_t& args){
     motion.disengage();
     actuators.disable();
+}
+
+void command_health(const args_t& args){
+    // mo=motion,mv=isMoving,sa=safety,ob=obstacle,ch=chrono,el=elapsed(ms),
+    // ac=actuators,li=lidar,ic=intercom,ic_ok=T4.0 connected,
+    // jt=jetsonBridge,jt_ok=jetsonConnected,vi=vision,lo=localisation
+    char buf[128];
+    snprintf(buf, sizeof(buf),
+        "mo=%d,mv=%d,sa=%d,ob=%d,ch=%d,el=%ld,"
+        "ac=%d,li=%d,ic=%d,ic_ok=%d,jt=%d,jt_ok=%d,vi=%d,lo=%d",
+        motion.enabled()              ? 1 : 0,
+        motion.isMoving()             ? 1 : 0,
+        safety.enabled()              ? 1 : 0,
+        safety.obstacleDetected()     ? 1 : 0,
+        chrono.enabled()              ? 1 : 0,
+        chrono.getElapsedTime(),
+        actuators.enabled()           ? 1 : 0,
+        lidar.enabled()               ? 1 : 0,
+        intercom.enabled()            ? 1 : 0,
+        intercom.isConnected()        ? 1 : 0,
+        jetsonBridge.enabled()        ? 1 : 0,
+        jetsonBridge.jetsonConnected()? 1 : 0,
+        vision.enabled()              ? 1 : 0,
+        localisation.enabled()        ? 1 : 0);
+    Console::println(buf);
 }
 
 //std::vector<String> arguments = extractArguments(args);
