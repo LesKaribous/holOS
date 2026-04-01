@@ -15,7 +15,7 @@ IHM::IHM() : Service(ServiceID::ID_IHM),
 {};
 
 
-void IHM::attach(){
+FLASHMEM void IHM::attach(){
     Console::info() << "IHM activated" << Console::endl;
     screen.begin();
     starter.setInverted(true);
@@ -49,7 +49,7 @@ void IHM::attach(){
     drawBootProgress("System Booting...");
 }
 
-void IHM::run(){
+FLASHMEM void IHM::run(){
     //update inputs
     starter.read();
     teamSwitch.read();
@@ -72,25 +72,25 @@ void IHM::run(){
 }
 
 
-void IHM::clear(){
+FLASHMEM void IHM::clear(){
     screen.fillScreen(ILI9341_BLACK);
     screen.setTextSize(2);
 }
 
-void IHM::setPage(Page p){
+FLASHMEM void IHM::setPage(Page p){
     currentPage = p;
     clear();
     needDraw = true;
     lastDraw = 0;
 }
 
-void IHM::addBootProgress(int v){
+FLASHMEM void IHM::addBootProgress(int v){
     if (currentPage == Page::BOOT){
         bootProgress += v;
     }
 }
 
-void IHM::setRobotPosition(Vec3 pos){
+FLASHMEM void IHM::setRobotPosition(Vec3 pos){
     x.setValue(pos.x);
     y.setValue(pos.y);
     z.setValue(pos.z);
@@ -99,7 +99,7 @@ void IHM::setRobotPosition(Vec3 pos){
 
 #ifndef OLD_BOARD
 
-void IHM::playTone(int frequency, int duration)
+FLASHMEM void IHM::playTone(int frequency, int duration)
 {
 	if (frequency > 0)
 	{
@@ -116,7 +116,7 @@ void IHM::playTone(int frequency, int duration)
 
 #ifndef OLD_BOARD
 // Fonction pour jouer une mélodie avec un tempo spécifique
-void IHM::playMelody(const int *notes, const int *durations, const int length, const int tempo)
+FLASHMEM void IHM::playMelody(const int *notes, const int *durations, const int length, const int tempo)
 {
 	for (int i = 0; i < length; i++)
 	{
@@ -127,7 +127,7 @@ void IHM::playMelody(const int *notes, const int *durations, const int length, c
 	noTone(Pin::Outputs::buzzer);
 }
 
-void IHM::playStartupMelody()
+FLASHMEM void IHM::playStartupMelody()
 {
 	// Tempo spécifique pour cette mélodie (durée d'une noire en ms)
 	const int tempo = 400;
@@ -149,7 +149,7 @@ void IHM::playStartupMelody()
 }
 #endif
 
-void IHM::drawBootProgress(String msg){
+FLASHMEM void IHM::drawBootProgress(String msg){
     if (currentPage == Page::BOOT){
         if(needDraw){
             needDraw = false;
@@ -185,7 +185,7 @@ void IHM::drawBootProgress(String msg){
 #endif
 
 
-void IHM::draw(){
+FLASHMEM void IHM::draw(){
     switch (currentPage){
     case Page::BOOT :
         break;
@@ -205,7 +205,7 @@ void IHM::draw(){
     }
 }
 
-void IHM::updateAllStartVar() {
+FLASHMEM void IHM::updateAllStartVar() {
     bool forceDraw = millis() - lastDraw > 2000;
     if(forceDraw) lastDraw = millis();
 
@@ -229,7 +229,7 @@ void IHM::updateAllStartVar() {
     }    
 }
 
-void IHM::updateAllMatchVar() {
+FLASHMEM void IHM::updateAllMatchVar() {
     bool forceDraw = millis() - lastDraw > 2000;
     if(forceDraw) lastDraw = millis();
 
@@ -253,7 +253,7 @@ void IHM::updateAllMatchVar() {
 }
 
 
-void IHM::drawBackScreenStart() {
+FLASHMEM void IHM::drawBackScreenStart() {
     needDraw = false;
     screen.fillScreen(ILI9341_BLACK);
     screen.setTextColor(ILI9341_ORANGE);
@@ -283,7 +283,7 @@ void IHM::drawBackScreenStart() {
     screen.println(String(__DATE__) + String(" ") + String(__TIME__));
 }
 
-void IHM::updateTeamColor(bool team){
+FLASHMEM void IHM::updateTeamColor(bool team){
     screen.fillRect(10, 200, 220, 98, ILI9341_BLACK);
     screen.setTextSize(4);
     screen.setCursor(60,230);
@@ -303,7 +303,7 @@ void IHM::updateTeamColor(bool team){
     
 }
 
-void IHM::updateInitState() {
+FLASHMEM void IHM::updateInitState() {
     screen.fillRect(100, 110, 140, 15, ILI9341_BLACK);
     screen.setTextSize(2);
     screen.setCursor(100, 110);
@@ -323,7 +323,7 @@ void IHM::updateInitState() {
     }
 }
 
-void IHM::drawBackScreenMatch() {
+FLASHMEM void IHM::drawBackScreenMatch() {
     needDraw = false;
     screen.fillScreen(ILI9341_BLACK);
     screen.setTextColor(ILI9341_ORANGE);
@@ -353,7 +353,7 @@ void IHM::drawBackScreenMatch() {
     screen.println("points");
 }
 
-void IHM::updateStrategyState(bool stratState) {
+FLASHMEM void IHM::updateStrategyState(bool stratState) {
     screen.fillRect(100, 10, 140, 15, ILI9341_BLACK);
     screen.setTextColor(ILI9341_WHITE);
     screen.setTextSize(2);
@@ -371,7 +371,7 @@ void IHM::updateStrategyState(bool stratState) {
     
 }
 
-void IHM::updateLidarState(bool lidarState) {
+FLASHMEM void IHM::updateLidarState(bool lidarState) {
     screen.fillRect(100, 90, 140, 15, ILI9341_BLACK);
     screen.setTextSize(2);
     screen.setCursor(100, 90);
@@ -385,7 +385,7 @@ void IHM::updateLidarState(bool lidarState) {
     }
 }
 
-void IHM::updateTiretteState(bool tiretteState) {
+FLASHMEM void IHM::updateTiretteState(bool tiretteState) {
     screen.fillRect(100, 130, 140, 15, ILI9341_BLACK);
     screen.setTextSize(2);
     screen.setCursor(100, 130);
@@ -399,7 +399,7 @@ void IHM::updateTiretteState(bool tiretteState) {
     }
 }
 
-void IHM::updatePosition(float Xpos, float Ypos, float Tpos) {
+FLASHMEM void IHM::updatePosition(float Xpos, float Ypos, float Tpos) {
     screen.fillRect(100, 30, 82, 55, ILI9341_BLACK);
     screen.setTextColor(ILI9341_WHITE);
     screen.setTextSize(2);
@@ -416,7 +416,7 @@ void IHM::updatePosition(float Xpos, float Ypos, float Tpos) {
     screen.println(int(Tpos));
 }
 
-void IHM::updateMatchTime(int tMatch) {
+FLASHMEM void IHM::updateMatchTime(int tMatch) {
     screen.fillRect(10, 140, 110, 45, ILI9341_BLACK);
     screen.setCursor(10, 142);
     screen.setTextSize(6);
@@ -435,7 +435,7 @@ void IHM::updateMatchTime(int tMatch) {
     screen.println(tMatch);
 }
 
-void IHM::updateScore(int uScore) {
+FLASHMEM void IHM::updateScore(int uScore) {
     screen.fillRect(10, 210, 220, 85, ILI9341_BLACK);
     screen.setCursor(10, 210);
     screen.setTextColor(ILI9341_WHITE);
@@ -445,7 +445,7 @@ void IHM::updateScore(int uScore) {
     screen.println(uScore);
 }
 
-void IHM::waitButtonRelease(){
+FLASHMEM void IHM::waitButtonRelease(){
     long time = millis();
     while (buttonPressed()){
         resetButton.read();
@@ -453,66 +453,66 @@ void IHM::waitButtonRelease(){
     }
 }
 
-void IHM::setIntercomState(bool value){
+FLASHMEM void IHM::setIntercomState(bool value){
     intercom.setValue(value);
 }
 
-void IHM::setTime(int t){
+FLASHMEM void IHM::setTime(int t){
     time.SetValue(t);
 }
 
-void IHM::addScorePoints(int p){
+FLASHMEM void IHM::addScorePoints(int p){
     score.SetValue(score.getValue() + p);
 }
 
-void IHM::freezeSettings(){
+FLASHMEM void IHM::freezeSettings(){
 	teamSwitch.disable();
 	strategySwitch.disable();
 }
-void IHM::unfreezeSettings(){
+FLASHMEM void IHM::unfreezeSettings(){
 	teamSwitch.enable();
 	strategySwitch.enable();
 }
 
-bool IHM::buttonPressed() const{
+FLASHMEM bool IHM::buttonPressed() const{
 	return resetButton.getState();
 }
 
-bool IHM::buttonReleased() const{
+FLASHMEM bool IHM::buttonReleased() const{
 	return resetButton.hasChanged() && !resetButton.getState();
 }
 
-bool IHM::hasStarter() const{
+FLASHMEM bool IHM::hasStarter() const{
 	return starter.getState();
 }
 
-bool IHM::starterPulled() const{
+FLASHMEM bool IHM::starterPulled() const{
 	return !starter.getState() && !resetButton.getState();
 }
 
-bool IHM::starterPlaced() const{
+FLASHMEM bool IHM::starterPlaced() const{
 	return starter.getState() && starter.hasChanged();
 }
 
-bool IHM::starterCancelled() const{
+FLASHMEM bool IHM::starterCancelled() const{
 	return !starter.getState() && resetButton.getState();
 }
 
-bool IHM::isPrimary() const{
+FLASHMEM bool IHM::isPrimary() const{
 	return twinSwitch.getState() == Settings::PRIMARY;
 }
-bool IHM::isSecondary() const{
+FLASHMEM bool IHM::isSecondary() const{
 	return twinSwitch.getState() == Settings::SECONDARY;
 }
 
-bool IHM::isColor(Color col) const{
+FLASHMEM bool IHM::isColor(Color col) const{
 	return teamSwitch.getState() == col;
 }
 
-bool IHM::getStrategyState() const{
+FLASHMEM bool IHM::getStrategyState() const{
 	return strategySwitch.getState();
 }
 
-bool IHM::getRobotType() const{
+FLASHMEM bool IHM::getRobotType() const{
 	return twinSwitch.getState();
 }

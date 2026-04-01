@@ -30,7 +30,9 @@ _seq_thread = None
 # ── Path setup ────────────────────────────────────────────────────────────────
 _HERE        = os.path.dirname(os.path.abspath(__file__))
 STRATEGY_DIR = os.path.join(_HERE, 'strategy')
-MACROS_FILE  = os.path.join(STRATEGY_DIR, 'macros.json')
+MACROS_FILE    = os.path.join(STRATEGY_DIR, 'macros.json')
+MISSIONS_FILE  = os.path.join(STRATEGY_DIR, 'missions.json')
+FALLBACK_PATH  = '/mission_fallback.cfg'   # path on Teensy SD card
 if _HERE not in sys.path:
     sys.path.insert(0, _HERE)
 
@@ -99,6 +101,17 @@ _hw_test_runner     = None   # TestRunner for real hardware tests
 _hw_connecting      = False  # True while a connection attempt is in progress
 _hw_serial_port     = None   # Serial port in use (e.g. 'COM6' or '/dev/ttyACM0')
 _hw_serial_mode     = 'wired' # 'wired' | 'xbee'
+
+# ── Calibration state (Python-side cache) ─────────────────────────────────────
+# Mirrors Calibration::Current + OtosLinear/OtosAngular on the firmware.
+# Updated whenever the user sends a calibration command; reset to firmware
+# defaults when calib_reset is called.
+_CALIB_DEFAULTS = {
+    'cx': 1.089, 'cy': -1.089, 'cr': 0.831,  # Cartesian scale factors
+    'ha': 1.0,   'hb': 1.0,   'hc': 1.0,     # per-wheel holonomic factors
+    'ol': 0.9714, 'oa': 1.0,                  # OTOS linear / angular scalars
+}
+_calib = dict(_CALIB_DEFAULTS)
 
 # ── Interactive test prompt — web-safe alternative to input() ────────────────
 # The test thread calls _web_prompt(msg), which emits 'test_prompt' to the
@@ -323,6 +336,128 @@ def api_hw_cmd():
         return jsonify({'ok': False, 'error': str(e)}), 500
 
 
+# ── Calibration API ───────────────────────────────────────────────────────────
+
+def _calib_connected():
+    """True if a hardware robot is connected and can receive calib commands."""
+    return _hw_transport is not None and _hw_transport.is_connected
+
+def _calib_fire(cmd: str):
+    """Send a calibration command to the robot (fire-and-forget)."""
+    if _calib_connected():
+        try:
+            _hw_transport.fire(cmd)
+        except Exception as e:
+            print(f"[CALIB] fire error: {e}")
+
+@app.route('/api/calibration', methods=['GET'])
+def api_calib_get():
+    """Return the current Python-side calibration cache."""
+    return jsonify({'ok': True, 'calib': dict(_calib), 'connected': _calib_connected()})
+
+@app.route('/api/calibration', methods=['POST'])
+def api_calib_set():
+    """Update one or more calibration values and forward commands to the robot.
+
+    Accepted fields (all optional, send only what changed):
+      cx, cy, cr  → fires  calib_cart(cx, cy, cr)
+      ha, hb, hc  → fires  calib_holo(ha, hb, hc)
+      ol          → fires  calib_otos_linear(ol)
+      oa          → fires  calib_otos_angular(oa)
+    """
+    global _calib
+    data = request.get_json(force=True) or {}
+
+    # Merge valid float fields
+    for k in ('cx','cy','cr','ha','hb','hc','ol','oa'):
+        if k in data:
+            try:
+                _calib[k] = float(data[k])
+            except (TypeError, ValueError):
+                return jsonify({'ok': False, 'error': f'invalid value for {k}'}), 400
+
+    # Determine which groups were changed and fire the appropriate commands
+    changed = set(data.keys()) & {'cx','cy','cr','ha','hb','hc','ol','oa'}
+    if changed & {'cx','cy','cr'}:
+        _calib_fire(f"calib_cart({_calib['cx']},{_calib['cy']},{_calib['cr']})")
+    if changed & {'ha','hb','hc'}:
+        _calib_fire(f"calib_holo({_calib['ha']},{_calib['hb']},{_calib['hc']})")
+    if 'ol' in changed:
+        _calib_fire(f"calib_otos_linear({_calib['ol']})")
+    if 'oa' in changed:
+        _calib_fire(f"calib_otos_angular({_calib['oa']})")
+
+    return jsonify({'ok': True, 'calib': dict(_calib)})
+
+@app.route('/api/calibration/save', methods=['POST'])
+def api_calib_save():
+    """Save calibration to SD card on the robot."""
+    if not _calib_connected():
+        return jsonify({'ok': False, 'error': 'not connected'}), 503
+    _calib_fire('calib_save')
+    return jsonify({'ok': True})
+
+@app.route('/api/calibration/load', methods=['POST'])
+def api_calib_load():
+    """Load calibration from SD card and refresh local cache via calib_status."""
+    if not _calib_connected():
+        return jsonify({'ok': False, 'error': 'not connected'}), 503
+    try:
+        ok, res = _hw_transport.execute('calib_load', timeout_ms=5000)
+        # Try to parse the status string if it came back in the response
+        _try_parse_calib_response(res)
+        return jsonify({'ok': ok, 'calib': dict(_calib)})
+    except Exception as e:
+        return jsonify({'ok': False, 'error': str(e)}), 500
+
+@app.route('/api/calibration/reset', methods=['POST'])
+def api_calib_reset():
+    """Reset calibration to firmware defaults."""
+    global _calib
+    _calib_fire('calib_reset')
+    _calib = dict(_CALIB_DEFAULTS)
+    return jsonify({'ok': True, 'calib': dict(_calib)})
+
+@app.route('/api/calibration/measure', methods=['POST'])
+def api_calib_measure():
+    """Run calib_measure(dist_mm) on the robot, wait for result."""
+    if not _calib_connected():
+        return jsonify({'ok': False, 'error': 'not connected'}), 503
+    data = request.get_json(force=True) or {}
+    try:
+        dist = float(data.get('dist_mm', 500))
+    except (TypeError, ValueError):
+        return jsonify({'ok': False, 'error': 'invalid dist_mm'}), 400
+
+    if dist < 50 or dist > 3000:
+        return jsonify({'ok': False, 'error': 'dist_mm must be 50–3000'}), 400
+
+    try:
+        # Long timeout — robot has to physically move
+        ok, res = _hw_transport.execute(f'calib_measure({dist})', timeout_ms=20000)
+        return jsonify({'ok': ok, 'result': res})
+    except Exception as e:
+        return jsonify({'ok': False, 'error': str(e)}), 500
+
+def _try_parse_calib_response(text: str):
+    """Parse a key=value calibration string and update _calib cache."""
+    global _calib
+    if not text:
+        return
+    import re
+    pairs = re.findall(r'([a-z]+)=([-\d.]+)', text)
+    updated = False
+    for k, v in pairs:
+        if k in _calib:
+            try:
+                _calib[k] = float(v)
+                updated = True
+            except ValueError:
+                pass
+    if updated:
+        socketio.emit('calib_updated', {'calib': dict(_calib)})
+
+
 # ── Strategy file API ──────────────────────────────────────────────────────────
 
 def _safe_name(name):
@@ -417,6 +552,202 @@ def api_macros_put():
         with open(MACROS_FILE, 'w', encoding='utf-8') as f:
             json.dump(data, f, indent=2)
     return jsonify({'ok': True})
+
+
+# ── Missions API ───────────────────────────────────────────────────────────────
+# missions.json format:
+# [{id, name, desc, approach:{x,y,angle}, macro_id, score, priority, time_ms, enabled}]
+
+def _load_missions():
+    if os.path.isfile(MISSIONS_FILE):
+        with open(MISSIONS_FILE, 'r', encoding='utf-8') as f:
+            try: return json.load(f)
+            except: pass
+    return []
+
+def _save_missions(data: list):
+    with open(MISSIONS_FILE, 'w', encoding='utf-8') as f:
+        json.dump(data, f, indent=2, ensure_ascii=False)
+
+@app.route('/api/missions', methods=['GET'])
+def api_missions_get():
+    return jsonify(_load_missions())
+
+@app.route('/api/missions', methods=['PUT'])
+def api_missions_put():
+    data = request.get_json()
+    if isinstance(data, list):
+        _save_missions(data)
+    return jsonify({'ok': True})
+
+
+def _generate_fallback_cfg(missions: list, macros: list) -> str:
+    """
+    Generate a plain-text fallback strategy for the Teensy SD card.
+    Format: one firmware command per line, sections separated by comments.
+    The firmware executes these via the OS command interpreter on Jetson disconnect.
+
+    Macro step → firmware command mapping:
+        move_to {x,y}         → go(x,y)
+        face {angle_deg}      → turn(angle_deg)
+        actuator {cmd,wait_ms} → <cmd>
+        wait {ms}             → delay(ms)    (if firmware supports it)
+        call_macro {name}     → (inlined)
+        log {msg}             → (skipped in fallback)
+        if_occupied           → (skipped in fallback — no lidar-based skip)
+    """
+    macro_by_name = {m['name']: m for m in macros}
+
+    def steps_to_cmds(steps: list, depth: int = 0) -> list:
+        """Recursively resolve macro steps to firmware command strings."""
+        if depth > 5:  # guard against circular references
+            return []
+        cmds = []
+        for step in steps:
+            t = step.get('type', '')
+            if t == 'move_to':
+                cmds.append(f"go({int(step.get('x',0))},{int(step.get('y',0))})")
+            elif t == 'face':
+                cmds.append(f"turn({step.get('angle_deg',0):.1f})")
+            elif t == 'actuator':
+                cmd = step.get('cmd', '').strip()
+                if cmd:
+                    cmds.append(cmd)
+                wait = int(step.get('wait_ms', 0))
+                if wait > 0:
+                    cmds.append(f"delay({wait})")
+            elif t == 'wait':
+                ms = int(step.get('ms', 0))
+                if ms > 0:
+                    cmds.append(f"delay({ms})")
+            elif t == 'call_macro':
+                ref = macro_by_name.get(step.get('name', ''))
+                if ref:
+                    cmds += steps_to_cmds(ref.get('steps', []), depth + 1)
+            # log / if_occupied → skipped in fallback
+        return cmds
+
+    lines = [
+        '# holOS Mission Fallback Strategy',
+        f'# Generated by holOS — {len(missions)} missions',
+        '# One firmware command per line.',
+        '# Edit carefully — no conditions, no branching.',
+        '',
+    ]
+
+    enabled = [m for m in missions if m.get('enabled', True)]
+    enabled.sort(key=lambda m: -m.get('priority', 0))
+
+    for mission in enabled:
+        name   = mission.get('name', '?')
+        score  = mission.get('score', 0)
+        prio   = mission.get('priority', 0)
+        approach = mission.get('approach', {})
+        macro_id = mission.get('macro_id', '')
+
+        lines.append(f'# === Mission: {name} (score={score}, priority={prio}) ===')
+
+        # Approach move
+        ax = approach.get('x')
+        ay = approach.get('y')
+        aa = approach.get('angle')
+        if ax is not None and ay is not None:
+            lines.append(f'go({int(ax)},{int(ay)})')
+        if aa is not None:
+            lines.append(f'turn({float(aa):.1f})')
+
+        # Macro steps
+        macro = macro_by_name.get(macro_id)
+        if macro:
+            cmds = steps_to_cmds(macro.get('steps', []))
+            lines += cmds
+        else:
+            lines.append(f'# (no macro: {macro_id!r})')
+
+        lines.append('')
+
+    lines.append('# === End of strategy ===')
+    return '\n'.join(lines) + '\n'
+
+
+@app.route('/api/missions/deploy-sd', methods=['POST'])
+def api_missions_deploy_sd():
+    """
+    Generate the fallback strategy and write it to the Teensy SD card.
+    Sends 'mission_write_sd <content>' (chunked) to firmware.
+    Returns the generated text so the UI can preview it.
+    """
+    if not _calib_connected():
+        return jsonify({'ok': False, 'error': 'Robot non connecté'}), 503
+
+    missions = _load_missions()
+    macros   = _load_missions_macros()
+    cfg      = _generate_fallback_cfg(missions, macros)
+
+    # Write to SD via firmware command (multi-line → send line by line)
+    try:
+        ok1, _ = _hw_transport.execute('mission_sd_open', timeout_ms=3000)
+        if not ok1:
+            return jsonify({'ok': False, 'error': 'mission_sd_open failed'}), 500
+        for line in cfg.splitlines():
+            # Escape any special characters if needed
+            escaped = line.replace('"', '\\"')
+            ok2, _ = _hw_transport.execute(f'mission_sd_line {escaped}', timeout_ms=2000)
+            if not ok2:
+                _hw_transport.execute('mission_sd_close', timeout_ms=2000)
+                return jsonify({'ok': False, 'error': f'Write failed at: {line}'}), 500
+        ok3, _ = _hw_transport.execute('mission_sd_close', timeout_ms=3000)
+        if not ok3:
+            return jsonify({'ok': False, 'error': 'mission_sd_close failed'}), 500
+        return jsonify({'ok': True, 'cfg': cfg, 'lines': len(cfg.splitlines())})
+    except Exception as e:
+        return jsonify({'ok': False, 'error': str(e)}), 500
+
+
+@app.route('/api/missions/preview-fallback', methods=['POST'])
+def api_missions_preview_fallback():
+    """Generate and return the fallback .cfg without writing to SD."""
+    missions = _load_missions()
+    macros   = _load_missions_macros()
+    cfg      = _generate_fallback_cfg(missions, macros)
+    return jsonify({'ok': True, 'cfg': cfg})
+
+
+def _load_missions_macros():
+    """Load macros from macros.json (shared helper)."""
+    if os.path.isfile(MACROS_FILE):
+        with open(MACROS_FILE, 'r', encoding='utf-8') as f:
+            try: return json.load(f)
+            except: pass
+    return []
+
+
+@app.route('/api/missions/run-step', methods=['POST'])
+def api_missions_run_step():
+    """
+    Execute a single macro step on the connected robot.
+    Body: {type, ...step_fields}
+    """
+    if not _calib_connected():
+        return jsonify({'ok': False, 'error': 'Robot non connecté'}), 503
+    step = request.get_json() or {}
+    t = step.get('type', '')
+    cmd = None
+    if t == 'move_to':
+        cmd = f"go({int(step.get('x',0))},{int(step.get('y',0))})"
+    elif t == 'face':
+        cmd = f"turn({step.get('angle_deg',0):.1f})"
+    elif t == 'actuator':
+        cmd = step.get('cmd', '').strip()
+    elif t == 'wait':
+        # Just delay on server side — firmware has no 'wait' command per se
+        ms = int(step.get('ms', 0))
+        time.sleep(ms / 1000.0)
+        return jsonify({'ok': True, 'cmd': f'delay({ms}ms) — done locally'})
+    if not cmd:
+        return jsonify({'ok': False, 'error': f'No firmware command for step type {t!r}'}), 400
+    ok, res = _hw_transport.execute(cmd, timeout_ms=15000)
+    return jsonify({'ok': ok, 'cmd': cmd, 'response': res})
 
 
 # ── Serial ports API ───────────────────────────────────────────────────────────
@@ -600,6 +931,25 @@ def on_serial_connect(data):
                 def _on_motion(data_str):
                     print(f"[TELEMETRY] motion: {data_str}")
                     _hw_tel_data['motion'] = data_str
+                    # PR-2: firmware retransmits DONE every 2 s until ack_done is received.
+                    # When a move was started via fire() (web UI, map click, direct command)
+                    # nobody calls ack_done automatically.  We detect this by checking
+                    # _waiting_motion: when the test runner's execute() is managing the move,
+                    # _waiting_motion==True and execute() itself sends ack_done.  Otherwise
+                    # we fire it here via a background thread (needs CRC framing → execute()).
+                    if data_str.startswith('DONE:') and t.is_connected:
+                        socketio.emit('motion_done', {
+                            'ok':  data_str.startswith('DONE:ok'),
+                            'raw': data_str,
+                        })
+                        if not t._waiting_motion:
+                            def _auto_ack():
+                                try:
+                                    t.execute('ack_done', timeout_ms=2000)
+                                except Exception:
+                                    pass
+                            threading.Thread(target=_auto_ack, daemon=True,
+                                             name='auto-ack-done').start()
                 t.subscribe_telemetry('motion', _on_motion)
 
                 # ── TEL:safety → live safety override ────────────────────────

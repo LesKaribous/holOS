@@ -126,6 +126,9 @@
     <button class="nav-btn" data-view="strategy" onclick="switchView('strategy',this)">
       <span class="nav-icon">📋</span><span class="nav-lbl">Strategy</span>
     </button>
+    <button class="nav-btn" data-view="missions" onclick="switchView('missions',this)">
+      <span class="nav-icon">🎯</span><span class="nav-lbl">Missions</span>
+    </button>
     <button class="nav-btn" data-view="macros"   onclick="switchView('macros',this)">
       <span class="nav-icon">⚡</span><span class="nav-lbl">Macros</span>
     </button>
@@ -155,6 +158,9 @@
     </button>
     <button class="nav-btn" data-view="modules" onclick="switchView('modules',this)">
       <span class="nav-icon">⚙</span><span class="nav-lbl">Modules</span>
+    </button>
+    <button class="nav-btn" data-view="calibration" onclick="switchView('calibration',this)">
+      <span class="nav-icon">📐</span><span class="nav-lbl">Calibration</span>
     </button>
   </nav>
 
@@ -274,6 +280,135 @@
     </div><!-- /view-strategy -->
 
 
+    <!-- ── MISSIONS VIEW ────────────────────────────────────────────────────── -->
+    <div id="view-missions" class="view split-view">
+
+      <!-- Left sidebar: mission list -->
+      <div class="split-sidebar">
+        <div class="sidebar-section" style="flex:1">
+          <div class="sidebar-header">
+            Missions
+            <button class="btn-tiny" onclick="newMission()">+ New</button>
+          </div>
+          <div id="mission-list" class="file-list"></div>
+        </div>
+
+        <!-- SD Fallback panel -->
+        <div class="sidebar-section" style="border-top:1px solid var(--surface3);padding-top:8px">
+          <div class="sidebar-header" style="font-size:11px">SD Fallback</div>
+          <div style="display:flex;flex-direction:column;gap:5px;padding:0 6px 8px">
+            <button class="btn btn-sm" onclick="missionPreviewFallback()" title="Preview the fallback.cfg that would be written">👁 Prévisualiser</button>
+            <button class="btn btn-sm green" id="btn-deploy-sd" onclick="missionDeploySD()" title="Write strategy to Teensy SD card">💾 Sauvegarder sur SD</button>
+            <span class="sidebar-hint" id="mission-deploy-status"></span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Right: mission detail editor -->
+      <div class="split-main" id="mission-editor-area">
+
+        <div id="mission-empty" class="empty-state">
+          <span>Sélectionnez ou créez une mission</span>
+        </div>
+
+        <div id="mission-editor" class="hidden">
+
+          <!-- Header toolbar -->
+          <div class="editor-toolbar">
+            <input id="mission-name" type="text" class="editor-title-input" placeholder="mission_name">
+            <div style="display:flex;gap:5px;align-items:center">
+              <button class="btn-tiny" onclick="saveMissions()">💾 Save</button>
+              <button class="btn-tiny red" onclick="deleteMission()">🗑</button>
+            </div>
+          </div>
+
+          <!-- Description -->
+          <div class="mission-meta-row">
+            <label class="mission-meta-lbl">Description</label>
+            <input id="mission-desc" type="text" class="input-sm" placeholder="Objectif de cette mission" style="flex:1">
+          </div>
+
+          <!-- Score / Priority / Time -->
+          <div class="mission-meta-row">
+            <label class="mission-meta-lbl">Score (pts)</label>
+            <input id="mission-score" type="number" class="input-sm" value="0" style="width:70px">
+            <label class="mission-meta-lbl" style="margin-left:12px">Priorité</label>
+            <input id="mission-priority" type="number" class="input-sm" value="5" style="width:60px">
+            <label class="mission-meta-lbl" style="margin-left:12px">Budget (ms)</label>
+            <input id="mission-time-ms" type="number" class="input-sm" value="8000" style="width:80px">
+          </div>
+
+          <!-- Approach point -->
+          <div class="mission-section-title">Point d'approche
+            <span style="font-size:10px;color:var(--text-dim);font-weight:400"> — position du robot avant d'exécuter la macro</span>
+          </div>
+          <div class="mission-meta-row">
+            <label class="mission-meta-lbl">X (mm)</label>
+            <input id="mission-ax" type="number" class="input-sm" placeholder="—" style="width:80px"
+                   oninput="syncMissionApproach()">
+            <label class="mission-meta-lbl" style="margin-left:10px">Y (mm)</label>
+            <input id="mission-ay" type="number" class="input-sm" placeholder="—" style="width:80px"
+                   oninput="syncMissionApproach()">
+            <label class="mission-meta-lbl" style="margin-left:10px">Angle (°)</label>
+            <input id="mission-aa" type="number" class="input-sm" placeholder="—" style="width:70px"
+                   oninput="syncMissionApproach()">
+            <button class="btn-tiny" style="margin-left:8px" onclick="missionPickApproach()"
+                    title="Cliquer sur la carte pour choisir le point d'approche">🎯 Carte</button>
+          </div>
+
+          <!-- Macro selection -->
+          <div class="mission-section-title">Macro à exécuter</div>
+          <div class="mission-meta-row">
+            <label class="mission-meta-lbl">Macro</label>
+            <select id="mission-macro-sel" class="input-sm" style="flex:1" onchange="syncMissionMacro()">
+              <option value="">— aucune —</option>
+            </select>
+            <button class="btn-tiny" style="margin-left:6px" onclick="missionGoToMacro()"
+                    title="Aller à la macro">↗</button>
+          </div>
+
+          <!-- Macro step preview (read-only) -->
+          <div id="mission-macro-preview" class="mission-macro-preview hidden">
+            <div class="mission-section-title" style="margin-top:10px">Aperçu des étapes
+              <button class="btn-tiny" onclick="missionRunOnRobot()" id="btn-mission-run"
+                      title="Exécuter approche + macro sur le robot connecté">▶ Run on robot</button>
+            </div>
+            <div id="mission-steps-preview"></div>
+          </div>
+
+          <!-- Enabled toggle -->
+          <div class="mission-meta-row" style="margin-top:12px">
+            <label class="mission-meta-lbl">Activée</label>
+            <input id="mission-enabled" type="checkbox" checked
+                   onchange="syncMissionEnabled()">
+            <span style="font-size:11px;color:var(--text-dim);margin-left:6px">
+              Les missions désactivées sont ignorées dans la stratégie et le fallback SD.</span>
+          </div>
+
+        </div><!-- /mission-editor -->
+      </div><!-- /split-main -->
+
+      <!-- Fallback preview overlay -->
+      <div id="mission-fallback-overlay" class="hidden" style="
+          position:absolute;inset:0;background:var(--bg);z-index:10;
+          display:flex;flex-direction:column;overflow:hidden;">
+        <div style="display:flex;align-items:center;gap:8px;padding:10px 14px;
+                    border-bottom:1px solid var(--surface3);flex-shrink:0">
+          <span style="flex:1;font-size:13px;font-weight:600">Aperçu — mission_fallback.cfg</span>
+          <button class="btn-tiny" onclick="missionCloseFallbackPreview()">✕ Fermer</button>
+          <button class="btn btn-sm green" id="btn-deploy-from-preview" onclick="missionDeploySD()"
+                  title="Écrire sur la carte SD du Teensy">💾 Sauvegarder sur SD</button>
+        </div>
+        <pre id="mission-fallback-text" style="
+            flex:1;overflow:auto;margin:0;padding:14px;
+            font-size:11px;line-height:1.5;
+            color:var(--text-dim);font-family:var(--font-mono,monospace);
+            background:var(--surface)"></pre>
+      </div>
+
+    </div><!-- /view-missions -->
+
+
     <!-- ── MACROS VIEW ─────────────────────────────────────────────────────── -->
     <div id="view-macros" class="view split-view">
 
@@ -299,6 +434,8 @@
             <div style="display:flex;gap:5px;align-items:center">
               <button class="btn-tiny" onclick="saveMacros()">💾 Save</button>
               <button class="btn-tiny green" onclick="runMacroInSim()">▶ Sim</button>
+              <button class="btn-tiny" id="btn-macro-run-robot" onclick="runMacroOnRobot()"
+                      title="Exécuter la macro séquentiellement sur le robot connecté">🤖 Robot</button>
               <button class="btn-tiny" onclick="generateMacroPython()">{ } Python</button>
               <button class="btn-tiny red" onclick="deleteMacro()">🗑</button>
             </div>
@@ -530,6 +667,131 @@
 
       </div>
     </div><!-- /view-modules -->
+
+
+    <!-- ── CALIBRATION VIEW ──────────────────────────────────────────────────── -->
+    <div id="view-calibration" class="view">
+      <div class="calib-page">
+
+        <!-- Connection banner -->
+        <div class="calib-banner" id="calib-banner">
+          <span id="calib-banner-dot" class="mod-status-dot"></span>
+          <span id="calib-banner-text">Non connecté — les commandes seront envoyées dès la connexion</span>
+        </div>
+
+        <!-- Toolbar -->
+        <div class="calib-toolbar">
+          <button class="btn btn-sm green" id="btn-calib-apply-all" onclick="calibApplyAll()">⚡ Appliquer tout</button>
+          <button class="btn btn-sm"       onclick="calibReset()">↺ Reset défauts</button>
+          <button class="btn btn-sm"       onclick="calibSave()" title="Sauvegarder sur carte SD">💾 Sauvegarder SD</button>
+          <button class="btn btn-sm"       onclick="calibLoad()" title="Charger depuis carte SD">📂 Charger SD</button>
+          <span class="calib-toolbar-hint" id="calib-status-msg"></span>
+        </div>
+
+        <div class="calib-grid">
+
+          <!-- ── Cartesian scale factors ──────────────────────────────────── -->
+          <div class="calib-card">
+            <div class="calib-card-title">Facteurs Cartésiens
+              <span class="calib-card-hint">Correction XY + rotation après IK</span>
+            </div>
+            <div class="calib-row">
+              <label class="calib-lbl">Scale X (cx)</label>
+              <input type="number" id="calib-cx" class="calib-input" step="0.001" value="1.089"
+                     oninput="calibMarkDirty('cart')" onkeydown="if(event.key==='Enter')calibApplyCart()">
+              <button class="calib-btn" onclick="calibApplyCart()">↵</button>
+            </div>
+            <div class="calib-row">
+              <label class="calib-lbl">Scale Y (cy)</label>
+              <input type="number" id="calib-cy" class="calib-input" step="0.001" value="-1.089"
+                     oninput="calibMarkDirty('cart')" onkeydown="if(event.key==='Enter')calibApplyCart()">
+              <button class="calib-btn" onclick="calibApplyCart()">↵</button>
+            </div>
+            <div class="calib-row">
+              <label class="calib-lbl">Scale Rot (cr)</label>
+              <input type="number" id="calib-cr" class="calib-input" step="0.001" value="0.831"
+                     oninput="calibMarkDirty('cart')" onkeydown="if(event.key==='Enter')calibApplyCart()">
+              <button class="calib-btn" onclick="calibApplyCart()">↵</button>
+            </div>
+            <div class="calib-row" style="justify-content:flex-end">
+              <button class="btn btn-sm" id="btn-calib-cart" onclick="calibApplyCart()">Appliquer Cartésien</button>
+            </div>
+          </div>
+
+          <!-- ── Per-wheel holonomic factors ─────────────────────────────── -->
+          <div class="calib-card">
+            <div class="calib-card-title">Facteurs Holonomes
+              <span class="calib-card-hint">Compensation roue par roue (A / B / C)</span>
+            </div>
+            <div class="calib-row">
+              <label class="calib-lbl">Roue A (ha)</label>
+              <input type="number" id="calib-ha" class="calib-input" step="0.001" value="1.0"
+                     oninput="calibMarkDirty('holo')" onkeydown="if(event.key==='Enter')calibApplyHolo()">
+              <button class="calib-btn" onclick="calibApplyHolo()">↵</button>
+            </div>
+            <div class="calib-row">
+              <label class="calib-lbl">Roue B (hb)</label>
+              <input type="number" id="calib-hb" class="calib-input" step="0.001" value="1.0"
+                     oninput="calibMarkDirty('holo')" onkeydown="if(event.key==='Enter')calibApplyHolo()">
+              <button class="calib-btn" onclick="calibApplyHolo()">↵</button>
+            </div>
+            <div class="calib-row">
+              <label class="calib-lbl">Roue C (hc)</label>
+              <input type="number" id="calib-hc" class="calib-input" step="0.001" value="1.0"
+                     oninput="calibMarkDirty('holo')" onkeydown="if(event.key==='Enter')calibApplyHolo()">
+              <button class="calib-btn" onclick="calibApplyHolo()">↵</button>
+            </div>
+            <div class="calib-row" style="justify-content:flex-end">
+              <button class="btn btn-sm" id="btn-calib-holo" onclick="calibApplyHolo()">Appliquer Holonome</button>
+            </div>
+          </div>
+
+          <!-- ── OTOS optical sensor scalars ─────────────────────────────── -->
+          <div class="calib-card">
+            <div class="calib-card-title">OTOS — Scalaires capteur optique
+              <span class="calib-card-hint">Plage valide : 0.872 – 1.127</span>
+            </div>
+            <div class="calib-row">
+              <label class="calib-lbl">Linéaire (ol)</label>
+              <input type="number" id="calib-ol" class="calib-input" step="0.001" min="0.872" max="1.127" value="0.9714"
+                     oninput="calibMarkDirty('otos_l')" onkeydown="if(event.key==='Enter')calibApplyOtosLinear()">
+              <button class="calib-btn" onclick="calibApplyOtosLinear()">↵</button>
+            </div>
+            <div class="calib-row" style="justify-content:flex-end">
+              <button class="btn btn-sm" id="btn-calib-ol" onclick="calibApplyOtosLinear()">Appliquer Linéaire</button>
+            </div>
+            <div class="calib-row">
+              <label class="calib-lbl">Angulaire (oa)</label>
+              <input type="number" id="calib-oa" class="calib-input" step="0.001" min="0.872" max="1.127" value="1.0"
+                     oninput="calibMarkDirty('otos_a')" onkeydown="if(event.key==='Enter')calibApplyOtosAngular()">
+              <button class="calib-btn" onclick="calibApplyOtosAngular()">↵</button>
+            </div>
+            <div class="calib-row" style="justify-content:flex-end">
+              <button class="btn btn-sm" id="btn-calib-oa" onclick="calibApplyOtosAngular()">Appliquer Angulaire</button>
+            </div>
+          </div>
+
+          <!-- ── Measurement tool ────────────────────────────────────────── -->
+          <div class="calib-card calib-card-wide">
+            <div class="calib-card-title">Outil de mesure OTOS
+              <span class="calib-card-hint">Move en boucle ouverte → mesure OTOS → suggère la correction</span>
+            </div>
+            <div class="calib-measure-desc">
+              Placez le robot sur une surface libre.
+              Entrez la distance cible, cliquez <strong>Mesurer</strong>.
+              Le robot avancera en mode stepper, puis le résultat OTOS sera affiché.
+            </div>
+            <div class="calib-row">
+              <label class="calib-lbl">Distance (mm)</label>
+              <input type="number" id="calib-measure-dist" class="calib-input" value="500" min="50" max="3000" step="10">
+              <button class="btn btn-sm green" id="btn-calib-measure" onclick="calibMeasure()">📏 Mesurer</button>
+            </div>
+            <div id="calib-measure-result" class="calib-measure-result hidden"></div>
+          </div>
+
+        </div><!-- /calib-grid -->
+      </div><!-- /calib-page -->
+    </div><!-- /view-calibration -->
 
 
   </div><!-- /views -->

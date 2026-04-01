@@ -3,7 +3,7 @@
 
 static std::map<String, String> variables;
 
-Expression::Expression(const String &str) : pos(0)
+FLASHMEM Expression::Expression(const String &str) : pos(0)
 {
     String raw = str;
     raw = raw.trim();
@@ -16,13 +16,13 @@ Expression::Expression(const String &str) : pos(0)
     root = parseExpression(); // Parse the expression and store the AST in the root member variable
 }
 
-void Expression::printCompiled(){
+FLASHMEM void Expression::printCompiled(){
     Console::print("Compiled Expression : ");
     printCompiledNode(root);
     Console::println("");
 }
 
-void Expression::printCompiledNode(std::shared_ptr<Node> node){
+FLASHMEM void Expression::printCompiledNode(std::shared_ptr<Node> node){
     if(node != nullptr){
         if(node->left != nullptr){
             if(node->left->right.get() != node.get()){
@@ -46,17 +46,17 @@ void Expression::printCompiledNode(std::shared_ptr<Node> node){
     }
 }
 
-String Expression::evaluate()
+FLASHMEM String Expression::evaluate()
 {
     return evaluateNode(root); // Evaluate the precomputed AST
 }
 
-void Expression::registerVariables(const String &varname, const String &value)
+FLASHMEM void Expression::registerVariables(const String &varname, const String &value)
 {
     getVariables()[varname] = value;
 }
 
-void Expression::setVariable(const String &varname, const String &value)
+FLASHMEM void Expression::setVariable(const String &varname, const String &value)
 {
     getVariables()[varname] = value;
 }
@@ -262,17 +262,17 @@ std::shared_ptr<Node> Expression::parseVariable()
     return std::make_shared<Node>(VARIABLE, value, nullptr, nullptr);
 }
 
-bool Expression::currentTokenIs(TokenType type)
+FLASHMEM bool Expression::currentTokenIs(TokenType type)
 {
     return currentToken.type == type;
 }
 
-String Expression::currentTokenValue()
+FLASHMEM String Expression::currentTokenValue()
 {
     return currentToken.value;
 }
 
-void Expression::consumeToken()
+FLASHMEM void Expression::consumeToken()
 {
     previousToken = currentToken;
     // Check for the end of the input
@@ -451,7 +451,7 @@ void Expression::consumeToken()
     //Console::println(currentToken.toString());
 }
 
-String Expression::evaluateNode(std::shared_ptr<Node> node)
+FLASHMEM String Expression::evaluateNode(std::shared_ptr<Node> node)
 {
     switch (node->type){
     case ASSIGN:
@@ -499,17 +499,17 @@ String Expression::evaluateNode(std::shared_ptr<Node> node)
     }
 }
 
-bool Expression::isVector(const Node &node)
+FLASHMEM bool Expression::isVector(const Node &node)
 {
     return node.type == VECTOR2 || node.type == VECTOR3;
 }
 
-bool Expression::isValue(const Node &node)
+FLASHMEM bool Expression::isValue(const Node &node)
 {
     return node.type == VECTOR2 || node.type == VECTOR3 || node.type == LITERAL || node.type == TokenType::VARIABLE;
 }
 
-String Expression::evaluateAdd(std::shared_ptr<Node> node)
+FLASHMEM String Expression::evaluateAdd(std::shared_ptr<Node> node)
 {
     String leftValue = evaluateNode(node->left);
     String rightValue = evaluateNode(node->right);
@@ -526,7 +526,7 @@ String Expression::evaluateAdd(std::shared_ptr<Node> node)
     }
 }
 
-String Expression::addVectorsOrScalar(const Node &left, const Node &right)
+FLASHMEM String Expression::addVectorsOrScalar(const Node &left, const Node &right)
 {
     TokenType leftType = left.type;
     TokenType rightType = right.type;
@@ -547,7 +547,7 @@ String Expression::addVectorsOrScalar(const Node &left, const Node &right)
     }
 }
 
-String Expression::evaluateSubtract(std::shared_ptr<Node> node)
+FLASHMEM String Expression::evaluateSubtract(std::shared_ptr<Node> node)
 {
     String leftValue = evaluateNode(node->left);
     String rightValue = evaluateNode(node->right);
@@ -565,7 +565,7 @@ String Expression::evaluateSubtract(std::shared_ptr<Node> node)
     }
 }
 
-String Expression::subVectorsOrScalar(const Node &left, const Node &right)
+FLASHMEM String Expression::subVectorsOrScalar(const Node &left, const Node &right)
 {
     TokenType leftType = left.type;
     TokenType rightType = right.type;
@@ -586,7 +586,7 @@ String Expression::subVectorsOrScalar(const Node &left, const Node &right)
     }
 }
 
-String Expression::evaluateMultiply(std::shared_ptr<Node> node)
+FLASHMEM String Expression::evaluateMultiply(std::shared_ptr<Node> node)
 {
     String leftValue = evaluateNode(node->left);
     String rightValue = evaluateNode(node->right);
@@ -604,7 +604,7 @@ String Expression::evaluateMultiply(std::shared_ptr<Node> node)
     }
 }
 
-String Expression::multVectorsOrScalar(const Node &left, const Node &right)
+FLASHMEM String Expression::multVectorsOrScalar(const Node &left, const Node &right)
 {
     TokenType leftType = left.type;
     TokenType rightType = right.type;
@@ -640,7 +640,7 @@ String Expression::multVectorsOrScalar(const Node &left, const Node &right)
     }
 }
 
-String Expression::evaluateDivide(std::shared_ptr<Node> node)
+FLASHMEM String Expression::evaluateDivide(std::shared_ptr<Node> node)
 {
     String leftValue = evaluateNode(node->left);
     String rightValue = evaluateNode(node->right);
@@ -663,7 +663,7 @@ String Expression::evaluateDivide(std::shared_ptr<Node> node)
     }
 }
 
-String Expression::divVectorsOrScalar(const Node &left, const Node &right)
+FLASHMEM String Expression::divVectorsOrScalar(const Node &left, const Node &right)
 {
     TokenType leftType = left.type;
     TokenType rightType = right.type;
@@ -693,7 +693,7 @@ String Expression::divVectorsOrScalar(const Node &left, const Node &right)
     }
 }
 
-String Expression::evaluateOr(std::shared_ptr<Node> node)
+FLASHMEM String Expression::evaluateOr(std::shared_ptr<Node> node)
 {
     String leftValue = evaluateNode(node->left);
     String rightValue = evaluateNode(node->right);
@@ -701,7 +701,7 @@ String Expression::evaluateOr(std::shared_ptr<Node> node)
     return result ? "true" : "false";
 }
 
-String Expression::evaluateAnd(std::shared_ptr<Node> node)
+FLASHMEM String Expression::evaluateAnd(std::shared_ptr<Node> node)
 {
     String leftValue = evaluateNode(node->left);
     String rightValue = evaluateNode(node->right);
@@ -709,14 +709,14 @@ String Expression::evaluateAnd(std::shared_ptr<Node> node)
     return result ? "true" : "false";
 }
 
-String Expression::evaluateNot(std::shared_ptr<Node> node)
+FLASHMEM String Expression::evaluateNot(std::shared_ptr<Node> node)
 {
     String value = evaluateNode(node->left); // Assuming the NOT operation is unary and applies to the left child
     bool result = (value != "true");
     return result ? "true" : "false";
 }
 
-String Expression::evaluateEqual(std::shared_ptr<Node> node)
+FLASHMEM String Expression::evaluateEqual(std::shared_ptr<Node> node)
 {
     String leftValue = evaluateNode(node->left);
     String rightValue = evaluateNode(node->right);
@@ -724,7 +724,7 @@ String Expression::evaluateEqual(std::shared_ptr<Node> node)
     return result ? "true" : "false";
 }
 
-String Expression::evaluateNotEqual(std::shared_ptr<Node> node)
+FLASHMEM String Expression::evaluateNotEqual(std::shared_ptr<Node> node)
 {
     String leftValue = evaluateNode(node->left);
     String rightValue = evaluateNode(node->right);
@@ -732,7 +732,7 @@ String Expression::evaluateNotEqual(std::shared_ptr<Node> node)
     return result ? "true" : "false";
 }
 
-String Expression::evaluateLess(std::shared_ptr<Node> node)
+FLASHMEM String Expression::evaluateLess(std::shared_ptr<Node> node)
 {
     String leftValue = evaluateNode(node->left);
     String rightValue = evaluateNode(node->right);
@@ -749,7 +749,7 @@ String Expression::evaluateLess(std::shared_ptr<Node> node)
     return result ? "true" : "false";
 }
 
-String Expression::evaluateGreater(std::shared_ptr<Node> node)
+FLASHMEM String Expression::evaluateGreater(std::shared_ptr<Node> node)
 {
     String leftValue = evaluateNode(node->left);
     String rightValue = evaluateNode(node->right);
@@ -765,7 +765,7 @@ String Expression::evaluateGreater(std::shared_ptr<Node> node)
     return result ? "true" : "false";
 }
 
-String Expression::evaluateLessEqual(std::shared_ptr<Node> node)
+FLASHMEM String Expression::evaluateLessEqual(std::shared_ptr<Node> node)
 {
     String leftValue = evaluateNode(node->left);
     String rightValue = evaluateNode(node->right);
@@ -781,7 +781,7 @@ String Expression::evaluateLessEqual(std::shared_ptr<Node> node)
     return result ? "true" : "false";
 }
 
-String Expression::evaluateGreaterEqual(std::shared_ptr<Node> node)
+FLASHMEM String Expression::evaluateGreaterEqual(std::shared_ptr<Node> node)
 {
     String leftValue = evaluateNode(node->left);
     String rightValue = evaluateNode(node->right);
@@ -797,7 +797,7 @@ String Expression::evaluateGreaterEqual(std::shared_ptr<Node> node)
     return result ? "true" : "false";
 }
 
-String Expression::evaluateVariable(std::shared_ptr<Node> node)
+FLASHMEM String Expression::evaluateVariable(std::shared_ptr<Node> node)
 {
     String variableName = node->value;
 
@@ -808,7 +808,7 @@ String Expression::evaluateVariable(std::shared_ptr<Node> node)
     return value;
 }
 
-String Expression::evaluateAssign(std::shared_ptr<Node> node)
+FLASHMEM String Expression::evaluateAssign(std::shared_ptr<Node> node)
 {
 
     String value = evaluateNode(node->right);
@@ -818,7 +818,7 @@ String Expression::evaluateAssign(std::shared_ptr<Node> node)
     return value;
 }
 
-String Expression::evaluateIncrement(std::shared_ptr<Node> node)
+FLASHMEM String Expression::evaluateIncrement(std::shared_ptr<Node> node)
 {
     
     if(node->left->type == VARIABLE){
@@ -830,7 +830,7 @@ String Expression::evaluateIncrement(std::shared_ptr<Node> node)
     return "error";
 }
 
-String Expression::evaluateDecrement(std::shared_ptr<Node> node)
+FLASHMEM String Expression::evaluateDecrement(std::shared_ptr<Node> node)
 {
     if(node->left->type == VARIABLE){
         String oldValue = lookupVariableValue(node->left->value);
@@ -842,7 +842,7 @@ String Expression::evaluateDecrement(std::shared_ptr<Node> node)
 }
 
 
-String Expression::lookupVariableValue(const String &variableName)
+FLASHMEM String Expression::lookupVariableValue(const String &variableName)
 {
     auto it = getVariables().find(variableName);
     if (it != getVariables().end())

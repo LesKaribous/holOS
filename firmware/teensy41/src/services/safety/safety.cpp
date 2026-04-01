@@ -22,21 +22,21 @@ void getDistanceCallback(Request& req){
 }
 
 
-void Safety::enable(){
+FLASHMEM void Safety::enable(){
     Service::enable();
 }
 
-void Safety::disable(){
+FLASHMEM void Safety::disable(){
     Service::disable();
     m_obstacleDetected = false;
     Console::println("obstable forced to false");
 }
 
 
-void Safety::attach(){
+FLASHMEM void Safety::attach(){
 }
 
-void Safety::run(){
+FLASHMEM void Safety::run(){
     if(!enabled()){return;}
 
     RUN_EVERY(
@@ -74,11 +74,11 @@ void Safety::run(){
     , 100)
 }
 
-void Safety::setSafeDistance(int d){
+FLASHMEM void Safety::setSafeDistance(int d){
     m_currentDistance = d;
 }
 
-void Safety::setObstacleDetected(bool state){
+FLASHMEM void Safety::setObstacleDetected(bool state){
     
     if(m_obstacleDetected && state){
         Console::println("obstable detected");

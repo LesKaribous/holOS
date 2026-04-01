@@ -19,14 +19,19 @@ public:
     void read();
     void calibrate();
     void setLinearScale(float value);
+    void setAngularScale(float value);
+
+    float getLinearScale()  const { return m_scale; }
+    float getAngularScale() const { return m_angular_scale; }
 
     inline bool useIMU() const {return m_use_IMU && m_connected & m_calibrated;}
     
     Localisation(): Service(ID_LOCALISATION){};
     SINGLETON(Localisation)
 
-private : 
-    float m_scale = 0.9714f;
+private :
+    float m_scale         = 0.9714f;
+    float m_angular_scale = 1.0f;
     bool m_use_IMU = false;
     bool m_connected = false;
     bool m_calibrated = false;

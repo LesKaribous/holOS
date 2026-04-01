@@ -78,12 +78,12 @@ StepperController::StepperController() :
 {// Initialization of steppers acceleration parameters.
 }
     
-void StepperController::setFeedrate(float feed){
+FLASHMEM void StepperController::setFeedrate(float feed){
     m_feedrate = feed;
 }
 
 
-void StepperController::setTarget(long posA, long posB, long posC) {
+FLASHMEM void StepperController::setTarget(long posA, long posB, long posC) {
     m_sA->m_target = posA;
     m_sB->m_target = posB;
     m_sC->m_target = posC;
@@ -149,7 +149,7 @@ void StepperController::setTarget(long posA, long posB, long posC) {
 }
 
 // start() – Enable steppers, then begin the move.
-void StepperController::start() {
+FLASHMEM void StepperController::start() {
     Job::start();
     m_sA->enable();
     m_sB->enable();
@@ -163,7 +163,7 @@ void StepperController::start() {
     m_startTime = micros() * 1e-6;
 }
 
-void StepperController::exec(){
+FLASHMEM void StepperController::exec(){
     long now = micros();
     if (now - m_last_compute >= Settings::Stepper::STEPPER_COMPUTE_DELAY) {
         m_last_compute = now;
@@ -256,18 +256,18 @@ void StepperController::step() {
     m_sC->step();
 }
 
-void StepperController::onCanceling(){
+FLASHMEM void StepperController::onCanceling(){
     onUpdate();
 }
 
-void StepperController::onCanceled(){
+FLASHMEM void StepperController::onCanceled(){
     Job::onCanceled();
     Console::success("StepperController") << Console::microTimeStamp() << " : Motion cancelled succesfully (speed = 0)" << Console::endl;
     complete();
 }
 
 // complete() – Immediately stop and reset the trajectory data, then disable the steppers.
-void StepperController::complete() {
+FLASHMEM void StepperController::complete() {
     m_sA->setVelocity(0);
     m_sB->setVelocity(0);
     m_sC->setVelocity(0);
@@ -277,17 +277,17 @@ void StepperController::complete() {
     Job::complete();
 }
 
-void StepperController::pause(){
+FLASHMEM void StepperController::pause(){
     Console::error("StepperController") << "Pause is not supported yet (cancelling instead)" << Console::endl;
     cancel();
 }
 
-void StepperController::resume(){
+FLASHMEM void StepperController::resume(){
     Console::error("StepperController") << "Resume is not supported yet" << Console::endl;
 }
 
 // cancel() – Decelerate (using pause) then complete the move.
-void StepperController::cancel() {
+FLASHMEM void StepperController::cancel() {
     if (!isRunning()) return;
 
     Console::info("cancel") << "Cancelling with controlled deceleration..." << Console::endl;
@@ -320,7 +320,7 @@ void StepperController::cancel() {
 
 
 // reset() – If a move is running, cancel it; then reset all internal parameters.
-void StepperController::reset() {
+FLASHMEM void StepperController::reset() {
     if (isPending()) {
         cancel();
     }
@@ -342,12 +342,12 @@ void StepperController::reset() {
 
 }
 
-Vec3 StepperController::getDisplacement(){
+FLASHMEM Vec3 StepperController::getDisplacement(){
     if(isIdle()) return Vec3(0);
     return fk(Vec3(m_sA->m_position, m_sB->m_position, m_sC->m_position));
 }
 
-void StepperController::setSteppers(Stepper* a, Stepper* b, Stepper* c){
+FLASHMEM void StepperController::setSteppers(Stepper* a, Stepper* b, Stepper* c){
     m_sA = a;
     m_sB = b;
     m_sC = c;

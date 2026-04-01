@@ -9,7 +9,7 @@ SINGLETON_INSTANTIATE(Actuators, actuators)
 
 Actuators::Actuators() : Service(ID_ACTUATORS){}
 
-void Actuators::attach(){
+FLASHMEM void Actuators::attach(){
     Console::info() << "Actuators activated" << Console::endl;
     pinMode(Pin::Outputs::enTraco, OUTPUT); // Enable Traco to enable Servos
     
@@ -31,19 +31,19 @@ void Actuators::attach(){
     //sleep();
 }
 
-void Actuators::run(){
+FLASHMEM void Actuators::run(){
 }
 
 
-void setServoPos(SmartServo& servo, ManipulatorPose pose, int position){
+FLASHMEM void setServoPos(SmartServo& servo, ManipulatorPose pose, int position){
     servo.setPose(CAST_POSE(pose), position);
 }
 
-void setServoPos(SmartServo& servo, ElevatorPose pose, int position){
+FLASHMEM void setServoPos(SmartServo& servo, ElevatorPose pose, int position){
     servo.setPose(CAST_POSE(pose), position);
 }
 
-void Actuators::moveElevatorOffset(RobotCompass rc, ElevatorPose pose, int offset, int speed){
+FLASHMEM void Actuators::moveElevatorOffset(RobotCompass rc, ElevatorPose pose, int offset, int speed){
     //SERVICE_METHOD_HEADER
     if(getActuatorGroup(rc).hasServo((int)ServoIDs::ELEVATOR)){
         SmartServo& elevator = getActuatorGroup(rc).getServo((int)ServoIDs::ELEVATOR);
@@ -51,7 +51,7 @@ void Actuators::moveElevatorOffset(RobotCompass rc, ElevatorPose pose, int offse
     }
 }
 
-void Actuators::registerPoses()
+FLASHMEM void Actuators::registerPoses()
 {
     // --- AB ---
     //Lift
@@ -90,7 +90,7 @@ void Actuators::registerPoses()
     }
 }
 
-void Actuators::createManipulator(RobotCompass rc, ManipulatorProperties props){
+FLASHMEM void Actuators::createManipulator(RobotCompass rc, ManipulatorProperties props){
     if(rc == RobotCompass::AB){
         Console::error("Actuators") << "No manipulator mounted on BC" << Console::endl;
     }else if(rc == RobotCompass::BC){
@@ -102,7 +102,7 @@ void Actuators::createManipulator(RobotCompass rc, ManipulatorProperties props){
     }
 }
 
-void Actuators::createHugger(RobotCompass rc, HuggerProperties props){
+FLASHMEM void Actuators::createHugger(RobotCompass rc, HuggerProperties props){
     if(rc == RobotCompass::AB){
         groupAB.createServo(CAST_POSE(ServoIDs::HUGGER_ELEVATOR), props.liftPin, props.lift_up);
         groupAB.createServo(CAST_POSE(ServoIDs::HUGGER_GRAB), props.gripperPin, props.gripper_drop);
@@ -114,29 +114,29 @@ void Actuators::createHugger(RobotCompass rc, HuggerProperties props){
 }
 
 
-void Actuators::enableTraco(){
+FLASHMEM void Actuators::enableTraco(){
     digitalWrite(Pin::Outputs::enTraco, HIGH);
 }
 
-void Actuators::disableTraco(){
+FLASHMEM void Actuators::disableTraco(){
     digitalWrite(Pin::Outputs::enTraco, LOW);
 }
 
-void Actuators::enable(){
+FLASHMEM void Actuators::enable(){
     groupAB.enable();
     groupBC.enable();
     groupCA.enable();
     enableTraco();
 }
 
-void Actuators::disable(){
+FLASHMEM void Actuators::disable(){
     disableTraco();
     groupAB.disable();
     groupBC.disable();
     groupCA.disable();
 }
 
-void Actuators::drop(RobotCompass rc, int speed){
+FLASHMEM void Actuators::drop(RobotCompass rc, int speed){
     //SERVICE_METHOD_HEADER
 
     if(!ihm.isPrimary()) return;
@@ -189,7 +189,7 @@ void Actuators::drop(RobotCompass rc, int speed){
     }
 }
 
-void Actuators::grab(RobotCompass rc, int speed){
+FLASHMEM void Actuators::grab(RobotCompass rc, int speed){
     //SERVICE_METHOD_HEADER
     
     if(!ihm.isPrimary()) return;
@@ -244,7 +244,7 @@ void Actuators::grab(RobotCompass rc, int speed){
 
 
 
-void Actuators::store(RobotCompass rc, int speed){
+FLASHMEM void Actuators::store(RobotCompass rc, int speed){
     //SERVICE_METHOD_HEADER
     
     if(!ihm.isPrimary()) return;
@@ -299,7 +299,7 @@ void Actuators::store(RobotCompass rc, int speed){
 
 
 
-void Actuators::moveElevator(RobotCompass rc, ElevatorPose pose, int speed){
+FLASHMEM void Actuators::moveElevator(RobotCompass rc, ElevatorPose pose, int speed){
 
     if (rc == RobotCompass::AB){
         if(getActuatorGroup(rc).hasServo((int)ServoIDs::HUGGER_ELEVATOR))
@@ -312,7 +312,7 @@ void Actuators::moveElevator(RobotCompass rc, ElevatorPose pose, int speed){
     }
 }
 
-void Actuators::moveElevatorAngle(RobotCompass rc, int angle, int speed){
+FLASHMEM void Actuators::moveElevatorAngle(RobotCompass rc, int angle, int speed){
 
     if (rc == RobotCompass::AB){
         if(getActuatorGroup(rc).hasServo((int)ServoIDs::HUGGER_ELEVATOR))
@@ -326,11 +326,11 @@ void Actuators::moveElevatorAngle(RobotCompass rc, int angle, int speed){
     }
 }
 
-bool Actuators::moveManipulator(SmartServo &servo, ManipulatorPose pose, int speed){
+FLASHMEM bool Actuators::moveManipulator(SmartServo &servo, ManipulatorPose pose, int speed){
     return servo.moveToPose(CAST_POSE(pose), speed, true);
 }
 
-bool Actuators::moveElevator(SmartServo& servo, ElevatorPose pose, int speed){
+FLASHMEM bool Actuators::moveElevator(SmartServo& servo, ElevatorPose pose, int speed){
     return servo.moveToPose(CAST_POSE(pose), speed, true);
 }
 
@@ -350,7 +350,7 @@ ActuatorGroup &Actuators::getActuatorGroup(RobotCompass rc)
     }
 }
 
-void Actuators::sleep(){
+FLASHMEM void Actuators::sleep(){
     groupAB.sleep();
     groupBC.sleep();
     groupCA.sleep();

@@ -2,12 +2,12 @@
 #include "os/console.h"
 
 // Constructor
-Interpreter::Interpreter() : pos(0) {
+FLASHMEM Interpreter::Interpreter() : pos(0) {
     // Service commands
 }
 
 // Process a script
-void Interpreter::processScript(const String& script, Program& prgm) {
+FLASHMEM void Interpreter::processScript(const String& script, Program& prgm) {
     prgm.clear();
     input = script;
     input.trim();
@@ -21,7 +21,7 @@ void Interpreter::processScript(const String& script, Program& prgm) {
 }
 
 
-String Interpreter::currentPos(){
+FLASHMEM String Interpreter::currentPos(){
     int c = 0;
     int line = 0;
     for (size_t i = 0; i < pos; ++i) {
@@ -33,7 +33,7 @@ String Interpreter::currentPos(){
     return "[" + String(line) + ":" +  String(c) + "] ";
 }
 
-void Interpreter::displaySyntaxError(const String& commandName) {
+FLASHMEM void Interpreter::displaySyntaxError(const String& commandName) {
     for (const auto& info : CommandHandler::getCommands()) {
         if (info.second.syntax.startsWith(commandName)) {
             Console::error("Interpreter") << "Invalid syntax for " << commandName << ". Expected: " << info.second.syntax << Console::endl;
@@ -45,7 +45,7 @@ void Interpreter::displaySyntaxError(const String& commandName) {
 
 
 // Get the next token from the input
-Token Interpreter::nextToken() {
+FLASHMEM Token Interpreter::nextToken() {
     // Check for the end of the input
     if (pos >= input.length()) {
         return {END_OF_SCRIPT, ""};
@@ -88,14 +88,14 @@ Token Interpreter::nextToken() {
 
 
 // Skip whitespace in the input
-void Interpreter::skipWhitespace() {
+FLASHMEM void Interpreter::skipWhitespace() {
     while (pos < input.length() && (isWhitespace(input.charAt(pos))/* || input.charAt(pos) == 0 ||  input.charAt(pos) != 13*/)) {
         pos++;
     }
 }
 
 // Parse a number token (including floating-point numbers)
-Token Interpreter::parseNumber() {
+FLASHMEM Token Interpreter::parseNumber() {
     String value;
     while (pos < input.length() && isDigit(input.charAt(pos))) {
         value += input.charAt(pos++);
@@ -115,7 +115,7 @@ Token Interpreter::parseNumber() {
 }
 
 // Parse an identifier or keyword token
-Token Interpreter::parseIdentifier() {
+FLASHMEM Token Interpreter::parseIdentifier() {
     String value;
     while (pos < input.length() && (isAlpha(input.charAt(pos)) || isDigit(input.charAt(pos)))) {
         value += input.charAt(pos++);
@@ -133,7 +133,7 @@ Token Interpreter::parseIdentifier() {
     return {IDENTIFIER, value};
 }
 
-String Interpreter::untilLineEnd(){
+FLASHMEM String Interpreter::untilLineEnd(){
     String line = "";
     while (pos < input.length() && input.charAt(pos) != '\n' && input.charAt(pos) != 13) {
         line += input.charAt(pos);
@@ -143,7 +143,7 @@ String Interpreter::untilLineEnd(){
     return line;
 }   
 
-std::shared_ptr<CommandStatement> Interpreter::parseCommandStatement() {
+FLASHMEM std::shared_ptr<CommandStatement> Interpreter::parseCommandStatement() {
     auto command = std::make_shared<CommandStatement>();
     command->name = currentToken.value;
     
@@ -186,7 +186,7 @@ std::shared_ptr<CommandStatement> Interpreter::parseCommandStatement() {
     return command;
 }
 
-std::shared_ptr<IfStatement> Interpreter::parseIfStatement() {
+FLASHMEM std::shared_ptr<IfStatement> Interpreter::parseIfStatement() {
     currentToken = nextToken(); // Consume the 'if' keyword
 
     // Parse the condition without parenthethis
@@ -225,7 +225,7 @@ std::shared_ptr<IfStatement> Interpreter::parseIfStatement() {
     return ifStmt;
 }
 
-std::shared_ptr<VarStatement> Interpreter::parseVariableStatement() {
+FLASHMEM std::shared_ptr<VarStatement> Interpreter::parseVariableStatement() {
 
     String expression = untilLineEnd();
 
@@ -233,7 +233,7 @@ std::shared_ptr<VarStatement> Interpreter::parseVariableStatement() {
     return std::make_shared<VarStatement>(expression);
 }
 
-std::shared_ptr<ForStatement> Interpreter::parseForStatement() {
+FLASHMEM std::shared_ptr<ForStatement> Interpreter::parseForStatement() {
     currentToken = nextToken(); // Consume the 'for' keyword
 
     String varExpression;
@@ -291,7 +291,7 @@ std::shared_ptr<ForStatement> Interpreter::parseForStatement() {
     return forStmt;
 }
 
-std::shared_ptr<WhileStatement> Interpreter::parseWhileStatement() {
+FLASHMEM std::shared_ptr<WhileStatement> Interpreter::parseWhileStatement() {
     currentToken = nextToken(); // Consume the 'while' keyword
 
     // Parse the condition without parenthethis
@@ -319,7 +319,7 @@ std::shared_ptr<WhileStatement> Interpreter::parseWhileStatement() {
     return whileStmt;
 }
 
-std::shared_ptr<BlockStatement> Interpreter::parseBlockStatement() {
+FLASHMEM std::shared_ptr<BlockStatement> Interpreter::parseBlockStatement() {
     currentToken = nextToken(); // Consume the 'block' keyword
 
     // Parse the condition without parenthethis
@@ -348,7 +348,7 @@ std::shared_ptr<BlockStatement> Interpreter::parseBlockStatement() {
 }
 
 
-std::shared_ptr<Statement> Interpreter::parseStatement() {
+FLASHMEM std::shared_ptr<Statement> Interpreter::parseStatement() {
     if (currentToken.type == IDENTIFIER) {
         return parseCommandStatement();
     } if (currentToken.type == VAR) {

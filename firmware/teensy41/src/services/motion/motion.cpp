@@ -12,7 +12,7 @@ SINGLETON_INSTANTIATE(Motion, motion)
 //  Construction / attach
 // ============================================================
 
-Motion::Motion()
+FLASHMEM Motion::Motion()
     : Service(ID_MOTION),
       m_sA(Pin::Stepper::stepA, Pin::Stepper::dirA, !Settings::Stepper::DIR_A_POLARITY),
       m_sB(Pin::Stepper::stepB, Pin::Stepper::dirB, !Settings::Stepper::DIR_B_POLARITY),
@@ -43,21 +43,21 @@ FLASHMEM void Motion::attach() {
 //  Service::run — machine d'état principale
 // ============================================================
 
-void Motion::run() {
+FLASHMEM void Motion::run() {
     if (!enabled()) return;
     if      (isPausing())   onPausing();
     else if (isCanceling()) onCanceling();
     else if (isRunning())   onRunning();
 }
 
-void Motion::exec() { run(); }
+FLASHMEM void Motion::exec() { run(); }
 
 
 // ============================================================
 //  États en cours
 // ============================================================
 
-void Motion::onRunning() {
+FLASHMEM void Motion::onRunning() {
     if (!isBusy()) return;
 
     // Annulation venue du contrôleur
@@ -110,7 +110,7 @@ void Motion::onRunning() {
     if (!current_move_cruised) stepper_controller.exec();
 }
 
-void Motion::onPausing() {
+FLASHMEM void Motion::onPausing() {
     bool finished = false;
 
     if (current_move_cruised) {
@@ -129,7 +129,7 @@ void Motion::onPausing() {
     if (finished) onPaused();
 }
 
-void Motion::onCanceling() {
+FLASHMEM void Motion::onCanceling() {
     bool finished = false;
 
     if (current_move_cruised) {
@@ -148,7 +148,7 @@ void Motion::onCanceling() {
     if (finished) onCanceled();
 }
 
-void Motion::onPaused() {
+FLASHMEM void Motion::onPaused() {
     Job::onPaused();
     _isMoving   = false;
     _isRotating = false;
@@ -159,7 +159,7 @@ void Motion::onPaused() {
     _startPosition = _position = estimatedPosition();
 }
 
-void Motion::onCanceled() {
+FLASHMEM void Motion::onCanceled() {
     collectStats(false);
 
     Job::onCanceled();
@@ -195,27 +195,27 @@ void Motion::control() {
 //  Fluent — options pour le prochain move
 // ============================================================
 
-Motion& Motion::noStall() {
+FLASHMEM Motion& Motion::noStall() {
     m_pendingOpts.stallEnabled = false;
     return *this;
 }
 
-Motion& Motion::withStall(bool on) {
+FLASHMEM Motion& Motion::withStall(bool on) {
     m_pendingOpts.stallEnabled = on;
     return *this;
 }
 
-Motion& Motion::cancelOnStall(bool on) {
+FLASHMEM Motion& Motion::cancelOnStall(bool on) {
     m_pendingOpts.cancelOnStall = on;
     return *this;
 }
 
-Motion& Motion::withOptimization(bool on) {
+FLASHMEM Motion& Motion::withOptimization(bool on) {
     m_pendingOpts.optimizeRotation = on;
     return *this;
 }
 
-Motion& Motion::feedrate(float f) {
+FLASHMEM Motion& Motion::feedrate(float f) {
     m_pendingOpts.feedrate = std::max(std::min(f, 1.0f), 0.05f);
     return *this;
 }
@@ -225,11 +225,11 @@ Motion& Motion::feedrate(float f) {
 //  Waypoints
 // ============================================================
 
-Motion& Motion::via(float x, float y) {
+FLASHMEM Motion& Motion::via(float x, float y) {
     return via(Vec2(x, y));
 }
 
-Motion& Motion::via(Vec2 wp) {
+FLASHMEM Motion& Motion::via(Vec2 wp) {
     Vec3 target3(_absolute ? wp.a : wp.a,
                  _absolute ? wp.b : wp.b,
                  _absolute ? _position.c * RAD_TO_DEG : 0.0f);
@@ -237,7 +237,7 @@ Motion& Motion::via(Vec2 wp) {
     return *this;
 }
 
-void Motion::enqueueWaypoint(Vec3 target, bool passThrough) {
+FLASHMEM void Motion::enqueueWaypoint(Vec3 target, bool passThrough) {
     if (m_waypointCount >= WAYPOINT_CAPACITY) {
         Console::error("Motion") << "Waypoint queue full" << Console::endl;
         return;
@@ -246,12 +246,12 @@ void Motion::enqueueWaypoint(Vec3 target, bool passThrough) {
     m_waypointCount++;
 }
 
-bool Motion::advanceWaypoint() {
+FLASHMEM bool Motion::advanceWaypoint() {
     m_waypointIndex++;
     return (m_waypointIndex >= m_waypointCount);
 }
 
-void Motion::clearWaypoints() {
+FLASHMEM void Motion::clearWaypoints() {
     m_waypointCount = 0;
     m_waypointIndex = 0;
 }
@@ -261,12 +261,12 @@ void Motion::clearWaypoints() {
 //  API publique — mouvements
 // ============================================================
 
-Motion& Motion::go(float x, float y) {
+FLASHMEM Motion& Motion::go(float x, float y) {
     _isMoving = true;
     return go(Vec2(x, y));
 }
 
-Motion& Motion::go(Vec2 target) {
+FLASHMEM Motion& Motion::go(Vec2 target) {
     _isMoving = true;
     Vec3 t3 = _absolute ? Vec3(target.a, target.b, _position.c * RAD_TO_DEG)
                         : Vec3(target.a, target.b, 0.0f);
@@ -275,7 +275,7 @@ Motion& Motion::go(Vec2 target) {
     return *this;
 }
 
-Motion& Motion::goPolar(float heading, float dist) {
+FLASHMEM Motion& Motion::goPolar(float heading, float dist) {
     _isMoving = true;
     PolarVec pv(heading * DEG_TO_RAD, dist);
     Vec3 t3;
@@ -291,7 +291,7 @@ Motion& Motion::goPolar(float heading, float dist) {
     return *this;
 }
 
-Motion& Motion::goPolarAlign(float heading, float dist, RobotCompass rc, float orientation) {
+FLASHMEM Motion& Motion::goPolarAlign(float heading, float dist, RobotCompass rc, float orientation) {
     _isMoving = true;
     PolarVec pv(heading * DEG_TO_RAD, dist);
     float angle = orientation - getCompassOrientation(rc);
@@ -308,7 +308,7 @@ Motion& Motion::goPolarAlign(float heading, float dist, RobotCompass rc, float o
     return *this;
 }
 
-Motion& Motion::turn(float angle) {
+FLASHMEM Motion& Motion::turn(float angle) {
     _isMoving   = true;
     _isRotating = true;
     Vec3 t3 = _absolute ? Vec3(_position.a, _position.b, angle)
@@ -318,11 +318,11 @@ Motion& Motion::turn(float angle) {
     return *this;
 }
 
-Motion& Motion::align(RobotCompass rc, float orientation) {
+FLASHMEM Motion& Motion::align(RobotCompass rc, float orientation) {
     return turn(orientation - getCompassOrientation(rc));
 }
 
-Motion& Motion::goAlign(Vec2 target, RobotCompass rc, float orientation) {
+FLASHMEM Motion& Motion::goAlign(Vec2 target, RobotCompass rc, float orientation) {
     _isMoving   = true;
     _isRotating = true;
     float angle = orientation - getCompassOrientation(rc);
@@ -332,7 +332,7 @@ Motion& Motion::goAlign(Vec2 target, RobotCompass rc, float orientation) {
 }
 
 // move() : commande bas niveau — ne passe plus par la queue.
-Motion& Motion::move(Vec3 target) {
+FLASHMEM Motion& Motion::move(Vec3 target) {
     if (!enabled()) {
         Console::error("Motion") << "Motion not enabled" << Console::endl;
         return *this;
@@ -390,7 +390,7 @@ Motion& Motion::move(Vec3 target) {
 }
 
 // startWaypoint() : installe les options du waypoint, puis lance move().
-void Motion::startWaypoint(const Waypoint& wp) {
+FLASHMEM void Motion::startWaypoint(const Waypoint& wp) {
     m_activeOpts  = wp.opts;
     m_pendingOpts = MoveOptions{};  // reset aux defaults
     move(wp.target);
@@ -401,7 +401,7 @@ void Motion::startWaypoint(const Waypoint& wp) {
 //  start / pause / resume / cancel / complete
 // ============================================================
 
-void Motion::start() {
+FLASHMEM void Motion::start() {
     if (isPending()) return;
     Job::start();
     m_moveStartMs = millis();
@@ -426,14 +426,14 @@ void Motion::start() {
     }
 }
 
-void Motion::pause() {
+FLASHMEM void Motion::pause() {
     Job::pause();
     if (!isPausing()) return;
     if (current_move_cruised) cruise_controller.cancel();
     else                      stepper_controller.cancel();
 }
 
-void Motion::resume() {
+FLASHMEM void Motion::resume() {
     if (!isPaused()) return;
     Job::resume();
 
@@ -472,7 +472,7 @@ void Motion::resume() {
     }
 }
 
-void Motion::cancel() {
+FLASHMEM void Motion::cancel() {
     if (isCanceling() || isCanceled() || isCompleted()) return;
     Job::cancel();
     if (isCanceling()) {
@@ -481,7 +481,7 @@ void Motion::cancel() {
     }
 }
 
-void Motion::complete() {
+FLASHMEM void Motion::complete() {
     collectStats(true);
 
     _isMoving   = false;
@@ -495,7 +495,7 @@ void Motion::complete() {
     Console::info("Motion") << "Move completed" << Console::endl;
 }
 
-void Motion::forceCancel() {
+FLASHMEM void Motion::forceCancel() {
     _isMoving   = false;
     _isRotating = false;
     clearWaypoints();
@@ -512,16 +512,16 @@ void Motion::forceCancel() {
 //  enable / disable / engage / disengage
 // ============================================================
 
-void Motion::enable()  { Service::enable(); }
-void Motion::disable() { Service::disable(); }
+FLASHMEM void Motion::enable()  { Service::enable(); }
+FLASHMEM void Motion::disable() { Service::disable(); }
 
-void Motion::engage() {
+FLASHMEM void Motion::engage() {
     SERVICE_METHOD_HEADER
     _engaged = true;
     digitalWrite(Pin::Stepper::enable, Settings::Stepper::ENABLE_POLARITY);
 }
 
-void Motion::disengage() {
+FLASHMEM void Motion::disengage() {
     SERVICE_METHOD_HEADER
     _engaged = false;
     digitalWrite(Pin::Stepper::enable, !Settings::Stepper::ENABLE_POLARITY);
@@ -532,7 +532,7 @@ void Motion::disengage() {
 //  Position / estimation
 // ============================================================
 
-Vec3 Motion::estimatedPosition() {
+FLASHMEM Vec3 Motion::estimatedPosition() {
     if (localisation.enabled()) {
         localisation.run();
         return localisation.getPosition();
@@ -540,19 +540,19 @@ Vec3 Motion::estimatedPosition() {
     return _position + stepper_controller.getDisplacement();
 }
 
-bool Motion::hasFinished() {
+FLASHMEM bool Motion::hasFinished() {
     if (current_move_cruised) return cruise_controller.isCompleted();
     else                      return stepper_controller.isCompleted();
 }
 
-bool Motion::wasSuccessful() const { return isCompleted(); }
+FLASHMEM bool Motion::wasSuccessful() const { return isCompleted(); }
 
 
 // ============================================================
 //  Diagnostic
 // ============================================================
 
-void Motion::collectStats(bool success) {
+FLASHMEM void Motion::collectStats(bool success) {
     if (!current_move_cruised) {
         m_lastStats = {};
         m_lastStats.wasSuccessful = success;
@@ -582,7 +582,7 @@ void Motion::collectStats(bool success) {
     m_lastStats.wasSuccessful = success;
 }
 
-void Motion::printDiagReport() const {
+FLASHMEM void Motion::printDiagReport() const {
     const auto& s = m_lastStats;
     Console::info("Motion::Diag")
         << "--- Move Report ---"          << Console::endl
@@ -608,14 +608,28 @@ void Motion::printDiagReport() const {
 //  Modes globaux
 // ============================================================
 
-void Motion::enableCruiseMode() {
+FLASHMEM void Motion::enableCruiseMode() {
     if (isMoving()) Console::error("Motion") << "Cannot toggle cruise while moving" << Console::endl;
     else use_cruise_mode = true;
 }
 
-void Motion::disableCruiseMode() {
+FLASHMEM void Motion::disableCruiseMode() {
     if (isMoving()) Console::error("Motion") << "Cannot toggle cruise while moving" << Console::endl;
     else use_cruise_mode = false;
+}
+
+FLASHMEM void Motion::enableAPF(float scale) {
+    cruise_controller.setAPF(true, scale);
+    Console::info("Motion") << "APF enabled (scale=" << cruise_controller.getAPFScale() << ")" << Console::endl;
+}
+
+FLASHMEM void Motion::disableAPF() {
+    cruise_controller.setAPF(false);
+    Console::info("Motion") << "APF disabled" << Console::endl;
+}
+
+FLASHMEM bool Motion::isAPFEnabled() const {
+    return cruise_controller.isAPFEnabled();
 }
 
 
@@ -623,19 +637,19 @@ void Motion::disableCruiseMode() {
 //  Conversions cibles
 // ============================================================
 
-Vec3 Motion::toRelativeTarget(Vec3 abs) {
+FLASHMEM Vec3 Motion::toRelativeTarget(Vec3 abs) {
     abs.sub(_position);
     abs.rotateZ(_position.c);
     return abs;
 }
 
-Vec3 Motion::toAbsoluteTarget(Vec3 rel) {
+FLASHMEM Vec3 Motion::toAbsoluteTarget(Vec3 rel) {
     rel.rotateZ(-_position.c);
     rel.add(_position);
     return rel;
 }
 
-Vec3 Motion::optimizeRelTarget(Vec3 rel) {
+FLASHMEM Vec3 Motion::optimizeRelTarget(Vec3 rel) {
     while (rel.c >   M_PI) rel.c -= 2.0f * M_PI;
     while (rel.c <= -M_PI) rel.c += 2.0f * M_PI;
     return rel;
@@ -647,31 +661,31 @@ Vec3 Motion::optimizeRelTarget(Vec3 rel) {
 // ============================================================
 
 void  Motion::setOrientation(float a)     { _position.c = a; }
-float Motion::getOrientation()            { return _position.c; }
+FLASHMEM float Motion::getOrientation()            { return _position.c; }
 Vec3  Motion::getAbsPosition() const      { return _position; }
 Vec3  Motion::getAbsTarget()   const      { return _target; }
 
-float Motion::getTargetDirection()         const { return 0.0f; }  // stub
-float Motion::getAbsoluteTargetDirection() const { return Vec2(_target - _position).heading(); }
-float Motion::getTargetDistance()          const { return Vec2(_target - _position).mag(); }
+FLASHMEM float Motion::getTargetDirection()         const { return 0.0f; }  // stub
+FLASHMEM float Motion::getAbsoluteTargetDirection() const { return Vec2(_target - _position).heading(); }
+FLASHMEM float Motion::getTargetDistance()          const { return Vec2(_target - _position).mag(); }
 
-bool Motion::isAbsolute()  const { return _absolute; }
-bool Motion::isRelative()  const { return !_absolute; }
-bool Motion::isRotating()  const { return _isRotating; }
-bool Motion::isMoving()    const { return _isMoving; }
-bool Motion::isSleeping()  const { return _sleeping; }
+FLASHMEM bool Motion::isAbsolute()  const { return _absolute; }
+FLASHMEM bool Motion::isRelative()  const { return !_absolute; }
+FLASHMEM bool Motion::isRotating()  const { return _isRotating; }
+FLASHMEM bool Motion::isMoving()    const { return _isMoving; }
+FLASHMEM bool Motion::isSleeping()  const { return _sleeping; }
 
-void Motion::setAbsPosition(Vec3 p) {
+FLASHMEM void Motion::setAbsPosition(Vec3 p) {
     _position = _startPosition = p;
     localisation.setPosition(p);
 }
 
-void Motion::setAbsTarget(Vec3 t) { _target = t; }
-void Motion::setAbsolute()        { _absolute = true; }
-void Motion::setRelative()        { _absolute = false; }
+FLASHMEM void Motion::setAbsTarget(Vec3 t) { _target = t; }
+FLASHMEM void Motion::setAbsolute()        { _absolute = true; }
+FLASHMEM void Motion::setRelative()        { _absolute = false; }
 
-void Motion::setFeedrate(float f) { m_feedrate = std::max(std::min(f, 1.0f), 0.05f); }
-float Motion::getFeedrate() const { return m_feedrate; }
+FLASHMEM void Motion::setFeedrate(float f) { m_feedrate = std::max(std::min(f, 1.0f), 0.05f); }
+FLASHMEM float Motion::getFeedrate() const { return m_feedrate; }
 
-void Motion::setAsync() { m_async = true; }
-void Motion::setSync()  { m_async = false; }
+FLASHMEM void Motion::setAsync() { m_async = true; }
+FLASHMEM void Motion::setSync()  { m_async = false; }

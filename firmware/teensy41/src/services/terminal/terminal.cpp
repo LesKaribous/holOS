@@ -5,11 +5,11 @@ SINGLETON_INSTANTIATE(Terminal, terminal)
 
 Terminal::Terminal() : Service(ID_TERMINAL){}
 
-void Terminal::attach(){
+FLASHMEM void Terminal::attach(){
     Console::info() << "Terminal activated" << Console::endl;
 }   
 
-void Terminal::run(){
+FLASHMEM void Terminal::run(){
     if(!enabled()) return;
 
     // CONSOLE_SERIAL and BRIDGE_SERIAL are both Serial (USB-CDC).
@@ -22,12 +22,12 @@ void Terminal::run(){
     return;
 }   
 
-String Terminal::dequeCommand(){
+FLASHMEM String Terminal::dequeCommand(){
     String command = _pendingCommands.front();
     _pendingCommands.pop_front();
     return command;
 }
 
-int Terminal::commandAvailable(){
+FLASHMEM int Terminal::commandAvailable(){
     return _pendingCommands.size();
 }

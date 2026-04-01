@@ -12,7 +12,7 @@ SINGLETON_INSTANTIATE(Localisation, localisation);
 #define I2C_OTOS Wire
 #endif
 
-void Localisation::attach(){
+FLASHMEM void Localisation::attach(){
     
     Console::info() << "Localisation activated" << Console::endl;
     I2C_OTOS.begin();
@@ -37,7 +37,7 @@ void Localisation::attach(){
 }
 
 // Main loop
-void Localisation::run(){ 
+FLASHMEM void Localisation::run(){ 
     //THROW(1)
 
     static long elapsed = 0;
@@ -48,7 +48,7 @@ void Localisation::run(){
 }
 
 // Service routines
-void Localisation::enable(){
+FLASHMEM void Localisation::enable(){
     if(!m_connected) return;
     Service::enable();
     //servicethread = new std::thread(&Localisation::runThread, this);
@@ -56,13 +56,13 @@ void Localisation::enable(){
     m_use_IMU = true;
 }
 
-void Localisation::disable(){
+FLASHMEM void Localisation::disable(){
     Service::disable();
     //delete servicethread;
     m_use_IMU = false;
 }
 
-void Localisation::setPosition(Vec3 newPos){
+FLASHMEM void Localisation::setPosition(Vec3 newPos){
     sfe_otos_pose2d_t pos;
     pos.x = -newPos.y/1000.0;
     pos.y = -newPos.x/1000.0;
@@ -82,7 +82,7 @@ Vec3 Localisation::getVelocity(){
     return _unsafeVelocity;
 }
 
-void Localisation::read()
+FLASHMEM void Localisation::read()
 {
     sfe_otos_pose2d_t myPosition;
     sfe_otos_pose2d_t myVelocity;
@@ -104,7 +104,7 @@ void Localisation::read()
     //Console::info() << _unsafePosition << Console::endl;
 }
 
-void Localisation::calibrate() {
+FLASHMEM void Localisation::calibrate() {
     Console::println("Ensure the OTOS is flat and stationary");
     delay(2000);
     Console::info("Localisation") << "Calibrating IMU...";
@@ -116,10 +116,16 @@ void Localisation::calibrate() {
     m_calibrated = true;
 }
 
-void Localisation::setLinearScale(float value){
-    //Console::info() << "new value : " << value << Console::endl;
+FLASHMEM void Localisation::setLinearScale(float value){
     m_scale = value;
-    Console::info() << "new scale : " ;
-    Serial.println(m_scale, 5);
-    otos.setLinearScalar(m_scale);//coupe
+    Console::info("Localisation") << "Linear scale → ";
+    Serial.println(m_scale, 6);
+    otos.setLinearScalar(m_scale);
+}
+
+FLASHMEM void Localisation::setAngularScale(float value){
+    m_angular_scale = value;
+    Console::info("Localisation") << "Angular scale → ";
+    Serial.println(m_angular_scale, 6);
+    otos.setAngularScalar(m_angular_scale);
 }

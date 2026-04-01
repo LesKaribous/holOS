@@ -6,11 +6,11 @@ OS OS::m_instance;
 
 OS& os = OS::instance();
 
-void OS::init(){
+FLASHMEM void OS::init(){
     cycle_manager.instance().start();
 }
 
-void OS::run(){
+FLASHMEM void OS::run(){
     RUN_EVERY(
     switch(m_state){
         case BOOT:
@@ -36,25 +36,25 @@ void OS::run(){
     },2)
 }
 
-void OS::start(){
+FLASHMEM void OS::start(){
     m_state = AUTO_PROGRAM;
 }
 
-void OS::reboot(){
+FLASHMEM void OS::reboot(){
     CPU_RESTART
 }
 
-void OS::stop(){
+FLASHMEM void OS::stop(){
     m_state = STOPPED;
 }
 
-void OS::boot_routine(){
+FLASHMEM void OS::boot_routine(){
     executeRoutine(m_bootRoutine);
     m_state = MANUAL_PROGRAM;
     //Console::println(m_state);
 }
 
-void OS::manual_routine(){
+FLASHMEM void OS::manual_routine(){
     
     updateServices();
     executeRoutine(m_manualRoutine);
@@ -66,7 +66,7 @@ void OS::manual_routine(){
     }
 }
 
-void OS::auto_routine(){
+FLASHMEM void OS::auto_routine(){
     updateServices();
     executeRoutine(m_autoRoutine);
 
@@ -77,14 +77,14 @@ void OS::auto_routine(){
     }
 }
 
-void OS::auto_program_routine(){
+FLASHMEM void OS::auto_program_routine(){
     m_state = AUTO;
     executeRoutine(m_auto_programRoutine);
     auto_routine();
     m_state = STOPPED;
 }
 
-void OS::manual_program_routine(){
+FLASHMEM void OS::manual_program_routine(){
     m_state = MANUAL;
     updateServices();
     executeRoutine(m_manual_programRoutine);
@@ -92,11 +92,11 @@ void OS::manual_program_routine(){
     if(m_state == MANUAL) m_state = MANUAL_PROGRAM;
 }
 
-void OS::stop_routine(){
+FLASHMEM void OS::stop_routine(){
     executeRoutine(m_stopRoutine);
 }
 
-void OS::setRountine(SystemState state, routine_ptr func_ptr){
+FLASHMEM void OS::setRountine(SystemState state, routine_ptr func_ptr){
     if(func_ptr == nullptr) return;
     switch(state){
         case BOOT:
@@ -122,11 +122,11 @@ void OS::setRountine(SystemState state, routine_ptr func_ptr){
     }
 }
 
-void OS::setState(SystemState state){
+FLASHMEM void OS::setState(SystemState state){
     m_state = state;
 }
 
-void OS::attachService(Service* service){
+FLASHMEM void OS::attachService(Service* service){
     if(service != nullptr){
         m_services[service->id()] = service;
         service->attach();
@@ -135,47 +135,47 @@ void OS::attachService(Service* service){
     }
 }
 
-bool OS::hasService(ServiceID s) const{
+FLASHMEM bool OS::hasService(ServiceID s) const{
     return m_services.find(s) != m_services.end();
 }
 
-bool OS::statusService(ServiceID serviceID) const{
+FLASHMEM bool OS::statusService(ServiceID serviceID) const{
     if(hasService(serviceID))
         return m_services.at(serviceID)->enabled();
     else
         return false;
 }
 
-bool OS::debug(ServiceID s){
+FLASHMEM bool OS::debug(ServiceID s){
     if(hasService(s))
         return m_services[s]->debug();
     else
         return false;
 }
 
-void OS::toggleDebug(ServiceID s){
+FLASHMEM void OS::toggleDebug(ServiceID s){
     if(hasService(s))
         m_services[s]->toggleDebug();
 }
 
-void OS::wait(unsigned long time) {
+FLASHMEM void OS::wait(unsigned long time) {
     m_timer.setDuration(time);
     m_timer.start();
     // Move the unique_ptr into execute(), which assumes ownership
     execute(m_timer, false);  // Or `runasync` if applicable
 }
 
-void OS::wait(Job& obj, bool isasync) {
+FLASHMEM void OS::wait(Job& obj, bool isasync) {
     execute(obj, isasync);  // Or `runasync` if applicable
 }
 
 
-void OS::execute(Job& obj, bool runasync){
+FLASHMEM void OS::execute(Job& obj, bool runasync){
     addJob(&obj);
     if(!runasync) while(obj.isPending()) run();
 }
 
-void OS::execute(String& rawcmd){
+FLASHMEM void OS::execute(String& rawcmd){
         Interpreter in;
         in.processScript(rawcmd, script);
 
@@ -188,15 +188,15 @@ void OS::execute(String& rawcmd){
         }
 }
 
-void OS::flush(){
+FLASHMEM void OS::flush(){
     while(isBusy()) run();
 }
 
-bool OS::isBusy() {
+FLASHMEM bool OS::isBusy() {
     return m_jobs.size() > 0;
 }
 
-void OS::clearProgram(){
+FLASHMEM void OS::clearProgram(){
     script.clear();
 }
 
@@ -208,16 +208,16 @@ Job* OS::currentJob(){
     if(m_jobs.size() == 0) return nullptr;
     else return m_jobs.top();
 }
-void OS::addJob(Job* job){
+FLASHMEM void OS::addJob(Job* job){
     m_jobs.push(job);
 }
-void OS::killCurrentJob(){
+FLASHMEM void OS::killCurrentJob(){
     if(m_jobs.size() == 0) return;
     m_jobs.pop();
 }
 
 
-void OS::updateServices(){
+FLASHMEM void OS::updateServices(){
     for(const auto& service : m_services) {
         if(service.second->enabled() && !service.second->threaded()) {
             service.second->run();
@@ -225,15 +225,15 @@ void OS::updateServices(){
     }
 }
 
-void OS::enable(ServiceID id){
+FLASHMEM void OS::enable(ServiceID id){
     if(hasService(id)) m_services[id]->enable();
 }
 
-void OS::disable(ServiceID id){
+FLASHMEM void OS::disable(ServiceID id){
     if(hasService(id)) m_services[id]->disable();
 }
 
-void OS::executeRoutine(routine_ptr routine){
+FLASHMEM void OS::executeRoutine(routine_ptr routine){
     if(routine != nullptr){
         routine();
     }else{

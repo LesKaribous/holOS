@@ -575,45 +575,92 @@ class HardwareTestRunner:
                'CA est entre les faces C et A.'),
     }
 
+    # Direction commands per side (robot moves TOWARD that side to put it in the movement cone)
+    _SIDE_MOVE_CMD = {
+        'BC': 'goPolar(180,350)',   # move backward (BC = rear, 180°)
+        'A':  'goPolar(0,350)',     # move forward  (A   = front,  0°)
+        'AB': 'goPolar(120,350)',
+        'CA': 'goPolar(240,350)',
+    }
+
     def _guided_obstacle_test(self, side: str) -> str:
-        """Generic guided obstacle detection test for a given robot side."""
+        """Generic guided obstacle detection test for a given robot side.
+
+        The LIDAR on T4.0 only triggers within the robot's movement cone.
+        The robot MUST be moving toward the tested side for detection to work.
+        """
         label, hint = self._SIDE_INFO.get(side, (side, ''))
+        move_cmd = self._SIDE_MOVE_CMD.get(side, f'goPolar(0,350)')
         self._exec('enable(SAFETY)', timeout_ms=2_000)
+        paused = threading.Event()
+
+        def _on_motion(data: str):
+            if 'PAUSED' in data or data.startswith('DONE:fail'):
+                paused.set()
+        self._t.subscribe_telemetry('motion', _on_motion)
+
+        result: dict = {}
+        def _go():
+            ok, res = self._t.execute(move_cmd, timeout_ms=20_000)
+            result['ok'] = ok; result['res'] = res
+        motion_thread = threading.Thread(target=_go, daemon=True)
+
         try:
             # Step 1 — orient the user
             self._prompt(
                 f'ÉTAPE 1/3 — Préparation\n\n'
                 f'Test de détection obstacle sur la {label}.\n\n'
                 f'{hint}\n\n'
-                f'Assurez-vous que le robot est dans un espace dégagé,\n'
-                f'puis cliquez sur Continuer ▶'
+                f'⚠ Le robot va se déplacer vers la {label} ({move_cmd}).\n'
+                f'Assurez-vous qu\'il y a de la place dans cette direction.\n'
+                f'Ne placez PAS encore d\'obstacle.\n\n'
+                f'Cliquez Continuer ▶ pour lancer le mouvement.'
             )
 
-            # Step 2 — ask user to place obstacle
+            # Start motion toward the tested side
+            motion_thread.start()
+            time.sleep(0.4)   # let motion start
+
+            # Step 2 — ask user to place obstacle in the movement cone
             self._prompt(
                 f'ÉTAPE 2/3 — Placer l\'obstacle\n\n'
-                f'Placez un obstacle à 15–25 cm sur la {label}.\n\n'
-                f'Le capteur LIDAR doit pouvoir le détecter.\n'
-                f'Restez immobile et cliquez sur Continuer ▶'
+                f'Le robot est en mouvement vers la {label}.\n'
+                f'Placez rapidement un obstacle à 15–25 cm\n'
+                f'dans la direction {label} (dans le cône de déplacement).\n\n'
+                f'Cliquez Continuer ▶ dès que l\'obstacle est en place.'
             )
 
-            # Wait for detection (5 s window after user confirms placement)
-            data = self._wait_telemetry('safety', timeout_ms=5_000)
-            assert data is not None, \
-                (f'Aucun TEL:safety reçu en 5 s — '
-                 f'vérifier LIDAR et câblage T4.0')
-            assert data == '1', \
-                (f'Obstacle non détecté (TEL:safety={data!r}) — '
-                 f'vérifier la position (face {side}) et la distance (15-25 cm)')
-            return f'Obstacle détecté face {side} ✓ (TEL:safety=1)'
+            # Wait for safety to trigger (motion pause or DONE:fail via stall)
+            deadline = time.time() + 6.0
+            was_detected = False
+            while time.time() < deadline:
+                ok_r, raw = self._exec_raw('health', timeout_ms=1_000)
+                if ok_r:
+                    h = self._parse_health(raw)
+                    if h.get('ob', 0) == 1:
+                        was_detected = True
+                        break
+                if paused.is_set():
+                    was_detected = True
+                    break
+                time.sleep(0.2)
+
+            assert was_detected, \
+                (f'Safety non déclenché face {side} — '
+                 f'vérifier que SAFETY est actif, que le LIDAR T4.0 est vivant, '
+                 f'et que l\'obstacle est dans le cône de déplacement ({label})')
+            return f'Safety déclenché face {side} ✓ (ob=1 pendant déplacement {move_cmd})'
 
         finally:
+            self._t.unsubscribe_telemetry('motion', _on_motion)
+            self._safe_cancel()
+            motion_thread.join(timeout=3.0)
             self._restore_safety()
-            # Step 3 — ask user to remove obstacle
+            # Step 3 — remove obstacle
             self._prompt(
                 f'ÉTAPE 3/3 — Retirer l\'obstacle\n\n'
                 f'Test terminé. Retirez l\'obstacle de la face {side}.\n'
-                f'Cliquez sur Continuer ▶ pour fermer.'
+                f'Cliquez Continuer ▶ pour fermer.'
             )
 
     def _test_saf_obstacle_bc(self) -> str:

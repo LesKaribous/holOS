@@ -54,6 +54,10 @@ class XBeeTransport(Transport):
         self._motion_done_ok    = False
         self._waiting_motion    = False
 
+        # Write-side mutex — prevents two threads (test runner + heartbeat)
+        # from interleaving bytes on the serial port simultaneously.
+        self._write_lock = threading.Lock()
+
         # Telemetry subscribers
         self._tel_subs: Dict[str, List[Callable[[str], None]]] = {}
 
@@ -202,10 +206,11 @@ class XBeeTransport(Transport):
 
     def _write(self, data: str) -> None:
         if self._serial and self._serial.is_open:
-            try:
-                self._serial.write(data.encode('ascii'))
-            except serial.SerialException as e:
-                print(f"[XBeeTransport] Write error: {e}")
+            with self._write_lock:
+                try:
+                    self._serial.write(data.encode('ascii'))
+                except serial.SerialException as e:
+                    print(f"[XBeeTransport] Write error: {e}")
 
     # ── Internal: reader loop ─────────────────────────────────────────────────
 
@@ -320,12 +325,20 @@ class XBeeTransport(Transport):
     def _heartbeat_loop(self) -> None:
         while self._running and self._connected:
             try:
-                ok, _ = self.execute("hb", timeout_ms=1000)
-                if not ok and self._connected:
-                    print("[XBeeTransport] Heartbeat failed - connection lost")
-                    self._connected = False
-                    if self._on_disconnect:
-                        self._on_disconnect()
+                # Skip heartbeat while a motion command is in progress —
+                # the Teensy is busy and can't reply within 1 s anyway, and
+                # a concurrent write would risk interleaving bytes even with
+                # the write lock (execute() holds the lock for the full write).
+                if not self._waiting_motion:
+                    ok, _ = self.execute("hb", timeout_ms=2000)
+                    if not ok and self._connected:
+                        print("[XBeeTransport] Heartbeat failed - connection lost")
+                        # Call disconnect() — not just _connected=False — so that
+                        # _cleanup() closes the serial port before on_disconnect fires.
+                        # Without this, the port stays open and reconnect attempts fail
+                        # with "device or resource busy".
+                        self.disconnect()
+                        return
             except Exception:
                 pass
             time.sleep(HEARTBEAT_INTERVAL_S)

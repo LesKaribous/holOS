@@ -1,10 +1,15 @@
 #include "commands.h"
 #include "config/env.h"
+#include "config/calibration.h"
+#include "services/sd/sd_card.h"
+#include "services/localisation/localisation.h"
+#include "services/motion/motion.h"
+#include "services/mission/mission_controller.h"
 #include "program/routines.h"
 #include "program/strategy.h"
 #include "config/poi.h"
 
-void registerCommands() {
+FLASHMEM void registerCommands() {
     CommandHandler::registerCommand("start", "Start Match", command_start);
     CommandHandler::registerCommand("stop", "Stop Robot", command_stop);
     CommandHandler::registerCommand("reboot", "Reboot Robot", command_reboot);
@@ -61,15 +66,41 @@ void registerCommands() {
     CommandHandler::registerCommand("health", "Print full service health snapshot", command_health);
     CommandHandler::registerCommand("help", "Display help", command_help);
     CommandHandler::registerCommand("debug(service)", "Toggle debug/trace for a service", command_debug);
+
+    // Calibration
+    CommandHandler::registerCommand("calib_status",              "Print all calibration values",              command_calib_status);
+    CommandHandler::registerCommand("calib_save",                "Save calibration to SD",                    command_calib_save);
+    CommandHandler::registerCommand("calib_load",                "Load calibration from SD",                  command_calib_load);
+    CommandHandler::registerCommand("calib_reset",               "Reset calibration to defaults",             command_calib_reset);
+    CommandHandler::registerCommand("calib_cart(x,y,rot)",       "Set Cartesian scale factors",               command_calib_cart);
+    CommandHandler::registerCommand("calib_holo(a,b,c)",         "Set per-wheel holonomic scale factors",     command_calib_holo);
+    CommandHandler::registerCommand("calib_otos_linear(value)",  "Set OTOS linear scalar",                    command_calib_otos_linear);
+    CommandHandler::registerCommand("calib_otos_angular(value)", "Set OTOS angular scalar",                   command_calib_otos_angular);
+    CommandHandler::registerCommand("calib_measure(dist_mm)",    "Open-loop move + report OTOS measurement",  command_calib_measure);
+
+    // Motion — arc / rotation around arbitrary point
+    CommandHandler::registerCommand("goAround(cx,cy,angleDeg)",  "Rotate around point (cx,cy) by angle",      command_goAround);
+
+    // Motion — APF obstacle avoidance
+    CommandHandler::registerCommand("apf(on[,scale])",           "Enable/disable APF avoidance (cruise mode only)", command_apf);
+
+    // Mission SD write session (used by holOS deploy-to-SD)
+    CommandHandler::registerCommand("mission_sd_open",           "Open /mission_fallback.cfg for writing",     command_mission_sd_open);
+    CommandHandler::registerCommand("mission_sd_line(text)",     "Append a line to the open mission file",    command_mission_sd_line);
+    CommandHandler::registerCommand("mission_sd_close",          "Close mission file and reload strategy",     command_mission_sd_close);
+
+    // Mission execution (test fallback from terminal / routine)
+    CommandHandler::registerCommand("mission_run",               "Execute SD fallback strategy now",          command_mission_run);
+    CommandHandler::registerCommand("mission_abort",             "Abort running fallback strategy",           command_mission_abort);
 }
 
-void command_stats(const args_t& args){
+FLASHMEM void command_stats(const args_t& args){
     Console::info("Interpreter") << "Stats: " << Console::endl;
     Console::info() << "10us cycle footprint: " << cycle_manager.getCycleFootprint_ms(CycleFrequency::T_10US) << "ms" << Console::endl;
     Console::info() << "1ms cycle footprint: " << cycle_manager.getCycleFootprint_ms(CycleFrequency::T_1MS) << "ms" << Console::endl;
 }
 
-void command_enable(const args_t& args){
+FLASHMEM void command_enable(const args_t& args){
     if(args.size() != 1) return;
     ServiceID serviceID = Service::toID(args[0]);
     if(serviceID != ID_NOT_A_SERVICE){
@@ -78,7 +109,7 @@ void command_enable(const args_t& args){
     }else  Console::error("Interpreter") << "unknown service" << Console::endl;
 }
 
-void command_disable(const args_t& args){
+FLASHMEM void command_disable(const args_t& args){
     if(args.size() != 1) return;
     ServiceID serviceID = Service::toID(args[0]);
     if(serviceID != ID_NOT_A_SERVICE){
@@ -87,7 +118,7 @@ void command_disable(const args_t& args){
     }else  Console::error("Interpreter") << "unknown service" << Console::endl;
 }
 
-void command_status(const args_t& args){
+FLASHMEM void command_status(const args_t& args){
     if(args.size() != 1){
         for ( int id = 0; id != ServiceID::ID_NOT_A_SERVICE; id++ ){
            ServiceID sID = static_cast<ServiceID>(id);
@@ -100,7 +131,7 @@ void command_status(const args_t& args){
 } 
 
 
-void command_debug(const args_t& args){
+FLASHMEM void command_debug(const args_t& args){
     if(args.size() != 1){
         for ( int id = 0; id != ServiceID::ID_NOT_A_SERVICE; id++ ){
            ServiceID sID = static_cast<ServiceID>(id);
@@ -117,36 +148,36 @@ void command_debug(const args_t& args){
 
 //Lidar
 
-void command_lidarMode(const args_t& args){
+FLASHMEM void command_lidarMode(const args_t& args){
     if(args.size() != 1) return;
     if(args[0].equalsIgnoreCase("radar"))lidar.showRadarLED();
     else if(args[0].equalsIgnoreCase("intercom"))lidar.showStatusLED();
 }
 
-void command_wait(const args_t &args){
+FLASHMEM void command_wait(const args_t &args){
     if(args.size() != 1) return;
     float duration = args[0].toFloat();
     os.wait(duration);
 }
 
-void command_start(const args_t &args){
+FLASHMEM void command_start(const args_t &args){
     robotArmed();
     os.start();
 }
 
-void command_stop(const args_t &args){
+FLASHMEM void command_stop(const args_t &args){
     os.stop();
 }
 
-void command_reboot(const args_t &args){
+FLASHMEM void command_reboot(const args_t &args){
     os.reboot();
 }
 
-void command_cruise(const args_t& args){
+FLASHMEM void command_cruise(const args_t& args){
     motion.enableCruiseMode();
 }
 
-void command_feed(const args_t &args){
+FLASHMEM void command_feed(const args_t &args){
     if(args.size() != 1) return;
     float feedrate = args[0].toFloat();
     std::clamp(feedrate, 0.05f, 1.0f);
@@ -154,7 +185,7 @@ void command_feed(const args_t &args){
     //motion.feed(1000);
 }
 
-void command_music(const args_t &args){
+FLASHMEM void command_music(const args_t &args){
     ihm.playTone(659, 167); // E5, 8th note
     ihm.playTone(587, 167); // D5
     ihm.playTone(370, 333); // F#4, quarter note
@@ -175,20 +206,20 @@ void command_music(const args_t &args){
 
 }
 
-void command_radar(const args_t &args){
+FLASHMEM void command_radar(const args_t &args){
     static bool on = false;
     on = !on;
     Console::println( on ? "on" : "off");
     intercom.sendRequest(on ? "on" : "off",100);
 }
 
-void command_test(const args_t &args){
+FLASHMEM void command_test(const args_t &args){
     motion.setAbsPosition({913, 1440, 90 * DEG_TO_RAD});
     bool isYellow = ihm.isColor(Settings::YELLOW);
     initPump();
 }
 
-void command_probe(const args_t &args){
+FLASHMEM void command_probe(const args_t &args){
     if(args.size() != 2)return;
     String tableCompass = args[0];
     String side = args[1];
@@ -212,7 +243,7 @@ void command_probe(const args_t &args){
 }
 
 //Motion
-void command_go(const args_t& args){
+FLASHMEM void command_go(const args_t& args){
     /**/
     if(args.size() != 2) return;
     float x = args[0].toFloat();
@@ -222,7 +253,7 @@ void command_go(const args_t& args){
 }
 
 //Motion
-void command_goPolar(const args_t& args){
+FLASHMEM void command_goPolar(const args_t& args){
     /**/
     if(args.size() != 2) return;
     float angle = args[0].toFloat();
@@ -231,7 +262,7 @@ void command_goPolar(const args_t& args){
     /**/
 }
 
-void command_move(const args_t& args){
+FLASHMEM void command_move(const args_t& args){
     /**/
     if(args.size() != 3) return;
     float x = args[0].toFloat();
@@ -243,7 +274,7 @@ void command_move(const args_t& args){
 }
 
 
-void command_turn(const args_t& args){
+FLASHMEM void command_turn(const args_t& args){
     /**/
     if(args.size() != 1)return;
     float x = args[0].toFloat();
@@ -251,7 +282,7 @@ void command_turn(const args_t& args){
     /**/
 }
 
-void command_rawTurn(const args_t& args){
+FLASHMEM void command_rawTurn(const args_t& args){
     /**/
     if(args.size() != 1)return;
     float x = args[0].toFloat();
@@ -260,31 +291,31 @@ void command_rawTurn(const args_t& args){
     /**/
 }
 
-void command_pause(const args_t& args){
+FLASHMEM void command_pause(const args_t& args){
     motion.pause();
 }
 
-void command_resume(const args_t& args){
+FLASHMEM void command_resume(const args_t& args){
     motion.resume();
 }
 
-void command_cancel(const args_t& args){
+FLASHMEM void command_cancel(const args_t& args){
     motion.cancel();
 }
 
 
-void command_otos_calibration(const args_t& args){
+FLASHMEM void command_otos_calibration(const args_t& args){
     calibrate();
 }
 
 
-void command_otos_scale(const args_t& args){
+FLASHMEM void command_otos_scale(const args_t& args){
     if(args.size() != 1)return;
     float x = args[0].toFloat();
     localisation.setLinearScale(x);
 }
 
-void command_align(const args_t& args){
+FLASHMEM void command_align(const args_t& args){
     /**/
     if(args.size() != 2)return;
     String side = args[0];
@@ -300,21 +331,21 @@ void command_align(const args_t& args){
 
 
 
-void command_setAbsolute(const args_t& args){
+FLASHMEM void command_setAbsolute(const args_t& args){
     /**/
     motion.setAbsolute();
     /**/
 }
 
 
-void command_setRelative(const args_t& args){
+FLASHMEM void command_setRelative(const args_t& args){
     /**/
     motion.setRelative();
     /**/
 }
 
 
-void command_setAbsPosition(const args_t& args){
+FLASHMEM void command_setAbsPosition(const args_t& args){
     if(args.size() != 3)return;
     float x = args[0].toFloat();
     float y = args[1].toFloat();
@@ -323,12 +354,12 @@ void command_setAbsPosition(const args_t& args){
 }
 
 
-void command_resetCompass(const args_t& args){
+FLASHMEM void command_resetCompass(const args_t& args){
     //Not implemented yet
 }
 
 
-void command_collision_detect(const args_t& args){
+FLASHMEM void command_collision_detect(const args_t& args){
     if(args.size() != 1) return;
     bool state = args[0] == "1" || args[0].equalsIgnoreCase("true") || args[0].equalsIgnoreCase("on");
     motion.cancelOnStall(state);
@@ -340,7 +371,7 @@ void command_collision_detect(const args_t& args){
 
 //Actuators
 
-void command_drop(const args_t& args){
+FLASHMEM void command_drop(const args_t& args){
     if(args.size() != 1)return;
     const String& side = args[0];
     if(side.equals("AB")) actuators.drop(RobotCompass::AB);
@@ -349,7 +380,7 @@ void command_drop(const args_t& args){
 }
 
 
-void command_grab(const args_t& args){
+FLASHMEM void command_grab(const args_t& args){
     if(args.size() != 1)return;
     const String& side = args[0];
     if(side.equals("AB")) actuators.grab(RobotCompass::AB);
@@ -358,7 +389,7 @@ void command_grab(const args_t& args){
 }
 
 
-void command_pump(const args_t& args){
+FLASHMEM void command_pump(const args_t& args){
     if(args.size() != 1)return;
     const String& side = args[0];
     if(side.equals("1")) startPump(RobotCompass::CA, RIGHT);
@@ -366,19 +397,19 @@ void command_pump(const args_t& args){
     else if(side.equals("0")) startPump(RobotCompass::CA, LEFT);
 }
 
-void command_ev(const args_t& args){
+FLASHMEM void command_ev(const args_t& args){
     if(args.size() != 1)return;
     const String& side = args[0];
     if(side.equals("1")) stopPump(RobotCompass::CA, 500, RIGHT);
     //else if(side.equals("BC")) actuators.grab(RobotCompass::BC);
     else if(side.equals("0")) stopPump(RobotCompass::CA, 500, LEFT);
 }
-void command_initPump(const args_t& args){
+FLASHMEM void command_initPump(const args_t& args){
     initPump();
 }
 
 
-void command_elevator(const args_t& args){
+FLASHMEM void command_elevator(const args_t& args){
     if(args.size() != 2)return;
     const String& side = args[0];
     const String& poseStr = args[1];
@@ -389,7 +420,7 @@ void command_elevator(const args_t& args){
     else if(side.equals("CA")) actuators.moveElevator(RobotCompass::CA, ElevatorPose(pose));
 }
 
-void command_move_elevator(const args_t& args){
+FLASHMEM void command_move_elevator(const args_t& args){
     if(args.size() != 2)return;
     const String& side = args[0];
     const String& poseStr = args[1];
@@ -400,7 +431,7 @@ void command_move_elevator(const args_t& args){
     else if(side.equals("CA")) actuators.moveElevatorAngle(RobotCompass::CA, pose);
 }
 
-void command_servo(const args_t &args){
+FLASHMEM void command_servo(const args_t &args){
     if(args.size() != 3)return;
     const String& side = args[0];
     const String& servoStr = args[1];
@@ -418,7 +449,7 @@ void command_servo(const args_t &args){
     } else Console::error("Interpreter") << "Servo " << servo << " not found in group " << side << Console::endl;
 }
 
-void command_printServo(const args_t &args){
+FLASHMEM void command_printServo(const args_t &args){
     if(args.size() != 1)return;
     const String& side = args[0];
     if(!validCompassString(side)) return;
@@ -431,7 +462,7 @@ void command_printServo(const args_t &args){
 }
 
 
-void command_raise(const args_t& args){
+FLASHMEM void command_raise(const args_t& args){
     if(args.size() != 1)return;
     const String& side = args[0];
 
@@ -440,7 +471,7 @@ void command_raise(const args_t& args){
     else if(side.equals("CA")) actuators.moveElevator(RobotCompass::CA, ElevatorPose::UP);
 }
 
-void command_lower(const args_t& args){
+FLASHMEM void command_lower(const args_t& args){
     if(args.size() != 1)return;
     const String& side = args[0];
 
@@ -451,13 +482,13 @@ void command_lower(const args_t& args){
 
 //Routines 
 
-void command_recalage(const args_t& args){
+FLASHMEM void command_recalage(const args_t& args){
     recalage();
 }
 
 
 //Terminal
-void command_help(const args_t& args){
+FLASHMEM void command_help(const args_t& args){
     auto& commands = CommandHandler::getCommands();
     for (auto i = commands.begin(); i != commands.end(); i++){
         Command c = i->second;
@@ -468,30 +499,31 @@ void command_help(const args_t& args){
 }
 
 
-void command_print(const args_t& args){
+FLASHMEM void command_print(const args_t& args){
     for(arg_t a : args){
         Console::print(a);   
     }
 }
 
-void command_wake(const args_t& args){
+FLASHMEM void command_wake(const args_t& args){
     motion.engage();
     actuators.enable();
 }
 
-void command_sleep(const args_t& args){
+FLASHMEM void command_sleep(const args_t& args){
     motion.disengage();
     actuators.disable();
 }
 
-void command_health(const args_t& args){
+FLASHMEM void command_health(const args_t& args){
     // mo=motion,mv=isMoving,sa=safety,ob=obstacle,ch=chrono,el=elapsed(ms),
     // ac=actuators,li=lidar,ic=intercom,ic_ok=T4.0 connected,
-    // jt=jetsonBridge,jt_ok=jetsonConnected,vi=vision,lo=localisation
-    char buf[128];
+    // jt=jetsonBridge,jt_ok=jetsonConnected,vi=vision,lo=localisation,
+    // apf=APF avoidance enabled
+    char buf[160];
     snprintf(buf, sizeof(buf),
         "mo=%d,mv=%d,sa=%d,ob=%d,ch=%d,el=%ld,"
-        "ac=%d,li=%d,ic=%d,ic_ok=%d,jt=%d,jt_ok=%d,vi=%d,lo=%d",
+        "ac=%d,li=%d,ic=%d,ic_ok=%d,jt=%d,jt_ok=%d,vi=%d,lo=%d,apf=%d",
         motion.enabled()              ? 1 : 0,
         motion.isMoving()             ? 1 : 0,
         safety.enabled()              ? 1 : 0,
@@ -505,8 +537,259 @@ void command_health(const args_t& args){
         jetsonBridge.enabled()        ? 1 : 0,
         jetsonBridge.jetsonConnected()? 1 : 0,
         vision.enabled()              ? 1 : 0,
-        localisation.enabled()        ? 1 : 0);
+        localisation.enabled()        ? 1 : 0,
+        motion.isAPFEnabled()         ? 1 : 0);
     Console::println(buf);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  Calibration commands
+// ─────────────────────────────────────────────────────────────────────────────
+
+FLASHMEM void command_calib_status(const args_t& args) {
+    char buf[256];
+    Calibration::toString(buf, sizeof(buf));
+    Console::info("Calib") << "Current profile: " << buf << Console::endl;
+    Console::info("Calib") << "SD ready: " << (SDCard::isReady() ? "yes" : "no") << Console::endl;
+}
+
+FLASHMEM void command_calib_save(const args_t& args) {
+    if (!SDCard::isReady()) {
+        Console::error("Calib") << "SD not available — insert card and reboot" << Console::endl;
+        return;
+    }
+    SDCard::saveCalibration();
+}
+
+FLASHMEM void command_calib_load(const args_t& args) {
+    if (!SDCard::isReady()) {
+        Console::error("Calib") << "SD not available" << Console::endl;
+        return;
+    }
+    SDCard::loadCalibration();
+}
+
+FLASHMEM void command_calib_reset(const args_t& args) {
+    Calibration::reset();
+    char buf[256];
+    Calibration::toString(buf, sizeof(buf));
+    Console::info("Calib") << "Reset to defaults: " << buf << Console::endl;
+}
+
+FLASHMEM void command_calib_cart(const args_t& args) {
+    if (args.size() != 3) {
+        Console::error("Calib") << "Usage: calib_cart(x, y, rot)" << Console::endl;
+        return;
+    }
+    float x   = args[0].toFloat();
+    float y   = args[1].toFloat();
+    float rot = args[2].toFloat();
+    Calibration::setCartesian(x, y, rot);
+    Console::info("Calib") << "Cartesian → cx=" << x << " cy=" << y << " cr=" << rot << Console::endl;
+}
+
+FLASHMEM void command_calib_holo(const args_t& args) {
+    if (args.size() != 3) {
+        Console::error("Calib") << "Usage: calib_holo(a, b, c)" << Console::endl;
+        return;
+    }
+    float a = args[0].toFloat();
+    float b = args[1].toFloat();
+    float c = args[2].toFloat();
+    Calibration::setHolonomic(a, b, c);
+    Console::info("Calib") << "Holonomic → ha=" << a << " hb=" << b << " hc=" << c << Console::endl;
+}
+
+FLASHMEM void command_calib_otos_linear(const args_t& args) {
+    if (args.size() != 1) {
+        Console::error("Calib") << "Usage: calib_otos_linear(value)" << Console::endl;
+        return;
+    }
+    float v = args[0].toFloat();
+    if (v < 0.872f || v > 1.127f) {
+        Console::warn("Calib") << "OTOS linear scalar out of spec (0.872–1.127): " << v << Console::endl;
+    }
+    Calibration::setOtosLinear(v);
+    Console::info("Calib") << "OTOS linear → " << v << Console::endl;
+}
+
+FLASHMEM void command_calib_otos_angular(const args_t& args) {
+    if (args.size() != 1) {
+        Console::error("Calib") << "Usage: calib_otos_angular(value)" << Console::endl;
+        return;
+    }
+    float v = args[0].toFloat();
+    if (v < 0.872f || v > 1.127f) {
+        Console::warn("Calib") << "OTOS angular scalar out of spec (0.872–1.127): " << v << Console::endl;
+    }
+    Calibration::setOtosAngular(v);
+    Console::info("Calib") << "OTOS angular → " << v << Console::endl;
+}
+
+/**
+ * calib_measure(dist_mm) — open-loop move + OTOS measurement.
+ *
+ * Procedure:
+ *   1. Records current OTOS position (with current linear scale applied).
+ *   2. Moves forward dist_mm using stepper mode (no OTOS feedback → scale error
+ *      doesn't affect the move distance, steppers give ground truth).
+ *   3. Reads final OTOS position.
+ *   4. Reports measured distance and the suggested corrected OtosLinear.
+ *
+ * Use this to calibrate calib_otos_linear:
+ *   - Place a ruler; run calib_measure(500)
+ *   - If OTOS reports 480mm for a 500mm move: ratio = 500/480 ≈ 1.042
+ *   - New OtosLinear = current * ratio  (or use the printed suggestion directly)
+ *
+ * Note: the robot must be in a clear straight path of at least dist_mm.
+ * Stall detection is disabled for this move to avoid false positives.
+ */
+FLASHMEM void command_calib_measure(const args_t& args) {
+    if (args.size() != 1) {
+        Console::error("Calib") << "Usage: calib_measure(dist_mm)" << Console::endl;
+        return;
+    }
+    float dist = args[0].toFloat();
+    if (dist < 50.0f || dist > 3000.0f) {
+        Console::error("Calib") << "dist_mm must be 50–3000" << Console::endl;
+        return;
+    }
+
+    // Force stepper mode so the move doesn't use OTOS feedback
+    // (we want to measure OTOS, not correct with it)
+    motion.disableCruiseMode();
+
+    Vec3 startPos = localisation.getPosition();
+    Console::info("Calib") << "Start pos: x=" << startPos.x << " y=" << startPos.y << Console::endl;
+
+    // Move forward, no stall detection (avoid false positive on calibration surface)
+    async motion.noStall().goPolar(0, dist);
+
+    // Wait for completion while keeping ISR-driven services alive
+    // (delay() is safe here — motion ISR runs via interrupt)
+    unsigned long t0 = millis();
+    static constexpr unsigned long TIMEOUT_MS = 15000UL;
+    while (!motion.hasFinished() && (millis() - t0) < TIMEOUT_MS) {
+        delay(20);
+    }
+
+    motion.enableCruiseMode();
+
+    Vec3 endPos = localisation.getPosition();
+    float dx = endPos.x - startPos.x;
+    float dy = endPos.y - startPos.y;
+    float otosDistance = sqrtf(dx * dx + dy * dy);
+
+    Console::info("Calib") << "─────────────────────────────────" << Console::endl;
+    Console::info("Calib") << "Target distance  : " << dist << " mm" << Console::endl;
+    Console::info("Calib") << "OTOS measured    : " << otosDistance << " mm" << Console::endl;
+
+    if (otosDistance > 10.0f) {
+        float ratio = dist / otosDistance;
+        float suggested = Calibration::OtosLinear * ratio;
+        Console::info("Calib") << "Current OtosLinear : " << Calibration::OtosLinear << Console::endl;
+        Console::info("Calib") << "Ratio (target/otos): " << ratio << Console::endl;
+        Console::info("Calib") << "→ Suggested : calib_otos_linear(" << suggested << ")" << Console::endl;
+        Console::info("Calib") << "─────────────────────────────────" << Console::endl;
+    } else {
+        Console::error("Calib") << "OTOS reading too small — is localisation enabled?" << Console::endl;
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  Motion — rotation around arbitrary point
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * goAround(cx, cy, angleDeg) — rotate around pivot (cx,cy) by angleDeg.
+ *
+ * The robot traces a circular arc of radius = distance(robot, pivot).
+ * Its absolute orientation changes by the same angleDeg (robot rotates in-place
+ * relative to the pivot — i.e. it always faces the same direction relative to
+ * the arc tangent unless the motion controller adjusts otherwise).
+ *
+ * The arc is approximated with N intermediate waypoints (passThrough).
+ * A final go() targets the exact endpoint with the correct heading.
+ *
+ * Example:
+ *   goAround(1500, 1000, 90)   // orbit 90° CW around table centre
+ *   goAround(0, 0, -180)       // half-circle CCW around origin
+ */
+FLASHMEM void command_goAround(const args_t& args) {
+    if (args.size() != 3) {
+        Console::error("Interpreter") << "Usage: goAround(cx, cy, angleDeg)" << Console::endl;
+        return;
+    }
+    float cx       = args[0].toFloat();
+    float cy       = args[1].toFloat();
+    float angleDeg = args[2].toFloat();
+
+    Vec3  pos   = motion.getAbsPosition();
+    float rx    = pos.x - cx;           // vector robot → pivot
+    float ry    = pos.y - cy;
+    float total = angleDeg * DEG_TO_RAD;
+
+    // Number of arc segments — ≥4, ~one segment per 22.5° (16/rev)
+    int N = max(4, (int)(fabsf(angleDeg) / 22.5f));
+
+    // Intermediate passThrough waypoints
+    for (int i = 1; i < N; i++) {
+        float theta = total * (float)i / (float)N;
+        float nx = cx + rx * cosf(theta) - ry * sinf(theta);
+        float ny = cy + rx * sinf(theta) + ry * cosf(theta);
+        motion.via(nx, ny);
+    }
+
+    // Final target with heading rotated by angleDeg
+    float nx  = cx + rx * cosf(total) - ry * sinf(total);
+    float ny  = cy + rx * sinf(total) + ry * cosf(total);
+    float nz  = pos.z + total;  // maintain orientation change
+    async motion.move({nx, ny, nz});
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  APF — Artificial Potential Fields obstacle avoidance
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * apf(on [, scale]) — Enable or disable APF avoidance.
+ *
+ * Arguments:
+ *   on    : 1 / true / on  → enable
+ *           0 / false / off → disable
+ *   scale : optional float — multiplier applied to the repulsive gradient
+ *           output (mm/s per gradient unit).  Default 50000.
+ *           Increase for stronger avoidance; decrease if oscillations occur.
+ *
+ * Notes:
+ *   - Only works in cruise mode (OTOS odometry required).
+ *   - The occupancy map must be up-to-date (lidar connected to T4.0).
+ *   - APF does NOT affect the completion check — robot still stops at goal.
+ *   - APF does NOT replace the safety service — both can be active together.
+ *
+ * Examples:
+ *   apf(1)             → enable with default scale
+ *   apf(1, 80000)      → enable with stronger avoidance
+ *   apf(0)             → disable
+ */
+FLASHMEM void command_apf(const args_t& args) {
+    if (args.size() < 1) {
+        // Print current state
+        Console::info("APF") << (motion.isAPFEnabled() ? "enabled" : "disabled") << Console::endl;
+        return;
+    }
+
+    const String& s = args[0];
+    bool enable = (s == "1" || s.equalsIgnoreCase("on") || s.equalsIgnoreCase("true"));
+
+    float scale = -1.0f;
+    if (args.size() >= 2) scale = args[1].toFloat();
+
+    if (enable) {
+        motion.enableAPF(scale);
+    } else {
+        motion.disableAPF();
+    }
 }
 
 //std::vector<String> arguments = extractArguments(args);
@@ -528,3 +811,62 @@ void command_health(const args_t& args){
         float a = arguments[2].toFloat();
 
 */
+// ─────────────────────────────────────────────────────────────────────────────
+//  Mission SD write commands
+// ─────────────────────────────────────────────────────────────────────────────
+
+FLASHMEM void command_mission_sd_open(const args_t& args) {
+    if (!SDCard::isReady()) {
+        Console::error("Mission") << "SD not ready" << Console::endl;
+        return;
+    }
+    if (MissionController::sdOpen()) {
+        Console::info("Mission") << "SD write session opened" << Console::endl;
+    } else {
+        Console::error("Mission") << "Failed to open mission file for writing" << Console::endl;
+    }
+}
+
+FLASHMEM void command_mission_sd_line(const args_t& args) {
+    // Reconstruct the raw line from args (could contain commas inside strings)
+    String line = "";
+    for (size_t i = 0; i < args.size(); i++) {
+        if (i > 0) line += ",";
+        line += args[i];
+    }
+    // Trim leading/trailing whitespace
+    line.trim();
+    if (!MissionController::sdAppendLine(line.c_str())) {
+        Console::error("Mission") << "Write failed — did you call mission_sd_open first?" << Console::endl;
+    }
+}
+
+FLASHMEM void command_mission_sd_close(const args_t& args) {
+    if (MissionController::sdClose()) {
+        Console::info("Mission") << "Strategy loaded from SD successfully" << Console::endl;
+    } else {
+        Console::error("Mission") << "Close failed or no commands parsed" << Console::endl;
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  Mission execution commands (for terminal testing + fallback registration)
+// ─────────────────────────────────────────────────────────────────────────────
+
+FLASHMEM void command_mission_run(const args_t& args) {
+    if (!MissionController::isLoaded()) {
+        Console::error("Mission") << "No strategy loaded — use mission_sd_open/line/close first" << Console::endl;
+        return;
+    }
+    if (MissionController::isRunning()) {
+        Console::warn("Mission") << "Strategy already running" << Console::endl;
+        return;
+    }
+    Console::info("Mission") << "Starting fallback strategy…" << Console::endl;
+    MissionController::execute();   // blocking
+}
+
+FLASHMEM void command_mission_abort(const args_t& args) {
+    MissionController::abort();
+    Console::info("Mission") << "Abort requested" << Console::endl;
+}

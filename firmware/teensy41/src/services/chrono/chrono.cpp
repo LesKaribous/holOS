@@ -5,11 +5,11 @@
 
 SINGLETON_INSTANTIATE(Chrono, chrono)
 
-void Chrono::attach(){
+FLASHMEM void Chrono::attach(){
     setDuration(Settings::Match::DURATION);
 }
 
-void Chrono::run(){
+FLASHMEM void Chrono::run(){
     if(!nearlyFinished && getTimeLeft() <= Settings::Match::NEARLY_FINISH && getTimeLeft() >= Settings::Match::ENDMATCH){
         onMatchNearlyFinished();
     }
@@ -21,20 +21,20 @@ void Chrono::run(){
     ihm.setTime(getTimeLeftSeconds());
 }
 
-void Chrono::onMatchNearlyFinished(){
+FLASHMEM void Chrono::onMatchNearlyFinished(){
     nearlyFinished = true;
     if(m_matchNearEnd_callback != nullptr)m_matchNearEnd_callback();
 }
 
-void Chrono::onMatchFinished(){
+FLASHMEM void Chrono::onMatchFinished(){
     finished = true;
     if(m_matchEnd_callback != nullptr)m_matchEnd_callback();
 }
 
-void Chrono::setNearEndCallback(routine_ptr cb){
+FLASHMEM void Chrono::setNearEndCallback(routine_ptr cb){
     m_matchNearEnd_callback = cb;
 }
 
-void Chrono::setEndCallback(routine_ptr cb){
+FLASHMEM void Chrono::setEndCallback(routine_ptr cb){
     m_matchEnd_callback = cb;
 }

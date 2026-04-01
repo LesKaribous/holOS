@@ -9,13 +9,13 @@ SINGLETON_INSTANTIATE(Lidar, lidar)
 
 Lidar::Lidar() : Service(ID_LIDAR){}
 
-void Lidar::attach(){
+FLASHMEM void Lidar::attach(){
     if(!intercom.enabled()){
         Console::error("Lidar") << "is not enabled" << Console::endl;
     }
 }
 
-void Lidar::run(){
+FLASHMEM void Lidar::run(){
     static Vec3 pos;
     if(enabled()){
         //if((millis() - m_lastPosUpdate > 100 && Vec3::distanceBetween(pos, nav.getPosition()) > 10) || millis() - m_lastPosUpdate > 1000){
@@ -35,20 +35,20 @@ void Lidar::run(){
     }
 }
 
-void Lidar::enable(){
+FLASHMEM void Lidar::enable(){
     Service::enable();
 }
 
-void Lidar::disable(){
+FLASHMEM void Lidar::disable(){
     Service::disable();
 }
 
-void Lidar::showRadarLED(){
+FLASHMEM void Lidar::showRadarLED(){
     intercom.sendMessage("on");
     Console::println("displayLidar");
 }
 
-void Lidar::showStatusLED(){
+FLASHMEM void Lidar::showStatusLED(){
     intercom.sendMessage("off");
     //Console::println("displayIntercom");
 }

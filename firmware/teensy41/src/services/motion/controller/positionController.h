@@ -1,6 +1,8 @@
 #pragma once
 #include "utils/geometry.h"
 #include "os/jobs/asyncExecutor.h"
+#include "config/calibration.h"
+#include "services/lidar/occupancy.h"
 #include "velocityController.h"
 #include "pid.h"
 #include "services/motion/stallDetector.h"
@@ -42,8 +44,20 @@ public:
     void setFeedrate(float feed);
     void setStallEnabled(bool enabled);
 
-    Vec3 getPosition()     const { return position / Settings::Calibration::Primary.Cartesian; }
-    Vec3 getVelocity()     const { return velocity  / Settings::Calibration::Primary.Cartesian; }
+    // ── Artificial Potential Fields avoidance ──────────────────────────────
+    // When enabled, a repulsive velocity component from the occupancy map is
+    // added to the PID velocity command, steering the robot away from detected
+    // obstacles.  Completion check is NOT affected (robot still stops at goal).
+    //
+    //  scale : multiplier applied to repulsiveGradient() output → mm/s.
+    //          Default 50000.  Increase for stronger avoidance, decrease if
+    //          the robot oscillates near obstacles.
+    void setAPF(bool enabled, float scale = -1.0f);
+    bool  isAPFEnabled() const { return m_apfEnabled; }
+    float getAPFScale()  const { return m_apfScale;   }
+
+    Vec3 getPosition()     const { return position / Calibration::Current.Cartesian; }
+    Vec3 getVelocity()     const { return velocity  / Calibration::Current.Cartesian; }
     Vec3 getAcceleration() const { return acceleration; }
     Vec3 getTarget()       const { return target; }
 
@@ -64,6 +78,10 @@ public:
 private:
     // ---- Feedrate ----
     float m_feedrate = 1.0f;
+
+    // ---- APF ----
+    bool  m_apfEnabled = false;
+    float m_apfScale   = 50000.0f;
 
     // ---- Stall ----
     StallDetector m_stall;

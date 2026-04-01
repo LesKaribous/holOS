@@ -242,6 +242,8 @@ function switchView(name, btn) {
     requestAnimationFrame(() => requestAnimationFrame(resizeCanvas));
   } else if (name === 'strategy') {
     refreshStrategyList();
+  } else if (name === 'missions') {
+    onMissionsViewActivated();
   } else if (name === 'macros') {
     renderMacroList();
   } else if (name === 'terminal') {
@@ -251,6 +253,8 @@ function switchView(name, btn) {
   } else if (name === 'modules') {
     initModulesView();
     if (lastState) updateModulesView(lastState);
+  } else if (name === 'calibration') {
+    onCalibViewActivated();
   }
 }
 
@@ -865,6 +869,7 @@ function buildStepHTML(step, idx) {
     <span class="step-icon">${def.icon}</span>
     <select class="step-type-sel" onchange="changeStepType(${idx},this.value)">${typeOptions}</select>
     <div class="step-fields">${fields}</div>
+    <button class="btn-tiny" onclick="runStepOnRobot(${idx})" title="Exécuter cette étape sur le robot connecté">🤖</button>
     <button class="btn-tiny" onclick="moveStep(${idx},-1)" title="Move up">↑</button>
     <button class="btn-tiny" onclick="moveStep(${idx},+1)" title="Move down">↓</button>
     <button class="btn-tiny red" onclick="deleteStep(${idx})">✕</button>
@@ -981,6 +986,378 @@ function macroPythonCode(m) {
     }
   }
   return c;
+}
+
+// ── Macro: Run single step on robot ───────────────────────────────────────
+function runStepOnRobot(idx) {
+  const m = macros[activeMacroIdx]; if (!m) return;
+  const step = m.steps[idx]; if (!step) return;
+  fetch('/api/missions/run-step', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(step),
+  })
+  .then(r => r.json())
+  .then(d => {
+    const el = document.getElementById(`ms-${idx}`);
+    const flash = d.ok ? '#22c55e44' : '#ef444444';
+    if (el) { el.style.background = flash; setTimeout(() => el.style.background = '', 800); }
+    showToast(d.ok ? `✓ ${d.cmd}` : `✗ ${d.error || d.response}`);
+  })
+  .catch(e => showToast('✗ ' + e));
+}
+
+// ── Macro: Run full macro on robot (sequential) ───────────────────────────
+let _macroRobotRunning = false;
+function runMacroOnRobot() {
+  if (_macroRobotRunning) { showToast('Macro déjà en cours'); return; }
+  syncActiveMacroFromUI();
+  const m = macros[activeMacroIdx]; if (!m) return;
+  const steps = [...m.steps];
+  if (m.start_pos) steps.unshift({type:'move_to', x:m.start_pos.x, y:m.start_pos.y});
+  _macroRobotRunning = true;
+  const btn = document.getElementById('btn-macro-run-robot');
+  if (btn) btn.textContent = '⏳ Running…';
+
+  (async () => {
+    for (let i = 0; i < steps.length; i++) {
+      const step = steps[i];
+      // highlight step
+      document.querySelectorAll('.macro-step').forEach((el, idx) => {
+        el.style.background = idx === i ? '#3b82f644' : '';
+      });
+      try {
+        const res = await fetch('/api/missions/run-step', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify(step),
+        }).then(r => r.json());
+        if (!res.ok) {
+          showToast(`✗ Étape ${i+1} échouée: ${res.error || res.response}`);
+          break;
+        }
+      } catch(e) {
+        showToast('✗ Erreur réseau: ' + e); break;
+      }
+    }
+    document.querySelectorAll('.macro-step').forEach(el => el.style.background = '');
+    _macroRobotRunning = false;
+    if (btn) btn.textContent = '🤖 Robot';
+  })();
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+//  MISSIONS
+// ══════════════════════════════════════════════════════════════════════════
+
+let missions = [];
+let activeMissionIdx = -1;
+let _missionPickingApproach = false;
+
+function loadMissions() {
+  fetch('/api/missions').then(r => r.json()).then(data => {
+    missions = Array.isArray(data) ? data : [];
+    renderMissionList();
+  });
+}
+
+function saveMissions() {
+  if (activeMissionIdx >= 0) syncActiveMissionFromUI();
+  fetch('/api/missions', {
+    method: 'PUT',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(missions),
+  }).then(() => showToast('Missions sauvegardées ✓'));
+}
+
+function renderMissionList() {
+  const list = document.getElementById('mission-list'); if (!list) return;
+  if (!missions.length) {
+    list.innerHTML = '<span class="file-list-empty">Aucune mission</span>'; return;
+  }
+  const sorted = [...missions.entries()].sort(([,a],[,b]) => b.priority - a.priority);
+  list.innerHTML = sorted.map(([i, m]) => `
+    <div class="file-item${i === activeMissionIdx ? ' active' : ''}" onclick="selectMission(${i})">
+      <span class="file-item-name${m.enabled === false ? ' text-dim' : ''}">
+        ${m.enabled === false ? '○' : '●'} ${escHtml(m.name)}
+        <span style="font-size:9px;color:var(--text-dim);margin-left:4px">#${m.priority || 0} • ${m.score || 0}pts</span>
+      </span>
+      <span class="file-item-actions">
+        <button class="btn-tiny red" onclick="event.stopPropagation();confirmDeleteMission(${i})">🗑</button>
+      </span>
+    </div>`).join('');
+}
+
+function newMission() {
+  const name = prompt('Nom de la mission (snake_case):');
+  if (!name) return;
+  const m = {
+    id: 'm' + Date.now(),
+    name: name.replace(/\s+/g, '_'),
+    desc: '',
+    approach: {x: null, y: null, angle: null},
+    macro_id: '',
+    score: 20,
+    priority: 5,
+    time_ms: 8000,
+    enabled: true,
+  };
+  missions.push(m);
+  activeMissionIdx = missions.length - 1;
+  saveMissions();
+  renderMissionList();
+  showMissionEditor(activeMissionIdx);
+}
+
+function selectMission(idx) {
+  if (activeMissionIdx >= 0) syncActiveMissionFromUI();
+  activeMissionIdx = idx;
+  renderMissionList();
+  showMissionEditor(idx);
+}
+
+function showMissionEditor(idx) {
+  const m = missions[idx]; if (!m) return;
+  document.getElementById('mission-empty').classList.add('hidden');
+  document.getElementById('mission-editor').classList.remove('hidden');
+  document.getElementById('mission-name').value     = m.name || '';
+  document.getElementById('mission-desc').value     = m.desc || '';
+  document.getElementById('mission-score').value    = m.score ?? 20;
+  document.getElementById('mission-priority').value = m.priority ?? 5;
+  document.getElementById('mission-time-ms').value  = m.time_ms ?? 8000;
+  const ap = m.approach || {};
+  document.getElementById('mission-ax').value       = ap.x ?? '';
+  document.getElementById('mission-ay').value       = ap.y ?? '';
+  document.getElementById('mission-aa').value       = ap.angle ?? '';
+  document.getElementById('mission-enabled').checked = m.enabled !== false;
+  _refreshMacroSelector(m.macro_id || '');
+  _refreshMissionMacroPreview(m.macro_id || '');
+}
+
+function _refreshMacroSelector(selectedId) {
+  const sel = document.getElementById('mission-macro-sel'); if (!sel) return;
+  sel.innerHTML = '<option value="">— aucune —</option>' +
+    macros.map(m => `<option value="${escHtml(m.name)}"${m.name === selectedId ? ' selected' : ''}>${escHtml(m.name)}</option>`).join('');
+}
+
+function _refreshMissionMacroPreview(macroId) {
+  const wrap = document.getElementById('mission-macro-preview');
+  const container = document.getElementById('mission-steps-preview');
+  if (!wrap || !container) return;
+  const macro = macros.find(m => m.name === macroId);
+  if (!macro || !macro.steps?.length) { wrap.classList.add('hidden'); return; }
+  wrap.classList.remove('hidden');
+  container.innerHTML = macro.steps.map((step, i) => {
+    const def = STEP_DEFS.find(d => d.type === step.type) || STEP_DEFS[0];
+    const summary = _stepSummary(step);
+    return `<div class="mission-step-row">
+      <span class="step-icon">${def.icon}</span>
+      <span style="font-size:11px;flex:1">${def.label}: <code>${escHtml(summary)}</code></span>
+      <button class="btn-tiny" onclick="runStepOnRobotDirect(${JSON.stringify(step).replace(/"/g,'&quot;')})" title="Exécuter sur robot">🤖</button>
+    </div>`;
+  }).join('');
+}
+
+function _stepSummary(step) {
+  switch (step.type) {
+    case 'move_to':     return `(${step.x||0}, ${step.y||0})`;
+    case 'face':        return `${step.angle_deg||0}°`;
+    case 'actuator':    return step.cmd || '';
+    case 'wait':        return `${step.ms||0} ms`;
+    case 'if_occupied': return `poi=${step.poi}`;
+    case 'call_macro':  return `→ ${step.name}`;
+    case 'log':         return step.msg || '';
+    default:            return '';
+  }
+}
+
+function runStepOnRobotDirect(step) {
+  fetch('/api/missions/run-step', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(step),
+  }).then(r => r.json()).then(d => showToast(d.ok ? `✓ ${d.cmd}` : `✗ ${d.error || d.response}`))
+    .catch(e => showToast('✗ ' + e));
+}
+
+function syncActiveMissionFromUI() {
+  const m = missions[activeMissionIdx]; if (!m) return;
+  m.name      = document.getElementById('mission-name')?.value || m.name;
+  m.desc      = document.getElementById('mission-desc')?.value || '';
+  m.score     = parseInt(document.getElementById('mission-score')?.value) || 0;
+  m.priority  = parseInt(document.getElementById('mission-priority')?.value) || 0;
+  m.time_ms   = parseInt(document.getElementById('mission-time-ms')?.value) || 8000;
+  m.enabled   = document.getElementById('mission-enabled')?.checked !== false;
+  const ax = document.getElementById('mission-ax')?.value;
+  const ay = document.getElementById('mission-ay')?.value;
+  const aa = document.getElementById('mission-aa')?.value;
+  m.approach  = {
+    x: ax !== '' ? parseFloat(ax) : null,
+    y: ay !== '' ? parseFloat(ay) : null,
+    angle: aa !== '' ? parseFloat(aa) : null,
+  };
+  m.macro_id  = document.getElementById('mission-macro-sel')?.value || '';
+}
+
+function syncMissionApproach() {
+  if (activeMissionIdx < 0) return;
+  const m = missions[activeMissionIdx];
+  const ax = document.getElementById('mission-ax')?.value;
+  const ay = document.getElementById('mission-ay')?.value;
+  if (m) m.approach = { ...(m.approach||{}), x: ax !== '' ? parseFloat(ax) : null, y: ay !== '' ? parseFloat(ay) : null };
+}
+
+function syncMissionMacro() {
+  const sel = document.getElementById('mission-macro-sel');
+  if (!sel || activeMissionIdx < 0) return;
+  missions[activeMissionIdx].macro_id = sel.value;
+  _refreshMissionMacroPreview(sel.value);
+}
+
+function syncMissionEnabled() {
+  if (activeMissionIdx < 0) return;
+  missions[activeMissionIdx].enabled = document.getElementById('mission-enabled')?.checked !== false;
+  renderMissionList();
+}
+
+function deleteMission() { confirmDeleteMission(activeMissionIdx); }
+function confirmDeleteMission(idx) {
+  const m = missions[idx]; if (!m) return;
+  if (!confirm(`Supprimer la mission "${m.name}" ?`)) return;
+  missions.splice(idx, 1);
+  activeMissionIdx = Math.min(activeMissionIdx, missions.length - 1);
+  saveMissions();
+  renderMissionList();
+  if (activeMissionIdx >= 0) showMissionEditor(activeMissionIdx);
+  else {
+    document.getElementById('mission-empty')?.classList.remove('hidden');
+    document.getElementById('mission-editor')?.classList.add('hidden');
+  }
+}
+
+function missionGoToMacro() {
+  const sel = document.getElementById('mission-macro-sel');
+  if (!sel?.value) return;
+  const idx = macros.findIndex(m => m.name === sel.value);
+  if (idx < 0) return;
+  const btn = document.querySelector('[data-view=macros]');
+  if (btn) switchView('macros', btn);
+  selectMacro(idx);
+}
+
+// ── Approach point picker (click on map to set approach) ─────────────────
+function missionPickApproach() {
+  _missionPickingApproach = true;
+  showToast('Cliquez sur la carte pour définir le point d\'approche');
+  // Switch to map view temporarily
+  const btn = document.querySelector('[data-view=map]');
+  if (btn) switchView('map', btn);
+}
+
+// Called by map click handler when approach-picking mode is active
+function _onMapClickForMission(worldX, worldY) {
+  if (!_missionPickingApproach) return false;
+  _missionPickingApproach = false;
+  document.getElementById('mission-ax').value = Math.round(worldX);
+  document.getElementById('mission-ay').value = Math.round(worldY);
+  syncMissionApproach();
+  showToast(`Point d'approche: (${Math.round(worldX)}, ${Math.round(worldY)})`);
+  // Return to missions view
+  const btn = document.querySelector('[data-view=missions]');
+  if (btn) switchView('missions', btn);
+  return true;
+}
+
+function missionRunOnRobot() {
+  if (activeMissionIdx < 0) return;
+  syncActiveMissionFromUI();
+  const m = missions[activeMissionIdx]; if (!m) return;
+  const steps = [];
+
+  // Approach move
+  const ap = m.approach || {};
+  if (ap.x !== null && ap.y !== null) {
+    steps.push({type: 'move_to', x: ap.x, y: ap.y});
+  }
+  if (ap.angle !== null && ap.angle !== undefined) {
+    steps.push({type: 'face', angle_deg: ap.angle});
+  }
+
+  // Macro steps
+  const macro = macros.find(mc => mc.name === m.macro_id);
+  if (macro) steps.push(...macro.steps);
+
+  if (!steps.length) { showToast('Aucune étape à exécuter'); return; }
+
+  // Reuse the macro robot runner
+  const fakeM = {name: m.name, start_pos: null, steps};
+  const savedIdx = activeMacroIdx;
+  const savedMacros = macros;
+
+  (async () => {
+    const btn = document.getElementById('btn-mission-run');
+    if (btn) btn.textContent = '⏳ Running…';
+    for (const step of steps) {
+      try {
+        const res = await fetch('/api/missions/run-step', {
+          method: 'POST', headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify(step),
+        }).then(r => r.json());
+        if (!res.ok) { showToast(`✗ ${res.error || res.response}`); break; }
+      } catch(e) { showToast('✗ ' + e); break; }
+    }
+    if (btn) btn.textContent = '▶ Run on robot';
+  })();
+}
+
+// ── SD Fallback preview / deploy ──────────────────────────────────────────
+function missionPreviewFallback() {
+  if (activeMissionIdx >= 0) syncActiveMissionFromUI();
+  fetch('/api/missions/preview-fallback', { method: 'POST' })
+    .then(r => r.json())
+    .then(d => {
+      const overlay = document.getElementById('mission-fallback-overlay');
+      const pre     = document.getElementById('mission-fallback-text');
+      if (!overlay || !pre) return;
+      pre.textContent = d.cfg || '(empty)';
+      overlay.style.display = 'flex';
+    })
+    .catch(e => showToast('✗ ' + e));
+}
+
+function missionCloseFallbackPreview() {
+  const overlay = document.getElementById('mission-fallback-overlay');
+  if (overlay) overlay.style.display = 'none';
+}
+
+function missionDeploySD() {
+  if (activeMissionIdx >= 0) syncActiveMissionFromUI();
+  const status = document.getElementById('mission-deploy-status');
+  if (status) status.textContent = '⏳ Écriture…';
+  const btn1 = document.getElementById('btn-deploy-sd');
+  const btn2 = document.getElementById('btn-deploy-from-preview');
+  [btn1, btn2].forEach(b => b && (b.disabled = true));
+
+  fetch('/api/missions/deploy-sd', { method: 'POST' })
+    .then(r => r.json())
+    .then(d => {
+      const msg = d.ok
+        ? `✓ ${d.lines} lignes écrites sur SD`
+        : `✗ ${d.error}`;
+      if (status) status.textContent = msg;
+      showToast(msg);
+    })
+    .catch(e => {
+      const msg = '✗ ' + e;
+      if (status) status.textContent = msg;
+    })
+    .finally(() => [btn1, btn2].forEach(b => b && (b.disabled = false)));
+}
+
+// ── Hook switchView for missions ──────────────────────────────────────────
+function onMissionsViewActivated() {
+  loadMissions();
+  // Refresh macro selector in case macros changed
+  if (activeMissionIdx >= 0) _refreshMacroSelector(missions[activeMissionIdx]?.macro_id || '');
 }
 
 // ══════════════════════════════════════════════════════════════════════════
@@ -2249,4 +2626,265 @@ function modSvcCmd(action, serviceId) {
   const cmd = `${action}(${serviceId})`;
   socket.emit('hw_fire', { cmd });
   showToast(`${action}(${serviceId}) sent`);
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+//  CALIBRATION VIEW
+// ═════════════════════════════════════════════════════════════════════════════
+
+// ── State ─────────────────────────────────────────────────────────────────────
+let _calibDirty = {};   // which groups have unsaved local changes
+let _calibData  = {     // local cache matching Python defaults
+  cx: 1.089, cy: -1.089, cr: 0.831,
+  ha: 1.0,   hb: 1.0,   hc: 1.0,
+  ol: 0.9714, oa: 1.0,
+};
+
+// ── Init ──────────────────────────────────────────────────────────────────────
+function calibInit() {
+  fetch('/api/calibration')
+    .then(r => r.json())
+    .then(d => {
+      if (d.ok) {
+        _calibData = Object.assign(_calibData, d.calib);
+        calibRefreshUI(d.connected);
+      }
+    })
+    .catch(() => {});
+}
+
+// ── Socket event — server pushed a calibration update ─────────────────────────
+socket.on('calib_updated', data => {
+  if (data && data.calib) {
+    _calibData = Object.assign(_calibData, data.calib);
+    _calibDirty = {};
+    calibRefreshInputs();
+    _calibStatusMsg('✓ Calibration synchronisée depuis le robot');
+  }
+});
+
+// ── Refresh UI from _calibData ─────────────────────────────────────────────────
+function calibRefreshInputs() {
+  const fields = ['cx','cy','cr','ha','hb','hc','ol','oa'];
+  fields.forEach(k => {
+    const el = document.getElementById(`calib-${k}`);
+    if (el && document.activeElement !== el) {
+      el.value = _calibData[k];
+      el.classList.remove('dirty');
+    }
+  });
+}
+
+function calibRefreshUI(connected) {
+  calibRefreshInputs();
+  const dot  = document.getElementById('calib-banner-dot');
+  const text = document.getElementById('calib-banner-text');
+  if (!dot || !text) return;
+  if (connected) {
+    dot.style.background = '#22c55e';
+    text.textContent = 'Robot connecté — les commandes sont envoyées en temps réel';
+  } else {
+    dot.style.background = '#6b7280';
+    text.textContent = 'Non connecté — les valeurs seront appliquées à la connexion';
+  }
+}
+
+// ── Mark a group as dirty (user edited an input) ──────────────────────────────
+function calibMarkDirty(group) {
+  _calibDirty[group] = true;
+  // Highlight changed inputs
+  const groups = {
+    cart:   ['cx','cy','cr'],
+    holo:   ['ha','hb','hc'],
+    otos_l: ['ol'],
+    otos_a: ['oa'],
+  };
+  (groups[group] || []).forEach(k => {
+    const el = document.getElementById(`calib-${k}`);
+    if (el) el.classList.add('dirty');
+  });
+}
+
+// ── Apply helpers ─────────────────────────────────────────────────────────────
+function _calibPost(payload) {
+  return fetch('/api/calibration', {
+    method: 'POST',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify(payload),
+  })
+  .then(r => r.json())
+  .then(d => {
+    if (d.ok) {
+      _calibData = Object.assign(_calibData, d.calib);
+      _calibStatusMsg('✓ Appliqué');
+    } else {
+      _calibStatusMsg('✗ Erreur: ' + (d.error || '?'));
+    }
+    return d;
+  });
+}
+
+function _calibGetFloat(id) {
+  const el = document.getElementById(id);
+  return el ? parseFloat(el.value) : NaN;
+}
+
+function calibApplyCart() {
+  const cx = _calibGetFloat('calib-cx');
+  const cy = _calibGetFloat('calib-cy');
+  const cr = _calibGetFloat('calib-cr');
+  if (isNaN(cx) || isNaN(cy) || isNaN(cr)) return;
+  _calibPost({ cx, cy, cr }).then(() => {
+    ['cx','cy','cr'].forEach(k => {
+      const el = document.getElementById(`calib-${k}`);
+      if (el) el.classList.remove('dirty');
+    });
+    delete _calibDirty.cart;
+  });
+}
+
+function calibApplyHolo() {
+  const ha = _calibGetFloat('calib-ha');
+  const hb = _calibGetFloat('calib-hb');
+  const hc = _calibGetFloat('calib-hc');
+  if (isNaN(ha) || isNaN(hb) || isNaN(hc)) return;
+  _calibPost({ ha, hb, hc }).then(() => {
+    ['ha','hb','hc'].forEach(k => {
+      const el = document.getElementById(`calib-${k}`);
+      if (el) el.classList.remove('dirty');
+    });
+    delete _calibDirty.holo;
+  });
+}
+
+function calibApplyOtosLinear() {
+  const ol = _calibGetFloat('calib-ol');
+  if (isNaN(ol)) return;
+  if (ol < 0.872 || ol > 1.127) {
+    _calibStatusMsg('⚠ Valeur hors plage OTOS (0.872–1.127)');
+    return;
+  }
+  _calibPost({ ol }).then(() => {
+    const el = document.getElementById('calib-ol');
+    if (el) el.classList.remove('dirty');
+    delete _calibDirty.otos_l;
+  });
+}
+
+function calibApplyOtosAngular() {
+  const oa = _calibGetFloat('calib-oa');
+  if (isNaN(oa)) return;
+  if (oa < 0.872 || oa > 1.127) {
+    _calibStatusMsg('⚠ Valeur hors plage OTOS (0.872–1.127)');
+    return;
+  }
+  _calibPost({ oa }).then(() => {
+    const el = document.getElementById('calib-oa');
+    if (el) el.classList.remove('dirty');
+    delete _calibDirty.otos_a;
+  });
+}
+
+function calibApplyAll() {
+  const cx = _calibGetFloat('calib-cx'), cy = _calibGetFloat('calib-cy'), cr = _calibGetFloat('calib-cr');
+  const ha = _calibGetFloat('calib-ha'), hb = _calibGetFloat('calib-hb'), hc = _calibGetFloat('calib-hc');
+  const ol = _calibGetFloat('calib-ol'), oa = _calibGetFloat('calib-oa');
+  _calibPost({ cx, cy, cr, ha, hb, hc, ol, oa }).then(() => {
+    _calibDirty = {};
+    document.querySelectorAll('.calib-input').forEach(el => el.classList.remove('dirty'));
+  });
+}
+
+// ── SD card operations ────────────────────────────────────────────────────────
+function calibSave() {
+  fetch('/api/calibration/save', { method: 'POST' })
+    .then(r => r.json())
+    .then(d => _calibStatusMsg(d.ok ? '💾 Sauvegardé sur SD' : '✗ Erreur: ' + d.error));
+}
+
+function calibLoad() {
+  fetch('/api/calibration/load', { method: 'POST' })
+    .then(r => r.json())
+    .then(d => {
+      if (d.ok) {
+        if (d.calib) {
+          _calibData = Object.assign(_calibData, d.calib);
+          _calibDirty = {};
+          calibRefreshInputs();
+        }
+        _calibStatusMsg('📂 Chargé depuis SD');
+      } else {
+        _calibStatusMsg('✗ Erreur: ' + d.error);
+      }
+    });
+}
+
+function calibReset() {
+  if (!confirm('Remettre tous les paramètres aux valeurs par défaut ?')) return;
+  fetch('/api/calibration/reset', { method: 'POST' })
+    .then(r => r.json())
+    .then(d => {
+      if (d.ok && d.calib) {
+        _calibData = Object.assign(_calibData, d.calib);
+        _calibDirty = {};
+        calibRefreshInputs();
+        _calibStatusMsg('↺ Réinitialisé aux défauts');
+      }
+    });
+}
+
+// ── Measurement tool ──────────────────────────────────────────────────────────
+function calibMeasure() {
+  const dist = parseFloat(document.getElementById('calib-measure-dist').value);
+  if (isNaN(dist) || dist < 50 || dist > 3000) {
+    _calibStatusMsg('⚠ Distance invalide (50–3000 mm)');
+    return;
+  }
+  const btn = document.getElementById('btn-calib-measure');
+  const res = document.getElementById('calib-measure-result');
+  btn.disabled = true;
+  btn.textContent = '⏳ En cours...';
+  res.classList.add('hidden');
+  res.textContent = '';
+
+  fetch('/api/calibration/measure', {
+    method: 'POST',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ dist_mm: dist }),
+  })
+  .then(r => r.json())
+  .then(d => {
+    btn.disabled = false;
+    btn.textContent = '📏 Mesurer';
+    if (d.ok) {
+      res.textContent = d.result || '(pas de réponse)';
+      res.classList.remove('hidden');
+      _calibStatusMsg('✓ Mesure terminée');
+    } else {
+      res.textContent = 'Erreur: ' + (d.error || '?');
+      res.classList.remove('hidden');
+      _calibStatusMsg('✗ ' + (d.error || 'Erreur'));
+    }
+  })
+  .catch(e => {
+    btn.disabled = false;
+    btn.textContent = '📏 Mesurer';
+    _calibStatusMsg('✗ ' + e.message);
+  });
+}
+
+// ── Status message ─────────────────────────────────────────────────────────────
+let _calibStatusTimer = null;
+function _calibStatusMsg(msg) {
+  const el = document.getElementById('calib-status-msg');
+  if (!el) return;
+  el.textContent = msg;
+  clearTimeout(_calibStatusTimer);
+  _calibStatusTimer = setTimeout(() => { el.textContent = ''; }, 5000);
+}
+
+// ── View activation hook ──────────────────────────────────────────────────────
+// Called by switchView() when the calibration tab is opened
+function onCalibViewActivated() {
+  calibInit();
 }

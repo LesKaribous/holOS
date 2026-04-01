@@ -2,7 +2,7 @@
 #include "os/console.h"
 
 
-void Program::executeCommand(const CommandStatement& command) {
+FLASHMEM void Program::executeCommand(const CommandStatement& command) {
     // Construct the arguments string
     Console::trace("Program") << "Running command : " << command.name << "( " << int(command.arguments.size()) << " )" << Console::endl;
 
@@ -10,16 +10,16 @@ void Program::executeCommand(const CommandStatement& command) {
     CommandHandler::execute(command.name, command.arguments);
 }
 
-String Program::evaluateExpression(const String& e){
+FLASHMEM String Program::evaluateExpression(const String& e){
     Expression exp(e);
     return exp.evaluate();
 }
 
-String Program::evaluateExpression(Expression& e){
+FLASHMEM String Program::evaluateExpression(Expression& e){
     return e.evaluate();
 }
 
-void Program::executeIfStatement(IfStatement& ifStmt) {
+FLASHMEM void Program::executeIfStatement(IfStatement& ifStmt) {
     
     String r = evaluateExpression(ifStmt.condition);
     bool conditionResult = false;
@@ -39,16 +39,16 @@ void Program::executeIfStatement(IfStatement& ifStmt) {
     }
 }
 
-void Program::executeForStatement(ForStatement&){
+FLASHMEM void Program::executeForStatement(ForStatement&){
     
 }
-void Program::executeWhileStatement(WhileStatement&){
+FLASHMEM void Program::executeWhileStatement(WhileStatement&){
     
 }
-void Program::executeBlockStatement(BlockStatement&){
+FLASHMEM void Program::executeBlockStatement(BlockStatement&){
     
 }
-void Program::executeVarStatement(VarStatement& v){
+FLASHMEM void Program::executeVarStatement(VarStatement& v){
     Expression::registerVariables(v.name);
     String r = evaluateExpression(v.exp);
 }
@@ -118,7 +118,7 @@ void parseCondition(const String& raw, std::vector<String>& args, std::vector<St
 }
 
 
-void Program::executeStatement(const std::shared_ptr<Statement>& statement) {
+FLASHMEM void Program::executeStatement(const std::shared_ptr<Statement>& statement) {
     switch (statement->type) {
         case COMMAND_STATEMENT:
             executeCommand(*static_cast<CommandStatement*>(statement.get()));
@@ -148,15 +148,15 @@ void Program::executeStatement(const std::shared_ptr<Statement>& statement) {
     }
 }
 
-void Program::exec(){
+FLASHMEM void Program::exec(){
     step();
 }
 
-void Program::reset(){
+FLASHMEM void Program::reset(){
     Job::reset();
 }
 
-void Program::start(){
+FLASHMEM void Program::start(){
     if(_statements.size() > 0){
         Job::start();
         _currentTask = 0;
@@ -164,34 +164,34 @@ void Program::start(){
     }
 }
 
-void Program::pause(){
+FLASHMEM void Program::pause(){
     Job::pause();
 }
 
-void Program::resume(){
+FLASHMEM void Program::resume(){
     Job::resume();
 }
 
-void Program::cancel(){
+FLASHMEM void Program::cancel(){
     Job::cancel();
 }
 
-void Program::complete(){
+FLASHMEM void Program::complete(){
     Job::complete();
 }
 
 
-void Program::restart(){
+FLASHMEM void Program::restart(){
     stop();
     start();
 }
 
-void Program::stop(){
+FLASHMEM void Program::stop(){
     cancel();
     reset();
 }
 
-bool Program::step(){
+FLASHMEM bool Program::step(){
     //THROW(_currentTask)
     _currentTask++;
     if(_currentTask >= _statements.size()){

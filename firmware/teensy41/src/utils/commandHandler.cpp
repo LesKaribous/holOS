@@ -13,11 +13,11 @@ Command::Command(const String& synt, const String& desc, int argsCounts, command
     callback(func)
 {}
 
-std::map<String, Command>& CommandHandler::getCommands() {
+FLASHMEM std::map<String, Command>& CommandHandler::getCommands() {
     return commands;
 }
 
-void CommandHandler::registerCommand(const String& syntax, const String& description, command_func_ptr func) {
+FLASHMEM void CommandHandler::registerCommand(const String& syntax, const String& description, command_func_ptr func) {
     int numberOfArguments = std::count(syntax.begin(), syntax.end(), ',') + 1;
     int i = syntax.indexOf("(");
     String name = syntax;
@@ -29,11 +29,11 @@ void CommandHandler::registerCommand(const String& syntax, const String& descrip
     getCommands()[name] =  cmd;
 }
 
-bool CommandHandler::hasCommand(const String &command){
+FLASHMEM bool CommandHandler::hasCommand(const String &command){
     return getCommands().find(command) != getCommands().end();
 }
 
-void CommandHandler::execute(const String& command, const args_t& args) {
+FLASHMEM void CommandHandler::execute(const String& command, const args_t& args) {
     if(hasCommand(command)){
         std::vector<Expression> argsExpression;
         std::vector<String> argsEvaluated;
@@ -49,7 +49,7 @@ void CommandHandler::execute(const String& command, const args_t& args) {
     }
 }
 
-std::vector<String> CommandHandler::extractArguments(const String& args) {
+FLASHMEM std::vector<String> CommandHandler::extractArguments(const String& args) {
     std::vector<String> arguments;
     //int start = 0;
     int end = args.indexOf(',');

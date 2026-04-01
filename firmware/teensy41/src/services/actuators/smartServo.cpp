@@ -25,11 +25,11 @@ SmartServo::SmartServo(const SmartServo& cpy) : m_pin(cpy.m_pin),
 {}
 
 
-bool SmartServo::moveToDefault(int speed, bool runAsync){
+FLASHMEM bool SmartServo::moveToDefault(int speed, bool runAsync){
     return moveTo(m_defaultPos, speed, runAsync);
 }
 /**/
-bool SmartServo::moveTo(int target, int speed, bool runAsync){ //true for non blocking mode
+FLASHMEM bool SmartServo::moveTo(int target, int speed, bool runAsync){ //true for non blocking mode
     if(!m_enabled) return;
     if(m_sleeping) wakeUp(); //Wake
 
@@ -82,7 +82,7 @@ bool SmartServo::moveTo(int target, int speed, bool runAsync){ //true for non bl
 /**/
 
 /*
-bool SmartServo::moveTo(int target, int speedPct, bool runAsync) {
+FLASHMEM bool SmartServo::moveTo(int target, int speedPct, bool runAsync) {
     // 0) early exit if not enabled
     if (!m_enabled) return false;
     if (m_sleeping) wakeUp();
@@ -150,7 +150,7 @@ bool SmartServo::moveTo(int target, int speedPct, bool runAsync) {
 /**/
 
 
-bool SmartServo::moveToPose(int index,  int speed, bool runAsync){
+FLASHMEM bool SmartServo::moveToPose(int index,  int speed, bool runAsync){
     return moveTo(getPose(index), speed, runAsync);
 }
 
@@ -158,14 +158,14 @@ int SmartServo::getPosition(){
     return m_servo.read();
 }
 
-void SmartServo::setPose(int index, int pose){
+FLASHMEM void SmartServo::setPose(int index, int pose){
     if(!hasPose(index)){
         if(m_poses.size() < MAX_POSES) m_poses[index] = pose;
         else Console::error("Servo") << "Max pose limit reached, SmartServo can handle up to " << MAX_POSES << " poses" << Console::endl;
     }else m_poses[index] = pose;
 }
 
-bool SmartServo::hasPose(int pose) const{
+FLASHMEM bool SmartServo::hasPose(int pose) const{
     return (m_poses.find(pose) == m_poses.end());
 }
 
@@ -177,13 +177,13 @@ int SmartServo::getPose(int index) const{
     return m_poses.at(index);
 }
 
-void SmartServo::sleep(){
+FLASHMEM void SmartServo::sleep(){
     if(m_pin == -1) return;
     m_servo.detach();
     m_sleeping = true;
 }
 
-void SmartServo::wakeUp(){
+FLASHMEM void SmartServo::wakeUp(){
     
     if(m_enabled){
         m_servo.attach(m_pin);
@@ -191,7 +191,7 @@ void SmartServo::wakeUp(){
     m_sleeping = false;
 }
 
-void SmartServo::enable(){
+FLASHMEM void SmartServo::enable(){
     if(m_pin == -1) return;
     m_servo.attach(m_pin);
     moveToDefault();
@@ -199,7 +199,7 @@ void SmartServo::enable(){
     m_sleeping = false;
 }
 
-void SmartServo::disable(){
+FLASHMEM void SmartServo::disable(){
     m_enabled = false;
     if(m_pin == -1) return;
     m_servo.detach();

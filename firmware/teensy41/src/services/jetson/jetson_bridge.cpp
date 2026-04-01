@@ -22,7 +22,7 @@ SINGLETON_INSTANTIATE(JetsonBridge, jetsonBridge)
 
 JetsonBridge::JetsonBridge() : Service(ID_JETSON) {}
 
-void JetsonBridge::attach() {
+FLASHMEM void JetsonBridge::attach() {
     // Register default fallback : stop motors
     registerFallback(FallbackID::STOP, []() {
         motion.cancel();
@@ -37,7 +37,7 @@ void JetsonBridge::attach() {
     Console::info("JetsonBridge") << "Attached." << Console::endl;
 }
 
-void JetsonBridge::enable() {
+FLASHMEM void JetsonBridge::enable() {
     Service::enable();
     m_lastHeartbeatMs = millis();  // Give a grace period on boot
     m_bridgeSource    = BridgeSource::INTERCOM;  // Unknown until first ping
@@ -52,7 +52,7 @@ void JetsonBridge::enable() {
     Console::info("JetsonBridge") << "Enabled — waiting for transport (USB or XBee)." << Console::endl;
 }
 
-void JetsonBridge::disable() {
+FLASHMEM void JetsonBridge::disable() {
     Service::disable();
 }
 
@@ -60,7 +60,7 @@ void JetsonBridge::disable() {
 //  run() — called each OS loop iteration
 // ─────────────────────────────────────────────────────────────────────────────
 
-void JetsonBridge::run() {
+FLASHMEM void JetsonBridge::run() {
     if (!enabled()) return;
 
     // PR-1: Flush any pending command reply (reply queue from request.cpp)
@@ -112,7 +112,7 @@ void JetsonBridge::run() {
 //  handleRequest — called from onIntercomRequest in routines.cpp
 // ─────────────────────────────────────────────────────────────────────────────
 
-void JetsonBridge::handleRequest(Request& req) {
+FLASHMEM void JetsonBridge::handleRequest(Request& req) {
     // IC-3: Create one String from content for dispatch — this is acceptable since it's
     // only one allocation per incoming command (not per telemetry tick).
     const String cmd = String(req.getContent());
@@ -276,7 +276,7 @@ void JetsonBridge::handleRequest(Request& req) {
 //  _executeCommand — execute via OS command interpreter, reply immediately
 // ─────────────────────────────────────────────────────────────────────────────
 
-void JetsonBridge::_executeCommand(const String& cmd, Request& req) {
+FLASHMEM void JetsonBridge::_executeCommand(const String& cmd, Request& req) {
     String mutable_cmd = cmd;
     os.execute(mutable_cmd);
     req.reply("ok");
@@ -286,7 +286,7 @@ void JetsonBridge::_executeCommand(const String& cmd, Request& req) {
 //  _replyMotionDone — send deferred reply for a completed motion command
 // ─────────────────────────────────────────────────────────────────────────────
 
-void JetsonBridge::_replyMotionDone(bool success) {
+FLASHMEM void JetsonBridge::_replyMotionDone(bool success) {
     Motion::MoveStats stats = motion.getLastStats();
 
     // PR-2: build into persistent buffer for retransmit until ack_done
@@ -308,14 +308,14 @@ void JetsonBridge::_replyMotionDone(bool success) {
 //  Watchdog
 // ─────────────────────────────────────────────────────────────────────────────
 
-void JetsonBridge::_checkWatchdog() {
+FLASHMEM void JetsonBridge::_checkWatchdog() {
     if (!m_jetsonConnected) return;
 
     if (millis() - m_lastHeartbeatMs > m_heartbeatTimeoutMs) {
         Console::warn("JetsonBridge")
             << "Jetson heartbeat timeout! Activating fallback." << Console::endl;
         m_jetsonConnected = false;
-        triggerFallback(FallbackID::STOP);
+        triggerFallback(FallbackID::CUSTOM_1);  // Execute SD mission strategy if loaded
     }
 }
 
@@ -323,11 +323,11 @@ void JetsonBridge::_checkWatchdog() {
 //  Remote control state
 // ─────────────────────────────────────────────────────────────────────────────
 
-bool JetsonBridge::isRemoteControlled() const {
+FLASHMEM bool JetsonBridge::isRemoteControlled() const {
     return m_jetsonConnected;
 }
 
-bool JetsonBridge::jetsonConnected() const {
+FLASHMEM bool JetsonBridge::jetsonConnected() const {
     return m_jetsonConnected;
 }
 
@@ -335,7 +335,7 @@ bool JetsonBridge::jetsonConnected() const {
 //  Telemetry
 // ─────────────────────────────────────────────────────────────────────────────
 
-void JetsonBridge::pushTelemetry() {
+FLASHMEM void JetsonBridge::pushTelemetry() {
     char buf[128];
 
     if (m_telPos) {
@@ -376,7 +376,7 @@ void JetsonBridge::pushTelemetry() {
     }
 }
 
-void JetsonBridge::pushOccupancy() {
+FLASHMEM void JetsonBridge::pushOccupancy() {
     if (!m_telOcc) return;
     // occupancy.compress() returns a String — one unavoidable alloc until T4.0 API changes
     String compressed = occupancy.compress();
@@ -385,7 +385,7 @@ void JetsonBridge::pushOccupancy() {
     _pushFrame(buf);
 }
 
-void JetsonBridge::_pushFrame(const char* msg) {
+FLASHMEM void JetsonBridge::_pushFrame(const char* msg) {
     // Compute CRC and build framed message into a stack buffer
     char framed[128];
     uint8_t crc = CRC8.smbus((const uint8_t*)msg, strlen(msg));
@@ -426,7 +426,7 @@ void JetsonBridge::_pushFrame(const char* msg) {
 //  malloc/free cycle.  Only one unavoidable String is created per valid frame
 //  (for the content field of the Request object).
 // ─────────────────────────────────────────────────────────────────────────────
-void JetsonBridge::_readBridgeSerial() {
+FLASHMEM void JetsonBridge::_readBridgeSerial() {
     while (BRIDGE_SERIAL.available()) {
         char c = (char)BRIDGE_SERIAL.read();
 
@@ -492,14 +492,14 @@ void JetsonBridge::_readBridgeSerial() {
 //  Fallback programs
 // ─────────────────────────────────────────────────────────────────────────────
 
-void JetsonBridge::registerFallback(FallbackID id, fallback_fn fn) {
+FLASHMEM void JetsonBridge::registerFallback(FallbackID id, fallback_fn fn) {
     uint8_t idx = static_cast<uint8_t>(id);
     if (idx < 5) {
         m_fallbacks[idx] = fn;
     }
 }
 
-void JetsonBridge::triggerFallback(FallbackID id) {
+FLASHMEM void JetsonBridge::triggerFallback(FallbackID id) {
     uint8_t idx = static_cast<uint8_t>(id);
     m_inFallback = true;
     Console::warn("JetsonBridge") << "Fallback triggered: " << idx << Console::endl;

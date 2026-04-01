@@ -991,3 +991,200 @@ html, body { height: 100%; overflow: hidden; margin: 0;
 .btn-svc.disable:hover { background: #fee2e2; border-color: #fca5a5; color: #991b1b; }
 .btn-svc.debug  { color: var(--brand-light); }
 .btn-svc:disabled { opacity: .4; cursor: not-allowed; }
+
+/* ── Calibration view ──────────────────────────────────────────────────────── */
+
+.calib-page {
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  overflow-y: auto;
+  height: 100%;
+  box-sizing: border-box;
+}
+
+.calib-banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 14px;
+  background: var(--surface2);
+  border-radius: 8px;
+  font-size: 12px;
+  color: var(--text-dim);
+  border: 1px solid var(--surface3);
+}
+
+.calib-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.calib-toolbar-hint {
+  font-size: 11px;
+  color: var(--text-dim);
+  margin-left: 8px;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.calib-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: 14px;
+}
+
+.calib-card {
+  background: var(--surface2);
+  border: 1px solid var(--surface3);
+  border-radius: 10px;
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.calib-card-wide {
+  grid-column: 1 / -1;
+}
+
+.calib-card-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 2px;
+}
+
+.calib-card-hint {
+  font-size: 10px;
+  color: var(--text-dim);
+  font-weight: 400;
+}
+
+.calib-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.calib-lbl {
+  font-size: 11px;
+  color: var(--text-dim);
+  min-width: 110px;
+  flex-shrink: 0;
+}
+
+.calib-input {
+  flex: 1;
+  min-width: 80px;
+  background: var(--surface);
+  border: 1px solid var(--surface3);
+  border-radius: 5px;
+  color: var(--text);
+  font-size: 12px;
+  padding: 4px 8px;
+  font-family: var(--font-mono, monospace);
+  transition: border-color .15s;
+}
+.calib-input:focus {
+  outline: none;
+  border-color: var(--brand);
+}
+.calib-input.dirty {
+  border-color: var(--orange, #f59e0b);
+}
+
+.calib-btn {
+  background: var(--surface3);
+  border: 1px solid var(--surface3);
+  border-radius: 4px;
+  color: var(--text-dim);
+  font-size: 11px;
+  padding: 3px 8px;
+  cursor: pointer;
+  transition: background .12s;
+}
+.calib-btn:hover { background: var(--surface); color: var(--text); }
+
+.calib-measure-desc {
+  font-size: 11px;
+  color: var(--text-dim);
+  line-height: 1.5;
+  padding: 6px 0;
+}
+
+.calib-measure-result {
+  background: var(--surface);
+  border: 1px solid var(--brand);
+  border-radius: 6px;
+  padding: 10px 14px;
+  font-size: 12px;
+  font-family: var(--font-mono, monospace);
+  color: var(--text);
+  white-space: pre-wrap;
+  line-height: 1.6;
+}
+.calib-measure-result.hidden { display: none; }
+
+/* ── Missions view ─────────────────────────────────────────────────────────── */
+
+.mission-meta-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 14px;
+  flex-wrap: wrap;
+}
+
+.mission-meta-lbl {
+  font-size: 11px;
+  color: var(--text-dim);
+  flex-shrink: 0;
+}
+
+.mission-section-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+  padding: 10px 14px 4px;
+  border-top: 1px solid var(--surface3);
+  margin-top: 6px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.mission-macro-preview {
+  padding: 6px 14px 10px;
+}
+
+.mission-step-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  border-radius: 5px;
+  background: var(--surface2);
+  margin-bottom: 4px;
+  border: 1px solid var(--surface3);
+}
+
+.sidebar-hint {
+  font-size: 10px;
+  color: var(--text-dim);
+  line-height: 1.4;
+  word-break: break-word;
+}
+
+.sidebar-section {
+  padding: 8px 6px;
+}

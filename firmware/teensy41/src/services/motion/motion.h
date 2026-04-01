@@ -157,6 +157,13 @@ public:
     void enableCruiseMode();
     void disableCruiseMode();
 
+    // ---- Artificial Potential Fields avoidance ──────────────────────────────
+    // Requires cruise mode (OTOS feedback).  Has no effect in stepper mode.
+    // scale > 0 overrides the default gain; pass -1 to keep current value.
+    void enableAPF(float scale = -1.0f);
+    void disableAPF();
+    bool isAPFEnabled() const;
+
     // ---- Position / target ----
     void  setAbsPosition(Vec3);
     Vec3  getAbsPosition() const;

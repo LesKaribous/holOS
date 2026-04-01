@@ -16,11 +16,11 @@ Intercom::Intercom() : Service(ID_INTERCOM), _stream(INTERCOM_SERIAL) {
 //  Lifecycle
 // ─────────────────────────────────────────────────────────────────────────────
 
-void Intercom::attach() {
+FLASHMEM void Intercom::attach() {
     Console::info() << "Intercom activated" << Console::endl;
 }
 
-void Intercom::run() {
+FLASHMEM void Intercom::run() {
     if (!enabled()) return;
 
     if (_stream.available()) {
@@ -39,7 +39,7 @@ void Intercom::run() {
     }
 }
 
-void Intercom::enable() {
+FLASHMEM void Intercom::enable() {
     Service::enable();
     INTERCOM_SERIAL.begin(INTERCOM_BAUDRATE);
     delay(10);
@@ -48,7 +48,7 @@ void Intercom::enable() {
     sendMessage("ping");
 }
 
-void Intercom::disable() {
+FLASHMEM void Intercom::disable() {
     INTERCOM_SERIAL.end();
     Service::disable();
 }
@@ -57,14 +57,14 @@ void Intercom::disable() {
 //  sendMessage — non-blocking, drop if TX full
 // ─────────────────────────────────────────────────────────────────────────────
 
-void Intercom::sendMessage(const char* message) {
+FLASHMEM void Intercom::sendMessage(const char* message) {
     if (!_stream.availableForWrite()) return;
     _stream.print(message);
     _stream.write('\n');
     if (debug) Console::trace("Intercom") << ">" << message << Console::endl;
 }
 
-void Intercom::sendMessage(const String& message) {
+FLASHMEM void Intercom::sendMessage(const String& message) {
     sendMessage(message.c_str());
 }
 
@@ -72,7 +72,7 @@ void Intercom::sendMessage(const String& message) {
 //  sendRequest — IC-2: uses fixed-size pool, no heap alloc
 // ─────────────────────────────────────────────────────────────────────────────
 
-int Intercom::sendRequest(const char* payload, long timeout,
+FLASHMEM int Intercom::sendRequest(const char* payload, long timeout,
                           requestCallback_ptr cbfunc, callback_ptr func) {
     // Find a free slot
     for (uint8_t i = 0; i < MAX_PENDING; ++i) {
@@ -98,7 +98,7 @@ int Intercom::sendRequest(const char* payload, long timeout,
     return -1;
 }
 
-bool Intercom::closeRequest(int uid) {
+FLASHMEM bool Intercom::closeRequest(int uid) {
     for (uint8_t i = 0; i < MAX_PENDING; ++i) {
         if (_poolActive[i] && _pool[i].ID() == uid) {
             _pool[i].close();
@@ -124,29 +124,29 @@ const char* Intercom::getRequestResponse(int uid) {
 //  Connection management
 // ─────────────────────────────────────────────────────────────────────────────
 
-void Intercom::pingReceived()  { sendMessage("pong"); }
-bool Intercom::isConnected()   { return _connected; }
+FLASHMEM void Intercom::pingReceived()  { sendMessage("pong"); }
+FLASHMEM bool Intercom::isConnected()   { return _connected; }
 
-void Intercom::connectionLost() {
+FLASHMEM void Intercom::connectionLost() {
     Console::warn("Intercom") << "Connection lost." << Console::endl;
     _connected = false;
     if (onConnectionLost) onConnectionLost();
 }
 
-void Intercom::connectionSuccess() {
+FLASHMEM void Intercom::connectionSuccess() {
     Console::info("Intercom") << "Connection successful." << Console::endl;
     _connected = true;
     if (onConnectionSuccess) onConnectionSuccess();
 }
 
-void Intercom::setConnectLostCallback(callback_ptr cb)       { onConnectionLost    = cb; }
-void Intercom::setRequestCallback(requestCallback_ptr cb)    { onRequestCallback   = cb; }
-void Intercom::setConnectionSuccessCallback(callback_ptr cb) { onConnectionSuccess = cb; }
+FLASHMEM void Intercom::setConnectLostCallback(callback_ptr cb)       { onConnectionLost    = cb; }
+FLASHMEM void Intercom::setRequestCallback(requestCallback_ptr cb)    { onRequestCallback   = cb; }
+FLASHMEM void Intercom::setConnectionSuccessCallback(callback_ptr cb) { onConnectionSuccess = cb; }
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  _processIncomingData — IC-1/IC-4: char array, non-blocking, partial timeout
 // ─────────────────────────────────────────────────────────────────────────────
-void Intercom::_processIncomingData() {
+FLASHMEM void Intercom::_processIncomingData() {
     // IC-4: discard partial frames older than 200ms
     if (_inBufLen > 0 && millis() - _inBufStartMs > 200) {
         Console::warn("Intercom") << "Partial frame discarded (" << (int)_inBufLen << " bytes)" << Console::endl;
@@ -236,7 +236,7 @@ void Intercom::_processIncomingData() {
 // ─────────────────────────────────────────────────────────────────────────────
 //  _processPendingRequests — IC-2: iterate fixed array, IC-6: correct cleanup
 // ─────────────────────────────────────────────────────────────────────────────
-void Intercom::_processPendingRequests() {
+FLASHMEM void Intercom::_processPendingRequests() {
     for (uint8_t i = 0; i < MAX_PENDING; ++i) {
         if (!_poolActive[i]) continue;
 

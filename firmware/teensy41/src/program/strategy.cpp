@@ -119,7 +119,7 @@ static bool isZoneBFree() {
 //  match() — point d'entrée du match
 // ============================================================
 
-void match() {
+FLASHMEM void match() {
     motion.setFeedrate(1.0f);
     motion.enableCruiseMode();
 
@@ -141,12 +141,12 @@ void match() {
     chrono.onMatchFinished();
 }
 
-void waitMs(unsigned long time){
+FLASHMEM void waitMs(unsigned long time){
     os.wait(time);
     //delay(time);
 }
 
-void recalage(){
+FLASHMEM void recalage(){
     motion.engage();
     //motion.disableCruiseMode();
     
@@ -192,7 +192,7 @@ void recalage(){
 }
 
 
-void nearEnd(){
+FLASHMEM void nearEnd(){
     //if(motion.isPending())motion.forceCancel();
     motion.setFeedrate(1.0);
     //nav.setAbsolute();
@@ -236,7 +236,7 @@ RobotCompass previousActuator(RobotCompass rc){
 }
 
 
-void calibrate(){
+FLASHMEM void calibrate(){
     motion.disableCruiseMode();
     //motion.cancelOnStall(false);
 
@@ -271,7 +271,7 @@ void calibrate(){
 }
 
 
-void probeBorder(TableCompass tc, RobotCompass rc, float clearance, float approachDist, float probeDist, float feedrate){
+FLASHMEM void probeBorder(TableCompass tc, RobotCompass rc, float clearance, float approachDist, float probeDist, float feedrate){
     
 	boolean wasAbsolute = motion.isAbsolute();
     float currentFeedrate = motion.getFeedrate();
@@ -320,7 +320,7 @@ void probeBorder(TableCompass tc, RobotCompass rc, float clearance, float approa
     actuators.moveElevator(rc, ElevatorPose::DOWN);
 }
 
-void initPump(){
+FLASHMEM void initPump(){
     pwm.begin();
     /*
      * In theory the internal oscillator (clock) is 25MHz but it really isn't
@@ -347,7 +347,7 @@ void initPump(){
     //Wire.setClock(400000);  
 }
 
-void setOutput(uint8_t pin, bool state) {
+FLASHMEM void setOutput(uint8_t pin, bool state) {
     if (state) {
       pwm.setPWM(pin, 4096, 0);  // ON
     } else {
@@ -355,7 +355,7 @@ void setOutput(uint8_t pin, bool state) {
     }
 }
 
-void startPump(RobotCompass rc, bool side){
+FLASHMEM void startPump(RobotCompass rc, bool side){
     uint8_t evPin ;
     uint8_t pumpPin ;
     if(side) evPin = Pin::PCA9685::EV_CA_RIGHT ;
@@ -366,7 +366,7 @@ void startPump(RobotCompass rc, bool side){
     setOutput(pumpPin, true); // Démarrer la pompe
 }
 
-void stopPump(RobotCompass rc, uint16_t evPulseDuration, bool side){
+FLASHMEM void stopPump(RobotCompass rc, uint16_t evPulseDuration, bool side){
     uint8_t evPin ;
     uint8_t pumpPin ;
     if(side) evPin = Pin::PCA9685::EV_CA_RIGHT ;

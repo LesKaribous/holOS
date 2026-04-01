@@ -1,6 +1,9 @@
 #include "routines.h"
 #include "os/commands.h"
 #include "config/env.h"
+#include "config/calibration.h"
+#include "services/sd/sd_card.h"
+#include "services/mission/mission_controller.h"
 #include "strategy.h"
 #include "config/poi.h"
 #include "config/score.h"
@@ -24,7 +27,7 @@
  *
  *   La boucle d'attente remote est non bloquante : os.run() tourne normalement.
  */
-void programAuto() {
+FLASHMEM void programAuto() {
     Console::println("Started match");
     ihm.setPage(IHM::Page::MATCH);
     lidar.enable();
@@ -48,7 +51,7 @@ void programAuto() {
  * programManual — executed before match (preparation phase).
  * Handles: IHM, starter, recalage, terminal commands, team broadcast.
  */
-void programManual() {
+FLASHMEM void programManual() {
     static bool hadStarter      = false;
     static bool buttonWasPressed = false;
 
@@ -158,7 +161,7 @@ void programManual() {
 //  Boot
 // ─────────────────────────────────────────────────────────────────────────────
 
-void onRobotBoot() {
+FLASHMEM void onRobotBoot() {
 
     os.attachService(&ihm);
     ihm.drawBootProgress("Linking ihm...");
@@ -179,6 +182,13 @@ void onRobotBoot() {
     ihm.drawBootProgress("Linking safety...");
     os.attachService(&safety); ihm.addBootProgress(10);
     safety.disable();
+
+    ihm.drawBootProgress("Linking SD card...");
+    SDCard::init(); ihm.addBootProgress(5);
+    // Restore calibration from SD (if card present and file exists)
+    SDCard::loadCalibration(); ihm.addBootProgress(4);
+    // Load mission fallback strategy from SD (if available)
+    MissionController::load(); ihm.addBootProgress(1);
 
     motion.engage();
     ihm.drawBootProgress("Linking Localisation...");
@@ -201,6 +211,18 @@ void onRobotBoot() {
         motion.cancel();
         safety.enable();
         async motion.go(POI::home);
+    });
+
+    // Register mission fallback: execute SD strategy when Jetson disconnects
+    jetsonBridge.registerFallback(FallbackID::CUSTOM_1, []() {
+        if (MissionController::isLoaded()) {
+            Console::info("Fallback") << "Executing SD mission strategy" << Console::endl;
+            MissionController::execute();
+        } else {
+            Console::warn("Fallback") << "No mission strategy on SD — stopping" << Console::endl;
+            motion.cancel();
+            motion.disengage();
+        }
     });
 
     ihm.drawBootProgress("Linking lidar...");
@@ -261,19 +283,19 @@ void onRobotBoot() {
 //  Loop callbacks
 // ─────────────────────────────────────────────────────────────────────────────
 
-void onRobotManual() {
+FLASHMEM void onRobotManual() {
     RUN_EVERY(
         ihm.setRobotPosition(motion.estimatedPosition());
     ,300);
 }
 
-void onRobotAuto() {
+FLASHMEM void onRobotAuto() {
     RUN_EVERY(
         ihm.setRobotPosition(motion.estimatedPosition());
     ,100);
 }
 
-void onRobotStop() {
+FLASHMEM void onRobotStop() {
     ihm.run();
 }
 
@@ -295,12 +317,12 @@ void control() {
 //  Intercom events
 // ─────────────────────────────────────────────────────────────────────────────
 
-void onIntercomConnected() {
+FLASHMEM void onIntercomConnected() {
     ihm.setIntercomState(true);
     Console::info("Intercom") << "Connected." << Console::endl;
 }
 
-void onIntercomDisconnected() {
+FLASHMEM void onIntercomDisconnected() {
     ihm.setIntercomState(false);
     Console::warn("Intercom") << "Disconnected." << Console::endl;
 }
@@ -309,7 +331,7 @@ void onIntercomDisconnected() {
  * onIntercomRequest — Called when a request arrives from Jetson via XBee.
  * All command routing is delegated to JetsonBridge.
  */
-void onIntercomRequest(Request& req) {
+FLASHMEM void onIntercomRequest(Request& req) {
     jetsonBridge.handleRequest(req);
 }
 
@@ -317,7 +339,7 @@ void onIntercomRequest(Request& req) {
  * onIntercomRequestReply — Called when a reply arrives to a request WE sent.
  * Currently used to receive occupancy map from Teensy 4.0.
  */
-void onIntercomRequestReply(Request& req) {
+FLASHMEM void onIntercomRequestReply(Request& req) {
     if (strncmp(req.getContent(), "oM", 2) == 0) {
         occupancy.decompress(req.getResponse());
     }
@@ -328,11 +350,11 @@ void onIntercomRequestReply(Request& req) {
 //  Match events
 // ─────────────────────────────────────────────────────────────────────────────
 
-void onMatchNearEnd() {
+FLASHMEM void onMatchNearEnd() {
     nearEnd();
 }
 
-void onMatchEnd() {
+FLASHMEM void onMatchEnd() {
     safety.disable();
     lidar.disable();
     motion.cancel();
@@ -347,7 +369,7 @@ void onMatchEnd() {
 //  Terminal
 // ─────────────────────────────────────────────────────────────────────────────
 
-void onTerminalCommand() {
+FLASHMEM void onTerminalCommand() {
     if (terminal.commandAvailable() > 0) {
         String rawcmd = terminal.dequeCommand();
         os.execute(rawcmd);
@@ -359,7 +381,7 @@ void onTerminalCommand() {
 //  Utilities
 // ─────────────────────────────────────────────────────────────────────────────
 
-void robotArmed() {
+FLASHMEM void robotArmed() {
     lidar.showRadarLED();
     ihm.freezeSettings();
     motion.engage();

@@ -25,11 +25,16 @@ PositionController::PositionController()
       vrot_controller(10.0f, 0.0f,  70.0f)
 {}
 
-void PositionController::setFeedrate(float feed) { m_feedrate = feed; }
-void PositionController::setStallEnabled(bool enabled) { m_stallEnabled = enabled; }
-void PositionController::exec() {}  // unused — control() est appelé par le cycle ISR
+FLASHMEM void PositionController::setFeedrate(float feed) { m_feedrate = feed; }
+FLASHMEM void PositionController::setStallEnabled(bool enabled) { m_stallEnabled = enabled; }
 
-void PositionController::reset() {
+FLASHMEM void PositionController::setAPF(bool enabled, float scale) {
+    m_apfEnabled = enabled;
+    if (scale > 0.0f) m_apfScale = scale;
+}
+FLASHMEM void PositionController::exec() {}  // unused — control() est appelé par le cycle ISR
+
+FLASHMEM void PositionController::reset() {
     Job::reset();
     position        = Vec3(0.0f);
     last_position   = Vec3(0.0f);
@@ -52,7 +57,7 @@ void PositionController::reset() {
     vrot_controller.reset();
 }
 
-void PositionController::start() {
+FLASHMEM void PositionController::start() {
     Job::start();
     controller.enable();
 
@@ -69,7 +74,7 @@ void PositionController::start() {
     m_satXCount = m_satYCount = m_satZCount = 0;
 }
 
-void PositionController::complete() {
+FLASHMEM void PositionController::complete() {
     reset();
     m_state   = JobState::COMPLETED;
     newTarget = target = position;
@@ -80,7 +85,7 @@ void PositionController::complete() {
 //  Stall
 // ============================================================
 
-bool PositionController::isStalled() const {
+FLASHMEM bool PositionController::isStalled() const {
     return m_stalledFlag && !isCanceling();
 }
 
@@ -91,7 +96,7 @@ bool PositionController::isStalled() const {
 
 // Calcule la vitesse désirée (PID → rampe → snap → clamp).
 // Retourne final_vel en coordonnées monde.
-Vec3 PositionController::computeVelocity(float dt, Vec2 error, float angle) {
+FLASHMEM Vec3 PositionController::computeVelocity(float dt, Vec2 error, float angle) {
     const float maxSpeed    = Settings::Motion::MAX_SPEED     * m_feedrate;
     const float maxRotSpeed = Settings::Motion::MAX_ROT_SPEED * m_feedrate;
 
@@ -143,7 +148,7 @@ Vec3 PositionController::computeVelocity(float dt, Vec2 error, float angle) {
 }
 
 // Vérifie si la cible est atteinte. Appelle complete() et retourne true si oui.
-bool PositionController::checkCompletion(Vec2 error, float angle, const Vec3& finalVel) {
+FLASHMEM bool PositionController::checkCompletion(Vec2 error, float angle, const Vec3& finalVel) {
     if (finalVel.magSq() > 0.0f) return false;
 
     if (fabsf(error.x) < Settings::Motion::MIN_DISTANCE &&
@@ -181,7 +186,19 @@ void PositionController::onUpdate() {
     Vec3 final_vel = computeVelocity(dt, error, angle);
 
     // ---- Envoi à la velocity controller ----
+    // Completion check uses pure PID velocity (no APF — avoids blocking at goal).
     if (!checkCompletion(error, angle, final_vel)) {
+        // APF repulsive component (world frame, added AFTER completion check so it
+        // does not prevent the robot from declaring arrival at the goal).
+        if (m_apfEnabled) {
+            Vec2 pos2d(position.x, position.y);
+            Vec2 rep = occupancy.repulsiveGradient(pos2d);
+            final_vel.x += rep.x * m_apfScale;
+            final_vel.y += rep.y * m_apfScale;
+            const float speedLimit = Settings::Motion::MAX_SPEED * m_feedrate;
+            final_vel.x = std::clamp(final_vel.x, -speedLimit, speedLimit);
+            final_vel.y = std::clamp(final_vel.y, -speedLimit, speedLimit);
+        }
         Vec3 cmd_robot = final_vel;
         cmd_robot.rotateZ(position.c);  // monde → robot frame pour les steppers
         controller.setTargetVelocity(cmd_robot);
@@ -206,11 +223,11 @@ void PositionController::onUpdate() {
 //  onPausing / onCanceling
 // ============================================================
 
-void PositionController::onPausing() {
+FLASHMEM void PositionController::onPausing() {
     onCanceling();
 }
 
-void PositionController::onCanceling() {
+FLASHMEM void PositionController::onCanceling() {
     const float dt = Settings::Motion::PID_INTERVAL * 1e-6f;
 
     // Décélération exponentielle
@@ -265,10 +282,10 @@ void PositionController::control() {
 //  Setters
 // ============================================================
 
-void PositionController::setPosition(const Vec3& t) { position = t; }
-void PositionController::setTarget(const Vec3& t)   { newTarget = t; }
+FLASHMEM void PositionController::setPosition(const Vec3& t) { position = t; }
+FLASHMEM void PositionController::setTarget(const Vec3& t)   { newTarget = t; }
 
-void PositionController::setSteppers(Stepper* a, Stepper* b, Stepper* c) {
+FLASHMEM void PositionController::setSteppers(Stepper* a, Stepper* b, Stepper* c) {
     controller.setSteppers(a, b, c);
     controller.setTargetVelocity(Vec3(0.0f));
 }
@@ -278,7 +295,7 @@ void PositionController::setSteppers(Stepper* a, Stepper* b, Stepper* c) {
 //  Utilitaire
 // ============================================================
 
-float PositionController::shortestAngleDiff(float tgt, float cur) {
+FLASHMEM float PositionController::shortestAngleDiff(float tgt, float cur) {
     float diff = fmodf(tgt - cur + M_PI, 2.0f * M_PI);
     if (diff < 0.0f) diff += 2.0f * M_PI;
     diff -= M_PI;

@@ -28,14 +28,14 @@ OccupancyMap::OccupancyMap() {
 // ============================================================
 
 // Centre monde (mm) de la cellule (gx, gy)
-Vec2 OccupancyMap::gridToWorld(int gx, int gy) const {
+FLASHMEM Vec2 OccupancyMap::gridToWorld(int gx, int gy) const {
     float wx = (gx + 0.5f) * TABLE_SIZE_X / GRID_WIDTH;
     float wy = (gy + 0.5f) * TABLE_SIZE_Y / GRID_HEIGHT;
     return Vec2(wx, wy);
 }
 
 // Cellule contenant le point monde (x, y)
-Vec2 OccupancyMap::worldToGrid(float x, float y) const {
+FLASHMEM Vec2 OccupancyMap::worldToGrid(float x, float y) const {
     int gx = (int)(x * GRID_WIDTH  / TABLE_SIZE_X);
     int gy = (int)(y * GRID_HEIGHT / TABLE_SIZE_Y);
     // Clamp pour les points exactement sur le bord
@@ -49,30 +49,30 @@ Vec2 OccupancyMap::worldToGrid(float x, float y) const {
 //  Requêtes d'occupation
 // ============================================================
 
-bool OccupancyMap::isInBounds(int gx, int gy) const {
+FLASHMEM bool OccupancyMap::isInBounds(int gx, int gy) const {
     return (gx >= 0 && gx < GRID_WIDTH && gy >= 0 && gy < GRID_HEIGHT);
 }
 
-bool OccupancyMap::isCellOccupied(int gx, int gy) const {
+FLASHMEM bool OccupancyMap::isCellOccupied(int gx, int gy) const {
     if (!isInBounds(gx, gy)) return false;
     return m_map[gx][gy] > 0;
 }
 
 // Coordonnées monde entières (mm)
-bool OccupancyMap::isOccupied(int x, int y) const {
+FLASHMEM bool OccupancyMap::isOccupied(int x, int y) const {
     Vec2 g = worldToGrid((float)x, (float)y);
     return isCellOccupied((int)g.x, (int)g.y);
 }
 
 // Coordonnées monde flottantes (mm)
-bool OccupancyMap::isOccupied(const Vec2& pos) const {
+FLASHMEM bool OccupancyMap::isOccupied(const Vec2& pos) const {
     Vec2 g = worldToGrid(pos.x, pos.y);
     return isCellOccupied((int)g.x, (int)g.y);
 }
 
 // Retourne true si au moins une cellule occupée se trouve dans le rayon
 // `radius` (mm) autour du point `center` (coordonnées monde).
-bool OccupancyMap::isZoneOccupied(const Vec2& center, float radius) const {
+FLASHMEM bool OccupancyMap::isZoneOccupied(const Vec2& center, float radius) const {
     // Cellule centrale
     Vec2 gc     = worldToGrid(center.x, center.y);
     int  gcx    = (int)gc.x;
@@ -104,7 +104,7 @@ bool OccupancyMap::isZoneOccupied(const Vec2& center, float radius) const {
 //  Distance au plus proche obstacle
 // ============================================================
 
-float OccupancyMap::distanceToNearestObstacle(const Vec2& pos) const {
+FLASHMEM float OccupancyMap::distanceToNearestObstacle(const Vec2& pos) const {
     float minDist = std::numeric_limits<float>::max();
 
     for (int gx = 0; gx < GRID_WIDTH; ++gx) {
@@ -127,7 +127,7 @@ float OccupancyMap::distanceToNearestObstacle(const Vec2& pos) const {
 //  Gradient répulsif (champ de potentiel)
 // ============================================================
 
-Vec2 OccupancyMap::repulsiveGradient(const Vec2& pos) const {
+FLASHMEM Vec2 OccupancyMap::repulsiveGradient(const Vec2& pos) const {
     constexpr int   RANGE          = 5;      // rayon de recherche en cellules
     constexpr float REPULSION_GAIN = 10.0f;
     constexpr float CUTOFF_RADIUS  = 300.0f; // mm
@@ -169,7 +169,7 @@ Vec2 OccupancyMap::repulsiveGradient(const Vec2& pos) const {
 //  Compression (envoi vers Jetson)
 // ============================================================
 
-String OccupancyMap::compress() const {
+FLASHMEM String OccupancyMap::compress() const {
     uint8_t data[GRID_BYTES] = {0};
 
     // Même ordre que decompress : gy en boucle externe, gx en interne
@@ -206,7 +206,7 @@ String OccupancyMap::compress() const {
 //  Décompression (données reçues du robot secondaire)
 // ============================================================
 
-void OccupancyMap::decompress(const String& encoded) {
+FLASHMEM void OccupancyMap::decompress(const String& encoded) {
     if (encoded.length() < (GRID_BYTES * 2 + 3))
         return;
 

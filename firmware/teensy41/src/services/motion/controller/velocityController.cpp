@@ -13,32 +13,32 @@ VelocityController::VelocityController() :
 
 }
 
-void VelocityController::setSteppers(Stepper* a, Stepper* b, Stepper* c){
+FLASHMEM void VelocityController::setSteppers(Stepper* a, Stepper* b, Stepper* c){
     m_sA = a;
     m_sB = b;
     m_sC = c;
 }
 
-void VelocityController::reset(){
+FLASHMEM void VelocityController::reset(){
     m_sA->reset();
     m_sB->reset();
     m_sC->reset();
 }
 
-void VelocityController::enable()
+FLASHMEM void VelocityController::enable()
 {
     m_sA->enable();
     m_sB->enable();
     m_sC->enable();
 }
 
-void VelocityController::disable(){
+FLASHMEM void VelocityController::disable(){
     m_sA->disable();
     m_sB->disable();
     m_sC->disable();
 }
 
-void VelocityController::setTargetVelocity(const Vec3& targetVelocity) {
+FLASHMEM void VelocityController::setTargetVelocity(const Vec3& targetVelocity) {
     // Saturate speeds if necessary
     if(targetVelocity.a == 0 && targetVelocity.b == 0 && targetVelocity.c == 0){
         m_target_velocity = Vec3(0);
@@ -77,10 +77,10 @@ void VelocityController::step() {
 
 void VelocityController::control() {}
 
-Vec3 VelocityController::getCurrentVelocity() const {
+FLASHMEM Vec3 VelocityController::getCurrentVelocity() const {
     return fk(m_current_velocity);
 }
 
-Vec3 VelocityController::getTargetVelocity() const {
+FLASHMEM Vec3 VelocityController::getTargetVelocity() const {
     return fk(m_target_velocity);
 }

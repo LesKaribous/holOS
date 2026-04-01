@@ -69,3 +69,29 @@ void command_sleep(const args_t& args);
 
 // Diagnostics
 void command_health(const args_t& args);
+
+// Calibration
+void command_calib_status(const args_t& args);
+void command_calib_save(const args_t& args);
+void command_calib_load(const args_t& args);
+void command_calib_reset(const args_t& args);
+void command_calib_cart(const args_t& args);
+void command_calib_holo(const args_t& args);
+void command_calib_otos_linear(const args_t& args);
+void command_calib_otos_angular(const args_t& args);
+void command_calib_measure(const args_t& args);
+
+// Motion — rotation around arbitrary point
+void command_goAround(const args_t& args);
+
+// Motion — APF obstacle avoidance
+void command_apf(const args_t& args);
+
+// Mission SD write session (called by holOS deploy-sd)
+void command_mission_sd_open(const args_t& args);
+void command_mission_sd_line(const args_t& args);
+void command_mission_sd_close(const args_t& args);
+
+// Mission — execute SD fallback now (for testing)
+void command_mission_run(const args_t& args);
+void command_mission_abort(const args_t& args);
