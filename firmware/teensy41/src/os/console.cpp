@@ -2,62 +2,75 @@
 #include <Arduino.h>
 
 const String Console::endl = "\n";
-ConsoleLevel Console::m_level = ConsoleLevel::INFO;
+ConsoleLevel Console::m_level      = ConsoleLevel::INFO;
+uint32_t     Console::m_sourceMask = 0xFFFFFFFFu;  // all enabled until init() applies settings
 
-ConsoleStream Console::trace(const ServiceID& origin) {
-	return ConsoleStream(ConsoleLevel::VERBOSE, origin);
+// ── ServiceID stream factories — check source mask, use readable name ─────────
+// FLASHMEM: logging is never time-critical; keeping these out of ITCM saves RAM1.
+
+FLASHMEM ConsoleStream Console::trace(const ServiceID& origin) {
+	bool filtered = (origin != ID_NOT_A_SERVICE) && !isSourceEnabled(origin);
+	return ConsoleStream(ConsoleLevel::VERBOSE, Service::toString(origin), filtered);
 }
 
-ConsoleStream Console::info(const ServiceID& origin) {
-	return ConsoleStream(ConsoleLevel::INFO, origin);
+FLASHMEM ConsoleStream Console::info(const ServiceID& origin) {
+	bool filtered = (origin != ID_NOT_A_SERVICE) && !isSourceEnabled(origin);
+	return ConsoleStream(ConsoleLevel::INFO, Service::toString(origin), filtered);
 }
 
-ConsoleStream Console::warn(const ServiceID& origin) {
-	return ConsoleStream(ConsoleLevel::WARNING, origin);
+FLASHMEM ConsoleStream Console::warn(const ServiceID& origin) {
+	bool filtered = (origin != ID_NOT_A_SERVICE) && !isSourceEnabled(origin);
+	return ConsoleStream(ConsoleLevel::WARNING, Service::toString(origin), filtered);
 }
 
-ConsoleStream Console::error(const ServiceID& origin) {
-	return ConsoleStream(ConsoleLevel::CRITICAL, origin);
+FLASHMEM ConsoleStream Console::error(const ServiceID& origin) {
+	bool filtered = (origin != ID_NOT_A_SERVICE) && !isSourceEnabled(origin);
+	return ConsoleStream(ConsoleLevel::CRITICAL, Service::toString(origin), filtered);
 }
 
-ConsoleStream Console::success(const ServiceID& origin) {
-	return ConsoleStream( ConsoleLevel::SUCCESS, origin);
+FLASHMEM ConsoleStream Console::success(const ServiceID& origin) {
+	bool filtered = (origin != ID_NOT_A_SERVICE) && !isSourceEnabled(origin);
+	return ConsoleStream(ConsoleLevel::SUCCESS, Service::toString(origin), filtered);
 }
 
-String Console::timeStamp(){
-	String time = String(millis());
-	return String("[t=" + time + "ms]");
-}
+// ── String-origin stream factories ────────────────────────────────────────────
 
-String Console::microTimeStamp(){
-	String time = String(micros());
-	return String("[t=" + time + "us]");
-}
-
-
-ConsoleStream Console::info(const String &origin)
+FLASHMEM ConsoleStream Console::info(const String &origin)
 {
     return ConsoleStream(ConsoleLevel::INFO, origin);
 }
 
-ConsoleStream Console::warn(const String& origin) {
+FLASHMEM ConsoleStream Console::warn(const String& origin) {
 	return ConsoleStream(ConsoleLevel::WARNING, origin);
 }
 
-ConsoleStream Console::error(const String& origin) {
+FLASHMEM ConsoleStream Console::error(const String& origin) {
 	return ConsoleStream(ConsoleLevel::CRITICAL, origin);
 }
 
-ConsoleStream Console::trace(const String& origin) {
+FLASHMEM ConsoleStream Console::trace(const String& origin) {
 	return ConsoleStream(ConsoleLevel::VERBOSE, origin);
 }
 
-ConsoleStream Console::success(const String& origin) {
+FLASHMEM ConsoleStream Console::success(const String& origin) {
 	return ConsoleStream(ConsoleLevel::SUCCESS, origin);
 }
 
+// ── Timestamps ────────────────────────────────────────────────────────────────
 
-void header(){
+FLASHMEM String Console::timeStamp(){
+	String time = String(millis());
+	return String("[t=" + time + "ms]");
+}
+
+FLASHMEM String Console::microTimeStamp(){
+	String time = String(micros());
+	return String("[t=" + time + "us]");
+}
+
+// ── Boot header ───────────────────────────────────────────────────────────────
+
+static FLASHMEM void printHeader(){
 	CONSOLE_SERIAL.println("");
 	CONSOLE_SERIAL.println("  _______       _                     _"                        );
 	CONSOLE_SERIAL.println(" |__   __|     (_)                   | |"                       );
@@ -74,24 +87,47 @@ void header(){
 	CONSOLE_SERIAL.print(__DATE__);
 	CONSOLE_SERIAL.print(" at ");
 	CONSOLE_SERIAL.println(__TIME__);
-
 }
 
-void Console::init(){
+// ── Lifecycle ─────────────────────────────────────────────────────────────────
+
+FLASHMEM void Console::init(){
 	CONSOLE_SERIAL.begin(CONSOLE_BAUDRATE);
-	header();
+
+	// Apply boot defaults from Settings::Log
+	m_level = Settings::Log::BOOT_LEVEL;
+
+	// Start with all sources enabled, then clear disabled ones
+	m_sourceMask = 0xFFFFFFFFu;
+	if (!Settings::Log::SRC_LIDAR)        disableSource(ID_LIDAR);
+	if (!Settings::Log::SRC_CHRONO)       disableSource(ID_CHRONO);
+	if (!Settings::Log::SRC_IHM)          disableSource(ID_IHM);
+	if (!Settings::Log::SRC_SAFETY)       disableSource(ID_SAFETY);
+	if (!Settings::Log::SRC_MOTION)       disableSource(ID_MOTION);
+	if (!Settings::Log::SRC_NAVIGATION)   disableSource(ID_NAVIGATION);
+	if (!Settings::Log::SRC_NEOPIXEL)     disableSource(ID_NEOPIXEL);
+	if (!Settings::Log::SRC_INTERCOM)     disableSource(ID_INTERCOM);
+	if (!Settings::Log::SRC_TERMINAL)     disableSource(ID_TERMINAL);
+	if (!Settings::Log::SRC_ACTUATORS)    disableSource(ID_ACTUATORS);
+	if (!Settings::Log::SRC_LOCALISATION) disableSource(ID_LOCALISATION);
+	if (!Settings::Log::SRC_VISION)       disableSource(ID_VISION);
+	if (!Settings::Log::SRC_JETSON)       disableSource(ID_JETSON);
+
+	printHeader();
 }
+
+// ── Raw output ────────────────────────────────────────────────────────────────
 
 void Console::write(const char* str) {
 	CONSOLE_SERIAL.write(str);
 }
 
-void Console::plot(const String& n, String s){
+FLASHMEM void Console::plot(const String& n, String s){
 	print(">" + n + ":"); println(s);
 }
 
-void Console::plotXY(const String& n, String x, String y){
-	println(">" + n + ":" + x + ":" + y + "|xy"); 
+FLASHMEM void Console::plotXY(const String& n, String x, String y){
+	println(">" + n + ":" + x + ":" + y + "|xy");
 }
 
 void Console::print(const String& s){
@@ -102,7 +138,7 @@ void Console::println(const String& s){
 	CONSOLE_SERIAL.println(s);
 }
 
-void Console::prettyPrint(const String& s){
+FLASHMEM void Console::prettyPrint(const String& s){
 	int l = 0;
 	line();
 	CONSOLE_SERIAL.print(l);
@@ -120,6 +156,6 @@ void Console::prettyPrint(const String& s){
 	line();
 }
 
-void Console::line(){
+FLASHMEM void Console::line(){
 	println("_________________________________________");
 }

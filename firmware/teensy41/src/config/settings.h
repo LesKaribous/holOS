@@ -2,6 +2,7 @@
 
 #include "pin.h"
 #include "utils/geometry.h"
+#include "os/debug/consoleLevel.h"
 
 // ── T4.1 ↔ T4.0 Intercom — TOUJOURS sur Serial1 @ 31250 ─────────────────────
 // Ce canal gère le ping/pong et les échanges directs avec T4.0.
@@ -162,5 +163,47 @@ namespace Settings {
             { 1.089f,-1.089f, 0.831f}   // Cartesian : XY ROT
         };
     }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    //  Log & Telemetry — initial state at boot
+    //
+    //  When holOS is connected (USB-CDC), all channels can stay on.
+    //  When debugging via a plain serial terminal (no holOS), high-frequency
+    //  sources flood the output — disable them here and re-enable at runtime
+    //  with: log(MOTION,1)  loglevel(VERBOSE)  tel(pos,0)
+    // ─────────────────────────────────────────────────────────────────────────
+    namespace Log {
+
+        // Global console log level at boot
+        // VERBOSE(0) < INFO(1) < SUCCESS(2) < WARNING(3) < CRITICAL(4) < DISABLED(5)
+        constexpr ConsoleLevel BOOT_LEVEL = ConsoleLevel::INFO;
+
+        // Per-service console output enabled at boot.
+        // Disable noisy services when using a plain serial terminal (no holOS).
+        constexpr bool SRC_LIDAR        = true;
+        constexpr bool SRC_CHRONO       = true;
+        constexpr bool SRC_IHM          = true;
+        constexpr bool SRC_SAFETY       = true;
+        constexpr bool SRC_MOTION       = true;
+        constexpr bool SRC_NAVIGATION   = true;
+        constexpr bool SRC_NEOPIXEL     = false;  // LED driver noise — off by default
+        constexpr bool SRC_INTERCOM     = false;  // Protocol-level noise — off by default
+        constexpr bool SRC_TERMINAL     = true;
+        constexpr bool SRC_ACTUATORS    = true;
+        constexpr bool SRC_LOCALISATION = false;  // High-frequency OTOS updates — off by default
+        constexpr bool SRC_VISION       = true;
+        constexpr bool SRC_JETSON       = true;
+
+        // JetsonBridge telemetry channel initial state.
+        // Disable high-rate channels when debugging without holOS (e.g. plain serial).
+        namespace Telemetry {
+            constexpr bool POS    = true;
+            constexpr bool MOTION = true;
+            constexpr bool SAFETY = true;
+            constexpr bool CHRONO = true;
+            constexpr bool OCC    = true;
+        }
+
+    }  // namespace Log
 
 }  // namespace Settings

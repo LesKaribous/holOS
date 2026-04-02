@@ -32,6 +32,7 @@ _HERE        = os.path.dirname(os.path.abspath(__file__))
 STRATEGY_DIR = os.path.join(_HERE, 'strategy')
 MACROS_FILE    = os.path.join(STRATEGY_DIR, 'macros.json')
 MISSIONS_FILE  = os.path.join(STRATEGY_DIR, 'missions.json')
+OBJECTS_FILE   = os.path.join(STRATEGY_DIR, 'objects.json')
 FALLBACK_PATH  = '/mission_fallback.cfg'   # path on Teensy SD card
 if _HERE not in sys.path:
     sys.path.insert(0, _HERE)
@@ -82,6 +83,15 @@ brain = Brain(transport)
 
 # Test runner
 test_runner = TestRunner(transport, bridge, robot, occupancy)
+
+# ── Vision backend (optional — requires opencv-contrib-python) ────────────────
+# Gracefully unavailable if OpenCV is not installed.
+_vision = None
+try:
+    from services.vision_backend import VisionBackend, CV2_AVAILABLE as _CV2_AVAIL
+    _vision = VisionBackend(OBJECTS_FILE)
+except Exception as _ve:
+    print(f"[Vision] Backend unavailable: {_ve}")
 
 # ── Hardware transport (real robot, optional) ─────────────────────────────────
 # When connected, terminal/actuator/strategy commands are routed here instead
@@ -334,6 +344,24 @@ def api_hw_cmd():
         return jsonify({'ok': True})
     except Exception as e:
         return jsonify({'ok': False, 'error': str(e)}), 500
+
+
+@app.route('/api/exec', methods=['POST'])
+def api_exec():
+    """Execute a command via the active transport (sim or hw), wait for reply.
+    For motion commands this blocks until motion is complete (or timeout).
+    """
+    data       = request.get_json(force=True) or {}
+    cmd        = (data.get('cmd') or '').strip()
+    timeout_ms = int(data.get('timeout_ms', 35000))
+    if not cmd:
+        return jsonify({'ok': False, 'res': 'empty cmd'}), 400
+    try:
+        t = _active_transport()
+        ok, res = t.execute(cmd, timeout_ms=timeout_ms)
+        return jsonify({'ok': ok, 'res': res})
+    except Exception as e:
+        return jsonify({'ok': False, 'res': str(e)}), 500
 
 
 # ── Calibration API ───────────────────────────────────────────────────────────
@@ -750,6 +778,162 @@ def api_missions_run_step():
     return jsonify({'ok': ok, 'cmd': cmd, 'response': res})
 
 
+# ── Vision API ────────────────────────────────────────────────────────────────
+
+@app.route('/api/vision/state')
+def api_vision_state():
+    if _vision is None:
+        return jsonify({'cv2_available': False, 'enabled': False})
+    return jsonify(_vision.get_state())
+
+
+@app.route('/api/vision/enable', methods=['POST'])
+def api_vision_enable():
+    if _vision is None:
+        return jsonify({'ok': False, 'error': 'Vision backend not available (opencv missing?)'}), 503
+    ok = _vision.enable()
+    return jsonify({'ok': ok})
+
+
+@app.route('/api/vision/disable', methods=['POST'])
+def api_vision_disable():
+    if _vision:
+        _vision.disable()
+    return jsonify({'ok': True})
+
+
+@app.route('/api/vision/source', methods=['POST'])
+def api_vision_source():
+    if _vision is None:
+        return jsonify({'ok': False, 'error': 'Vision backend not available'}), 503
+    data   = request.get_json(force=True) or {}
+    source = str(data.get('source', '0'))
+    ok     = _vision.set_source(source)
+    return jsonify({'ok': ok, 'source': source})
+
+
+@app.route('/api/vision/config', methods=['GET'])
+def api_vision_config_get():
+    if _vision is None:
+        return jsonify({})
+    return jsonify(_vision.get_config())
+
+
+@app.route('/api/vision/config', methods=['POST'])
+def api_vision_config_set():
+    if _vision is None:
+        return jsonify({'ok': False}), 503
+    cfg = request.get_json(force=True) or {}
+    _vision.set_config(cfg)
+    return jsonify({'ok': True})
+
+
+@app.route('/api/vision/calibration', methods=['POST'])
+def api_vision_calibration_set():
+    if _vision is None:
+        return jsonify({'ok': False}), 503
+    data = request.get_json(force=True) or {}
+    _vision.set_calibration_dict(data.get('calibration'))
+    return jsonify({'ok': True})
+
+
+@app.route('/api/vision/playback', methods=['POST'])
+def api_vision_playback():
+    if _vision is None:
+        return jsonify({'ok': False}), 503
+    data = request.get_json(force=True) or {}
+    action = data.get('action', '')
+    if action == 'play_pause':
+        _vision.play_pause()
+    elif action == 'seek':
+        _vision.seek(int(data.get('frame', 0)))
+    elif action == 'step':
+        _vision.step(int(data.get('delta', 1)))
+    elif action == 'speed':
+        _vision.set_speed(float(data.get('speed', 1.0)))
+    return jsonify({'ok': True})
+
+
+# ── Object registry API ───────────────────────────────────────────────────────
+
+@app.route('/api/vision/objects', methods=['GET'])
+def api_vision_objects_get():
+    if _vision is None:
+        return jsonify([])
+    return jsonify(_vision.get_objects())
+
+
+@app.route('/api/vision/objects', methods=['PUT'])
+def api_vision_objects_put():
+    if _vision is None:
+        return jsonify({'ok': False}), 503
+    objects = request.get_json(force=True) or []
+    _vision.set_objects(objects)
+    return jsonify({'ok': True})
+
+
+@app.route('/api/vision/objects/<obj_id>', methods=['PATCH'])
+def api_vision_object_patch(obj_id):
+    if _vision is None:
+        return jsonify({'ok': False}), 503
+    patch = request.get_json(force=True) or {}
+    _vision.update_object(obj_id, patch)
+    return jsonify({'ok': True})
+
+
+@app.route('/api/vision/objects/<obj_id>', methods=['DELETE'])
+def api_vision_object_delete(obj_id):
+    if _vision is None:
+        return jsonify({'ok': False}), 503
+    _vision.delete_object(obj_id)
+    return jsonify({'ok': True})
+
+
+@app.route('/api/vision/objects/<obj_id>/color', methods=['POST'])
+def api_vision_object_color(obj_id):
+    """Query endpoint: robot/strategy asks for color of a specific object."""
+    if _vision is None:
+        return jsonify({'color': 'unknown'})
+    color = _vision.get_object_color(obj_id)
+    return jsonify({'id': obj_id, 'color': color})
+
+
+# ── Vision frame push loop (25 fps max, SocketIO) ────────────────────────────
+
+_vision_clients = 0   # count of clients with vision view open
+
+def _vision_push_loop():
+    """Push vision frames to all connected clients at up to 25 fps."""
+    import base64 as _b64
+    while True:
+        try:
+            if _vision and _vision.enabled and _vision_clients > 0:
+                raw_b64, rect_b64, proc_b64 = _vision.get_latest_frames_b64()
+                if raw_b64:
+                    socketio.emit('vision_frame', {
+                        'raw':  raw_b64,
+                        'rect': rect_b64,
+                        'proc': proc_b64,
+                        **_vision.get_frame_info(),
+                        'detections': _vision.get_state().get('detections', []),
+                        'has_h': _vision.get_state().get('has_homography', False),
+                        'h_fresh': _vision.get_state().get('homography_fresh', False),
+                        'proc_mode': _vision.get_config().get('proc_mode', 'none'),
+                    })
+        except Exception:
+            pass
+        time.sleep(1 / 25)
+
+
+@socketio.on('vision_view_active')
+def on_vision_view_active(data):
+    global _vision_clients
+    if data.get('active'):
+        _vision_clients += 1
+    else:
+        _vision_clients = max(0, _vision_clients - 1)
+
+
 # ── Serial ports API ───────────────────────────────────────────────────────────
 
 @app.route('/api/serial/ports')
@@ -834,6 +1018,42 @@ def on_set_team(data):
 @socketio.on('set_mode')
 def on_set_mode(data):
     sim_state['mode'] = data['mode']
+
+
+@socketio.on('set_robot_pos')
+def on_set_robot_pos(data):
+    """Teleport robot to a given (x, y) position (and optionally theta)."""
+    robot.pos = Vec2(float(data['x']), float(data['y']))
+    if 'theta' in data:
+        robot.theta = float(data['theta'])
+    brain.log(f"Robot pos set → ({robot.pos.x:.0f}, {robot.pos.y:.0f})")
+
+
+@socketio.on('paint_grid')
+def on_paint_grid(data):
+    """Set or clear an occupancy-grid cell directly."""
+    gx, gy = int(data['gx']), int(data['gy'])
+    value = bool(data['value'])
+    if 0 <= gx < GRID_W and 0 <= gy < GRID_H:
+        occupancy._grid[gx][gy] = value
+
+
+@socketio.on('set_opponent_pos')
+def on_set_opponent_pos(data):
+    """Update the fake opponent's position (tracked for collision / display)."""
+    sim_state['opponent'] = {
+        'x':       float(data['x']),
+        'y':       float(data['y']),
+        'theta':   float(data.get('theta', 0)),
+        'enabled': True,
+    }
+
+
+@socketio.on('set_opponent_enabled')
+def on_set_opponent_enabled(data):
+    if 'opponent' not in sim_state:
+        sim_state['opponent'] = {'x': 0, 'y': 0, 'theta': 0, 'enabled': False}
+    sim_state['opponent']['enabled'] = bool(data['enabled'])
 
 
 @socketio.on('set_feature')
@@ -1351,6 +1571,7 @@ def main():
         'reload', {'msg': 'strategy/match.py reloaded ✓'}
     ))
     socketio.start_background_task(_physics_loop)
+    socketio.start_background_task(_vision_push_loop)
 
     print("\n  holOS Simulator")
     print("  ┌────────────────────────────────┐")

@@ -134,6 +134,10 @@ socket.on('state', state => {
   }
   updateNetworkFromState(state);
   if (activeView === 'modules') updateModulesView(state);
+  // Update remote dial whenever the drawer is open
+  if (_remoteDrawerOpen && state.robot) {
+    remoteUpdateTheta(state.robot.theta * 180 / Math.PI);
+  }
 });
 socket.on('reload', d => showToast(d.msg));
 socket.on('terminal_rx', d => appendTermLine(d.cmd, d.ok, d.res, d._fire || false, d.mode));
@@ -228,12 +232,25 @@ cgSetRobot(false);
 
 // ── View switching ────────────────────────────────────────────────────────
 let activeView = 'map';
+
+function toggleNavGroup(name) {
+  document.getElementById('nav-group-' + name)?.classList.toggle('expanded');
+}
+
 function switchView(name, btn) {
   activeView = name;
   document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
   document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
   document.getElementById('view-' + name).classList.add('active');
   btn.classList.add('active');
+
+  // If the button is a child inside a group, expand that group + highlight its header
+  document.querySelectorAll('.nav-group-hdr').forEach(h => h.classList.remove('has-active'));
+  const group = btn.closest?.('.nav-group');
+  if (group) {
+    group.classList.add('expanded');
+    group.querySelector('.nav-group-hdr')?.classList.add('has-active');
+  }
 
   const miniWrap = document.getElementById('mini-map-wrap');
   if (miniWrap) miniWrap.style.display = (name === 'map') ? 'none' : 'block';
@@ -255,7 +272,12 @@ function switchView(name, btn) {
     if (lastState) updateModulesView(lastState);
   } else if (name === 'calibration') {
     onCalibViewActivated();
+  } else if (name === 'vision') {
+    onVisionViewActivated();
   }
+
+  // Notify server about vision view focus (controls frame push rate)
+  socket.emit('vision_view_active', { active: name === 'vision' });
 }
 
 // Mini-map click → go to map view
@@ -303,6 +325,8 @@ function render(s) {
   drawDynObs(s);
   drawGameObjects(s);
   drawPOIs(ctx, wx, wy, wlen, poiData);
+  drawMapTraj();
+  drawMapPin();
   drawRobot(s);
 }
 
@@ -384,14 +408,14 @@ function drawField(c, wxf, wyf, wlf, s) {
 }
 
 function drawGrid(s) {
-  ctx.strokeStyle = 'rgba(26,82,118,.18)'; ctx.lineWidth = .5;
+  ctx.strokeStyle = 'rgba(16, 49, 70, 0.75)'; ctx.lineWidth = .5;
   for (let gx=0; gx<=GRID_W; gx++) {
     ctx.beginPath(); ctx.moveTo(wx(gx*GRID_CELL), wy(0)); ctx.lineTo(wx(gx*GRID_CELL), wy(FIELD_H)); ctx.stroke();
   }
   for (let gy=0; gy<=GRID_H; gy++) {
     ctx.beginPath(); ctx.moveTo(wx(0), wy(gy*GRID_CELL)); ctx.lineTo(wx(FIELD_W), wy(gy*GRID_CELL)); ctx.stroke();
   }
-  ctx.fillStyle = 'rgba(192,57,43,.35)';
+  ctx.fillStyle = 'rgba(255, 40, 16, 0.76)';
   for (const c of s.occupancy) {
     ctx.fillRect(wx(c.gx*GRID_CELL)+1, wy((c.gy+1)*GRID_CELL)+1, wlen(GRID_CELL)-2, wlen(GRID_CELL)-2);
   }
@@ -401,7 +425,7 @@ function drawDynObs(s) {
   for (const o of s.dyn_obs) {
     ctx.beginPath(); ctx.arc(wx(o[0]), wy(o[1]), wlen(150), 0, Math.PI*2);
     ctx.fillStyle='rgba(192,57,43,.25)'; ctx.fill();
-    ctx.strokeStyle='#c0392b'; ctx.lineWidth=1.5; ctx.stroke();
+    ctx.strokeStyle='#c03a2bd3'; ctx.lineWidth=1.5; ctx.stroke();
   }
 }
 
@@ -552,7 +576,17 @@ canvas.addEventListener('mousemove', e => {
 canvas.addEventListener('click', e => {
   const rect=canvas.getBoundingClientRect(), w=canvasToWorld(e.clientX-rect.left,e.clientY-rect.top);
   if (w.x<0||w.x>FIELD_W||w.y<0||w.y>FIELD_H) return;
-  socket.emit('field_click',{x:w.x,y:w.y,button:0});
+
+  // If an obstacle tool is active, delegate to backend
+  if (_mapTool === 'obstacle' || _mapTool === 'remove_obs') {
+    socket.emit('field_click',{x:w.x,y:w.y,button:0});
+    return;
+  }
+
+  // Default: drop a pin and show popover
+  _mapPin = { x: Math.round(w.x), y: Math.round(w.y) };
+  _showPinPopover(e.clientX - rect.left, e.clientY - rect.top);
+  if (lastState) render(lastState);
 });
 canvas.addEventListener('contextmenu', e => {
   e.preventDefault();
@@ -572,6 +606,208 @@ function setTeam(team) {
   document.getElementById('btn-blue')?.classList.toggle('active',team==='blue');
 }
 function setMode(mode)    { socket.emit('set_mode',{mode}); }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//  MAP PIN & TRAJECTORY SYSTEM
+// ═══════════════════════════════════════════════════════════════════════════════
+
+let _mapPin  = null;    // {x, y} — current pin position (world mm)
+let _mapTool = null;    // null | 'obstacle' | 'remove_obs'
+let _mapTraj = [];      // [{x, y}, ...] — trajectory waypoints
+
+// ── Tool toggle (obstacle modes) ────────────────────────────────────────────
+function toggleMapTool(tool) {
+  if (_mapTool === tool) {
+    _mapTool = null;
+    setMode('target'); // reset backend mode
+  } else {
+    _mapTool = tool;
+    setMode(tool);
+  }
+  document.getElementById('tool-obs-add')?.classList.toggle('active', _mapTool === 'obstacle');
+  document.getElementById('tool-obs-del')?.classList.toggle('active', _mapTool === 'remove_obs');
+}
+
+// ── Pin popover show/hide ───────────────────────────────────────────────────
+function _showPinPopover(canvasPx, canvasPy) {
+  const pop = document.getElementById('map-pin-popover');
+  if (!pop || !_mapPin) return;
+  pop.style.left = canvasPx + 'px';
+  pop.style.top  = canvasPy + 'px';
+  pop.classList.remove('hidden');
+  document.getElementById('pin-x').value = _mapPin.x;
+  document.getElementById('pin-y').value = _mapPin.y;
+}
+
+function dismissPin() {
+  _mapPin = null;
+  document.getElementById('map-pin-popover')?.classList.add('hidden');
+  if (lastState) render(lastState);
+}
+
+function pinCoordsEdited() {
+  if (!_mapPin) return;
+  _mapPin.x = +(document.getElementById('pin-x')?.value ?? 0);
+  _mapPin.y = +(document.getElementById('pin-y')?.value ?? 0);
+  if (lastState) render(lastState);
+}
+
+// ── Pin actions ─────────────────────────────────────────────────────────────
+function pinGoHere() {
+  if (!_mapPin) return;
+  fetch('/api/exec', {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ cmd: `go(${_mapPin.x},${_mapPin.y})` })
+  }).then(r => r.json()).then(d => {
+    showToast(d.ok ? `Go → (${_mapPin.x}, ${_mapPin.y})` : `Error: ${d.res}`);
+  }).catch(() => showToast('Request failed'));
+}
+
+function pinSetPos() {
+  if (!_mapPin) return;
+  socket.emit('set_robot_pos', { x: _mapPin.x, y: _mapPin.y });
+  showToast(`Position set → (${_mapPin.x}, ${_mapPin.y})`);
+}
+
+function pinCopy() {
+  if (!_mapPin) return;
+  const text = `(${_mapPin.x}, ${_mapPin.y})`;
+  navigator.clipboard.writeText(text).then(() => {
+    showToast(`Copied ${text}`);
+  }).catch(() => showToast('Copy failed'));
+}
+
+function pinAddWaypoint() {
+  if (!_mapPin) return;
+  _mapTraj.push({ x: _mapPin.x, y: _mapPin.y });
+  _updateTrajBar();
+  if (lastState) render(lastState);
+  showToast(`Waypoint #${_mapTraj.length}: (${_mapPin.x}, ${_mapPin.y})`);
+}
+
+// ── Trajectory bar ──────────────────────────────────────────────────────────
+function _updateTrajBar() {
+  const bar = document.getElementById('map-traj-bar');
+  if (!bar) return;
+  bar.classList.toggle('hidden', _mapTraj.length === 0);
+  document.getElementById('traj-count').textContent = `${_mapTraj.length} pts`;
+
+  const list = document.getElementById('traj-list');
+  if (list) {
+    list.innerHTML = _mapTraj.map((p, i) =>
+      `<span class="traj-wpt-chip">${i+1}: (${p.x}, ${p.y})<span class="traj-wpt-del" onclick="trajRemove(${i})">✕</span></span>`
+    ).join('');
+  }
+}
+
+function trajRemove(idx) {
+  _mapTraj.splice(idx, 1);
+  _updateTrajBar();
+  if (lastState) render(lastState);
+}
+
+function trajClear() {
+  _mapTraj = [];
+  _updateTrajBar();
+  if (lastState) render(lastState);
+}
+
+function trajCopy() {
+  if (_mapTraj.length === 0) return;
+  const text = '[' + _mapTraj.map(p => `(${p.x}, ${p.y})`).join(', ') + ']';
+  navigator.clipboard.writeText(text).then(() => {
+    showToast(`Trajectory copied (${_mapTraj.length} pts)`);
+  }).catch(() => showToast('Copy failed'));
+}
+
+async function trajPaste() {
+  try {
+    const text = await navigator.clipboard.readText();
+    // Parse formats: [(x,y), (x,y)] or (x,y)\n(x,y)
+    const re = /\(\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*\)/g;
+    let m, pts = [];
+    while ((m = re.exec(text)) !== null) {
+      pts.push({ x: Math.round(+m[1]), y: Math.round(+m[2]) });
+    }
+    if (pts.length === 0) { showToast('No valid points found in clipboard'); return; }
+    _mapTraj = pts;
+    _updateTrajBar();
+    if (lastState) render(lastState);
+    showToast(`Pasted ${pts.length} waypoints`);
+  } catch (e) {
+    showToast('Paste failed — clipboard access denied');
+  }
+}
+
+async function trajExecute() {
+  if (_mapTraj.length === 0) return;
+  showToast(`Executing trajectory (${_mapTraj.length} pts)…`);
+  for (let i = 0; i < _mapTraj.length; i++) {
+    const p = _mapTraj[i];
+    try {
+      const res = await fetch('/api/exec', {
+        method: 'POST', headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({ cmd: `go(${p.x},${p.y})` })
+      });
+      const d = await res.json();
+      if (!d.ok) { showToast(`Waypoint ${i+1} failed: ${d.res}`); return; }
+    } catch (e) { showToast(`Waypoint ${i+1} request failed`); return; }
+  }
+  showToast(`Trajectory complete (${_mapTraj.length} pts)`);
+}
+
+// ── Canvas rendering for pin + trajectory ───────────────────────────────────
+function drawMapPin() {
+  if (!_mapPin) return;
+  const px = wx(_mapPin.x), py = wy(_mapPin.y);
+  // outer ring
+  ctx.beginPath(); ctx.arc(px, py, 10, 0, Math.PI * 2);
+  ctx.fillStyle = 'rgba(41,128,185,.15)'; ctx.fill();
+  ctx.strokeStyle = '#2980b9'; ctx.lineWidth = 2; ctx.stroke();
+  // crosshair
+  ctx.beginPath();
+  ctx.moveTo(px - 14, py); ctx.lineTo(px + 14, py);
+  ctx.moveTo(px, py - 14); ctx.lineTo(px, py + 14);
+  ctx.strokeStyle = 'rgba(41,128,185,.5)'; ctx.lineWidth = 1; ctx.stroke();
+  // center dot
+  ctx.beginPath(); ctx.arc(px, py, 3, 0, Math.PI * 2);
+  ctx.fillStyle = '#2980b9'; ctx.fill();
+}
+
+function drawMapTraj() {
+  if (_mapTraj.length === 0) return;
+  // Connecting lines (dashed)
+  ctx.beginPath();
+  ctx.moveTo(wx(_mapTraj[0].x), wy(_mapTraj[0].y));
+  for (let i = 1; i < _mapTraj.length; i++) {
+    ctx.lineTo(wx(_mapTraj[i].x), wy(_mapTraj[i].y));
+  }
+  ctx.strokeStyle = '#e67e22'; ctx.lineWidth = 2;
+  ctx.setLineDash([8, 4]); ctx.stroke(); ctx.setLineDash([]);
+
+  // Direction arrows
+  for (let i = 1; i < _mapTraj.length; i++) {
+    const x0 = wx(_mapTraj[i-1].x), y0 = wy(_mapTraj[i-1].y);
+    const x1 = wx(_mapTraj[i].x), y1 = wy(_mapTraj[i].y);
+    const mx = (x0+x1)/2, my = (y0+y1)/2;
+    const a = Math.atan2(y1-y0, x1-x0);
+    ctx.save(); ctx.translate(mx, my); ctx.rotate(a);
+    ctx.beginPath(); ctx.moveTo(6, 0); ctx.lineTo(-4, -4); ctx.lineTo(-4, 4); ctx.closePath();
+    ctx.fillStyle = '#e67e22'; ctx.fill();
+    ctx.restore();
+  }
+
+  // Waypoint circles with numbers
+  for (let i = 0; i < _mapTraj.length; i++) {
+    const px = wx(_mapTraj[i].x), py = wy(_mapTraj[i].y);
+    ctx.beginPath(); ctx.arc(px, py, 11, 0, Math.PI * 2);
+    ctx.fillStyle = '#e67e22'; ctx.fill();
+    ctx.strokeStyle = '#fff'; ctx.lineWidth = 1.5; ctx.stroke();
+    ctx.fillStyle = '#fff'; ctx.font = 'bold 10px monospace';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText(i + 1, px, py + 0.5);
+  }
+}
 function setFeature(k,v)  { socket.emit('set_feature',{feature:k,value:v}); }
 function setFeedrate(v) {
   document.getElementById('feedrate-val').textContent=parseFloat(v).toFixed(2)+'×';
@@ -2888,3 +3124,988 @@ function _calibStatusMsg(msg) {
 function onCalibViewActivated() {
   calibInit();
 }
+
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//  VISION VIEW
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// ── State ──────────────────────────────────────────────────────────────────────
+let _visionObjects     = [];
+let _visionActiveObjId = null;
+let _visionFrameInfo   = {};
+let _visionEnabled     = false;
+
+// ── SocketIO: receive vision frames ──────────────────────────────────────────
+socket.on('vision_frame', data => {
+  if (activeView !== 'vision') return;
+
+  // Update raw feed
+  const rawImg = document.getElementById('vision-raw-img');
+  if (rawImg && data.raw) {
+    rawImg.src = 'data:image/jpeg;base64,' + data.raw;
+  }
+
+  // Update rectified feed
+  const rectImg   = document.getElementById('vision-rect-img');
+  const rectPlch  = document.getElementById('vision-rect-placeholder');
+  if (rectImg && rectPlch) {
+    if (data.rect) {
+      rectImg.src = 'data:image/jpeg;base64,' + data.rect;
+      rectImg.style.display    = 'block';
+      rectPlch.style.display   = 'none';
+    } else {
+      rectImg.style.display    = 'none';
+      rectPlch.style.display   = 'flex';
+    }
+  }
+
+  // Update processed feed
+  const procWrap = document.getElementById('vision-proc-wrap');
+  const procImg  = document.getElementById('vision-proc-img');
+  const procMode = data.proc_mode || 'none';
+  if (procWrap) procWrap.style.display = (procMode !== 'none' && data.proc) ? 'flex' : 'none';
+  if (procImg && data.proc) procImg.src = 'data:image/jpeg;base64,' + data.proc;
+  const procBadge = document.getElementById('vision-proc-mode-badge');
+  if (procBadge) procBadge.textContent = procMode !== 'none' ? procMode : '—';
+
+  // Homography badge
+  const hBadge = document.getElementById('vision-h-badge');
+  if (hBadge) {
+    if (data.h_fresh)       { hBadge.textContent = 'LIVE';  hBadge.className = 'vision-h-badge h-live'; }
+    else if (data.has_h)    { hBadge.textContent = 'CACHE'; hBadge.className = 'vision-h-badge h-cache'; }
+    else                    { hBadge.textContent = 'NO H';  hBadge.className = 'vision-h-badge h-noh'; }
+  }
+
+  // Frame info + seek slider
+  _visionFrameInfo = data;
+  const fc   = data.frame_count ?? -1;
+  const fi   = data.frame_idx  ?? 0;
+  const pb   = document.getElementById('vision-playback');
+  const sl   = document.getElementById('vision-seek-sl');
+  const info = document.getElementById('vision-frame-info');
+  if (pb) {
+    pb.classList.toggle('hidden', fc <= 0);
+    if (fc > 0) {
+      if (sl) { sl.max = fc - 1; sl.value = fi; }
+      if (info) info.textContent = `${fi} / ${fc - 1}`;
+    }
+  }
+
+  // Detection list
+  _renderDetections(data.detections || []);
+});
+
+function _renderDetections(dets) {
+  const el = document.getElementById('vision-det-list');
+  const ct = document.getElementById('vision-det-count');
+  if (!el) return;
+  if (ct) ct.textContent = dets.length;
+  el.innerHTML = dets.map(d => {
+    const pos = (d.x_mm !== undefined)
+      ? ` → table (${d.x_mm.toFixed(0)}, ${d.y_mm.toFixed(0)}) mm`
+      : '';
+    return `<div class="vision-det-row">ID <b>${d.id}</b> px=(${d.px.toFixed(0)},${d.py.toFixed(0)})${pos}</div>`;
+  }).join('');
+}
+
+// ── View activation ───────────────────────────────────────────────────────────
+async function onVisionViewActivated() {
+  try {
+    const res  = await fetch('/api/vision/state');
+    const data = await res.json();
+    _visionEnabled = data.enabled;
+
+    // Sync enable toggle
+    const cb = document.getElementById('vision-enabled-cb');
+    if (cb) cb.checked = _visionEnabled;
+    _visionUpdateBadge(_visionEnabled);
+
+    // Sync source selector
+    if (data.source) _visionSyncSourceSelector(data.source);
+
+    // Sync config checkboxes
+    const cfg = data.config || {};
+    _visionSyncCheckbox('v-undistort',  cfg.undistort);
+    _visionSyncCheckbox('v-aruco',      cfg.show_aruco !== false);
+    _visionSyncCheckbox('v-ids',        cfg.show_ids !== false);
+    _visionSyncCheckbox('v-rej',        cfg.show_rejected);
+    _visionSyncCheckbox('v-grid',       cfg.show_grid !== false);
+    _visionSyncCheckbox('v-overlay',    cfg.show_table_overlay !== false);
+    _visionSyncCheckbox('v-autocolor',  cfg.auto_color);
+    const dictSel = document.getElementById('vision-dict-sel');
+    if (dictSel && cfg.dict) dictSel.value = cfg.dict;
+    const qsl = document.getElementById('vision-quality-sl');
+    const qv  = document.getElementById('vision-quality-val');
+    if (qsl && cfg.jpeg_quality) { qsl.value = cfg.jpeg_quality; if (qv) qv.textContent = cfg.jpeg_quality; }
+
+    // Sync anchors
+    if (cfg.anchors) _visionSyncAnchors(cfg.anchors);
+
+    // Sync processing pipeline UI
+    _visionSyncProcUI(cfg);
+
+    // Load object registry
+    await visionLoadObjects();
+  } catch (e) {
+    console.error('Vision state load error:', e);
+  }
+}
+
+function _visionSyncProcUI(cfg) {
+  const mode = cfg.proc_mode ?? 'none';
+  const modeEl = document.getElementById('vp-mode');
+  if (modeEl) modeEl.value = mode;
+
+  // Binary
+  const bm = document.getElementById('vp-bin-method');
+  if (bm) bm.value = cfg.binary_method ?? 'global';
+  _vSetSlider('vp-bin-thresh', 'vp-bin-thresh-val', cfg.binary_threshold ?? 128);
+  _vSetSlider('vp-bin-block',  'vp-bin-block-val',  cfg.binary_block_size ?? 11);
+  _visionSyncCheckbox('vp-bin-invert', cfg.binary_invert);
+
+  // Color mask
+  _vSetSlider('vp-h-lo',  'vp-h-lo-val',  cfg.color_lo_h  ?? 0);
+  _vSetSlider('vp-h-hi',  'vp-h-hi-val',  cfg.color_hi_h  ?? 10);
+  _vSetSlider('vp-h2-lo', 'vp-h2-lo-val', cfg.color_lo_h2 ?? 160);
+  _vSetSlider('vp-h2-hi', 'vp-h2-hi-val', cfg.color_hi_h2 ?? -1);
+  _vSetSlider('vp-s-lo',  'vp-s-lo-val',  cfg.color_lo_s  ?? 80);
+  _vSetSlider('vp-s-hi',  'vp-s-hi-val',  cfg.color_hi_s  ?? 255);
+  _vSetSlider('vp-v-lo',  'vp-v-lo-val',  cfg.color_lo_v  ?? 60);
+  _vSetSlider('vp-v-hi',  'vp-v-hi-val',  cfg.color_hi_v  ?? 255);
+  _visionSyncCheckbox('vp-color-masked', cfg.color_show_masked !== false);
+  const cpEl = document.getElementById('vp-color-preset');
+  if (cpEl && cfg.color_target) cpEl.value = cfg.color_target;
+
+  // Canny
+  _vSetSlider('vp-canny-lo', 'vp-canny-lo-val', cfg.canny_low  ?? 50);
+  _vSetSlider('vp-canny-hi', 'vp-canny-hi-val', cfg.canny_high ?? 150);
+
+  // Blur
+  _vSetSlider('vp-blur-k', 'vp-blur-k-val', cfg.blur_kernel ?? 5);
+
+  // Morph
+  const morphOp = document.getElementById('vp-morph-op');
+  if (morphOp) morphOp.value = cfg.morph_op ?? 'none';
+  _vSetSlider('vp-morph-k', 'vp-morph-k-val', cfg.morph_kernel ?? 3);
+
+  // Trigger visibility update
+  visionProcModeChanged();
+}
+
+function _visionSyncCheckbox(id, val) {
+  const el = document.getElementById(id);
+  if (el) el.checked = !!val;
+}
+
+function _visionUpdateBadge(enabled) {
+  const badge = document.getElementById('vision-status-badge');
+  if (!badge) return;
+  badge.textContent  = enabled ? 'ON' : 'OFF';
+  badge.className    = 'vision-badge ' + (enabled ? 'vision-badge-on' : 'vision-badge-off');
+}
+
+// ── Enable / Disable ─────────────────────────────────────────────────────────
+async function visionToggleEnabled(checked) {
+  const url = checked ? '/api/vision/enable' : '/api/vision/disable';
+  const res  = await fetch(url, { method: 'POST' });
+  const data = await res.json();
+  _visionEnabled = checked && data.ok;
+  _visionUpdateBadge(_visionEnabled);
+}
+
+// ── Source selector ───────────────────────────────────────────────────────────
+
+function visionSourceTypeChanged() {
+  const type = document.querySelector('input[name="vsrc-type"]:checked')?.value ?? 'usb';
+  ['usb','ip','video','image'].forEach(t => {
+    const el = document.getElementById('vsrc-' + t);
+    if (el) el.classList.toggle('hidden', t !== type);
+  });
+}
+
+function _visionGetSourceString() {
+  const type = document.querySelector('input[name="vsrc-type"]:checked')?.value ?? 'usb';
+  switch (type) {
+    case 'usb':   return document.getElementById('vsrc-usb-idx')?.value?.trim()   ?? '0';
+    case 'ip':    return document.getElementById('vsrc-ip-url')?.value?.trim()    ?? '';
+    case 'video': return document.getElementById('vsrc-video-path')?.value?.trim() ?? '';
+    case 'image': return document.getElementById('vsrc-image-path')?.value?.trim() ?? '';
+    default:      return '0';
+  }
+}
+
+function _visionSyncSourceSelector(source) {
+  // Try to guess type from source string
+  if (!source) return;
+  const s = String(source);
+  let type = 'usb';
+  if (/^rtsp:|^http:|^https:/.test(s)) {
+    type = 'ip';
+    const el = document.getElementById('vsrc-ip-url');
+    if (el) el.value = s;
+  } else if (/\.(mp4|mkv|avi|mov|webm)$/i.test(s)) {
+    type = 'video';
+    const el = document.getElementById('vsrc-video-path');
+    if (el) el.value = s;
+  } else if (/\.(jpg|jpeg|png|bmp|tiff?)$/i.test(s)) {
+    type = 'image';
+    const el = document.getElementById('vsrc-image-path');
+    if (el) el.value = s;
+  } else {
+    // USB index
+    const el = document.getElementById('vsrc-usb-idx');
+    if (el) el.value = isNaN(+s) ? '0' : s;
+  }
+  const radio = document.querySelector(`input[name="vsrc-type"][value="${type}"]`);
+  if (radio) { radio.checked = true; visionSourceTypeChanged(); }
+}
+
+async function visionApplySource() {
+  const src = _visionGetSourceString();
+  if (!src && src !== '0') return;
+  await fetch('/api/vision/source', {
+    method:  'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body:    JSON.stringify({ source: src }),
+  });
+}
+
+// ── Processing pipeline ───────────────────────────────────────────────────────
+
+// Color presets matching _COLOR_RANGES_HSV in vision_backend.py
+const _VP_COLOR_PRESETS = {
+  red:    { lo_h: 0,  lo_s: 80,  lo_v: 60,  hi_h: 10,  hi_h2: 180, lo_h2: 160 },
+  green:  { lo_h: 40, lo_s: 60,  lo_v: 50,  hi_h: 85,  hi_h2: -1,  lo_h2: 160 },
+  blue:   { lo_h: 95, lo_s: 60,  lo_v: 50,  hi_h: 135, hi_h2: -1,  lo_h2: 160 },
+  yellow: { lo_h: 20, lo_s: 80,  lo_v: 80,  hi_h: 38,  hi_h2: -1,  lo_h2: 160 },
+  white:  { lo_h: 0,  lo_s: 0,   lo_v: 190, hi_h: 180, hi_h2: -1,  lo_h2: 160 },
+  black:  { lo_h: 0,  lo_s: 0,   lo_v: 0,   hi_h: 180, hi_h2: -1,  lo_h2: 160 },
+  brown:  { lo_h: 8,  lo_s: 50,  lo_v: 30,  hi_h: 22,  hi_h2: -1,  lo_h2: 160 },
+};
+
+function _vSetSlider(id, valId, val) {
+  const sl = document.getElementById(id);
+  const vl = document.getElementById(valId);
+  if (sl) sl.value = val;
+  if (vl) vl.textContent = (id === 'vp-h2-hi' && val < 0) ? 'off' : val;
+}
+
+function visionProcSlider(sliderId, valId) {
+  const sl = document.getElementById(sliderId);
+  const vl = document.getElementById(valId);
+  if (sl && vl) {
+    const v = +sl.value;
+    vl.textContent = (sliderId === 'vp-h2-hi' && v < 0) ? 'off' : v;
+  }
+}
+
+function visionProcModeChanged() {
+  const mode = document.getElementById('vp-mode')?.value ?? 'none';
+  // Show/hide sub-groups
+  ['binarize','color','canny','blur'].forEach(g => {
+    const el = document.getElementById('vp-' + g);
+    if (el) el.classList.toggle('hidden', g !== {
+      binarize: 'binarize', color_mask: 'color', canny: 'canny', blur: 'blur',
+    }[mode]);
+  });
+  // Show morph row for all except none/blur
+  const morphRow = document.getElementById('vp-morph-row');
+  if (morphRow) morphRow.style.display = (mode === 'none' || mode === 'blur') ? 'none' : '';
+
+  visionProcCfg();
+}
+
+function _visionBinMethodChanged() {
+  const method = document.getElementById('vp-bin-method')?.value ?? 'global';
+  const thRow  = document.getElementById('vp-bin-thresh-row');
+  const blRow  = document.getElementById('vp-bin-block-row');
+  if (thRow) thRow.classList.toggle('hidden', method === 'otsu');
+  if (blRow) blRow.classList.toggle('hidden', !method.startsWith('adaptive'));
+}
+
+function visionColorPreset() {
+  const preset = document.getElementById('vp-color-preset')?.value ?? 'custom';
+  const p = _VP_COLOR_PRESETS[preset];
+  if (!p) return;
+  _vSetSlider('vp-h-lo',  'vp-h-lo-val',  p.lo_h);
+  _vSetSlider('vp-h-hi',  'vp-h-hi-val',  p.hi_h);
+  _vSetSlider('vp-h2-lo', 'vp-h2-lo-val', p.lo_h2 ?? 160);
+  _vSetSlider('vp-h2-hi', 'vp-h2-hi-val', p.hi_h2 ?? -1);
+  visionProcCfg();
+}
+
+async function visionProcCfg() {
+  const mode = document.getElementById('vp-mode')?.value ?? 'none';
+  const cfg = { proc_mode: mode };
+
+  if (mode === 'binarize') {
+    const method = document.getElementById('vp-bin-method')?.value ?? 'global';
+    _visionBinMethodChanged();
+    cfg.binary_method     = method;
+    cfg.binary_threshold  = +(document.getElementById('vp-bin-thresh')?.value  ?? 128);
+    cfg.binary_block_size = +(document.getElementById('vp-bin-block')?.value   ?? 11);
+    cfg.binary_invert     = !!(document.getElementById('vp-bin-invert')?.checked);
+  }
+  if (mode === 'color_mask') {
+    cfg.color_target      = document.getElementById('vp-color-preset')?.value ?? 'red';
+    cfg.color_lo_h        = +(document.getElementById('vp-h-lo')?.value  ?? 0);
+    cfg.color_hi_h        = +(document.getElementById('vp-h-hi')?.value  ?? 10);
+    cfg.color_lo_h2       = +(document.getElementById('vp-h2-lo')?.value ?? 160);
+    cfg.color_hi_h2       = +(document.getElementById('vp-h2-hi')?.value ?? -1);
+    cfg.color_lo_s        = +(document.getElementById('vp-s-lo')?.value  ?? 80);
+    cfg.color_hi_s        = +(document.getElementById('vp-s-hi')?.value  ?? 255);
+    cfg.color_lo_v        = +(document.getElementById('vp-v-lo')?.value  ?? 60);
+    cfg.color_hi_v        = +(document.getElementById('vp-v-hi')?.value  ?? 255);
+    cfg.color_show_masked = !!(document.getElementById('vp-color-masked')?.checked);
+  }
+  if (mode === 'canny') {
+    cfg.canny_low  = +(document.getElementById('vp-canny-lo')?.value ?? 50);
+    cfg.canny_high = +(document.getElementById('vp-canny-hi')?.value ?? 150);
+  }
+  if (mode === 'blur') {
+    cfg.blur_kernel = +(document.getElementById('vp-blur-k')?.value ?? 5);
+  }
+  if (mode !== 'none' && mode !== 'blur') {
+    cfg.morph_op     = document.getElementById('vp-morph-op')?.value ?? 'none';
+    cfg.morph_kernel = +(document.getElementById('vp-morph-k')?.value ?? 3);
+  }
+
+  await fetch('/api/vision/config', {
+    method:  'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body:    JSON.stringify(cfg),
+  });
+}
+
+// ── Config helpers ────────────────────────────────────────────────────────────
+async function visionCfg(key, value) {
+  // Special: update quality label
+  if (key === 'jpeg_quality') {
+    const qv = document.getElementById('vision-quality-val');
+    if (qv) qv.textContent = value;
+  }
+  await fetch('/api/vision/config', {
+    method:  'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body:    JSON.stringify({ [key]: value }),
+  });
+}
+
+// ── Anchors ────────────────────────────────────────────────────────────────────
+function _visionSyncAnchors(anchors) {
+  for (const [corner, vals] of Object.entries(anchors)) {
+    document.querySelectorAll(`.va-id[data-corner="${corner}"]`).forEach(el => { el.value = vals.tag_id; });
+    document.querySelectorAll(`.va-x[data-corner="${corner}"]`).forEach(el  => { el.value = vals.x_mm;  });
+    document.querySelectorAll(`.va-y[data-corner="${corner}"]`).forEach(el  => { el.value = vals.y_mm;  });
+  }
+}
+
+function _visionReadAnchors() {
+  const corners = ['top_left', 'top_right', 'bottom_right', 'bottom_left'];
+  const anchors = {};
+  for (const c of corners) {
+    const id = document.querySelector(`.va-id[data-corner="${c}"]`)?.value;
+    const x  = document.querySelector(`.va-x[data-corner="${c}"]`)?.value;
+    const y  = document.querySelector(`.va-y[data-corner="${c}"]`)?.value;
+    anchors[c] = { tag_id: parseInt(id||0), x_mm: parseFloat(x||0), y_mm: parseFloat(y||0) };
+  }
+  return anchors;
+}
+
+async function visionAnchorChanged() {
+  const anchors = _visionReadAnchors();
+  await fetch('/api/vision/config', {
+    method:  'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body:    JSON.stringify({ anchors }),
+  });
+}
+
+// ── Playback ───────────────────────────────────────────────────────────────────
+async function visionPlayPause() {
+  const btn = document.getElementById('vision-pp-btn');
+  await fetch('/api/vision/playback', {
+    method:  'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body:    JSON.stringify({ action: 'play_pause' }),
+  });
+}
+
+async function visionSeek(frame) {
+  await fetch('/api/vision/playback', {
+    method:  'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body:    JSON.stringify({ action: 'seek', frame }),
+  });
+}
+
+async function visionStep(delta) {
+  await fetch('/api/vision/playback', {
+    method:  'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body:    JSON.stringify({ action: 'step', delta }),
+  });
+}
+
+async function visionSetSpeed(speed) {
+  await fetch('/api/vision/playback', {
+    method:  'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body:    JSON.stringify({ action: 'speed', speed }),
+  });
+}
+
+// ── Object registry ───────────────────────────────────────────────────────────
+
+async function visionLoadObjects() {
+  const res  = await fetch('/api/vision/objects');
+  _visionObjects = await res.json();
+  _visionRenderObjects();
+}
+
+async function visionSaveObjects() {
+  await fetch('/api/vision/objects', {
+    method:  'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body:    JSON.stringify(_visionObjects),
+  });
+}
+
+function _visionRenderObjects() {
+  const list = document.getElementById('vision-objects-list');
+  if (!list) return;
+
+  const COLOR_DOT = {
+    unknown: '#888', red: '#e53', green: '#2a2', blue: '#36f',
+    yellow: '#fb0', white: '#eee', black: '#555', brown: '#854',
+  };
+
+  list.innerHTML = _visionObjects.map(obj => {
+    const dot   = COLOR_DOT[obj.color] || '#888';
+    const live  = obj.last_seen_ms ? '●' : '○';
+    const table = obj.on_table !== false ? '' : ' <span style="color:#f66;font-size:9px">gone</span>';
+    const active = obj.id === _visionActiveObjId ? ' vision-obj-row-active' : '';
+    return `<div class="vision-obj-row${active}" onclick="visionSelectObject('${obj.id}')">
+      <span class="vision-obj-dot" style="background:${dot}"></span>
+      <span class="vision-obj-name">${obj.name || obj.id}</span>
+      <span style="font-size:9px;color:#888">${obj.type || ''}</span>
+      ${obj.aruco_id !== null && obj.aruco_id !== undefined ? `<span class="vision-obj-tag">#${obj.aruco_id}</span>` : ''}
+      ${table}
+      <span style="margin-left:auto;color:${obj.last_seen_ms ? '#4a4' : '#666'};font-size:10px">${live}</span>
+    </div>`;
+  }).join('');
+}
+
+function visionSelectObject(objId) {
+  _visionActiveObjId = objId;
+  _visionRenderObjects();
+  const obj = _visionObjects.find(o => o.id === objId);
+  if (!obj) return;
+
+  const ed = document.getElementById('vision-obj-editor');
+  if (ed) ed.classList.remove('hidden');
+
+  document.getElementById('voe-title').textContent   = obj.name || obj.id;
+  document.getElementById('voe-name').value          = obj.name  || '';
+  document.getElementById('voe-type').value          = obj.type  || 'other';
+  document.getElementById('voe-aruco').value         = obj.aruco_id !== null && obj.aruco_id !== undefined ? obj.aruco_id : '';
+  document.getElementById('voe-color').value         = obj.color || 'unknown';
+  document.getElementById('voe-ix').value            = obj.initial_pos?.x ?? '';
+  document.getElementById('voe-iy').value            = obj.initial_pos?.y ?? '';
+  document.getElementById('voe-ontable').checked     = obj.on_table !== false;
+
+  const ls = document.getElementById('voe-lastseen');
+  if (ls) {
+    if (obj.last_seen_ms) {
+      const secs = ((Date.now() % 1e9) / 1000 - obj.last_seen_ms / 1000);
+      ls.textContent = `Last seen ${Math.abs(secs).toFixed(1)}s ago  |  cur=(${obj.current_pos?.x?.toFixed(0)??'?'}, ${obj.current_pos?.y?.toFixed(0)??'?'}) mm`;
+    } else {
+      ls.textContent = 'Not yet detected';
+    }
+  }
+}
+
+function visionObjChanged() {
+  const obj = _visionObjects.find(o => o.id === _visionActiveObjId);
+  if (!obj) return;
+
+  obj.name      = document.getElementById('voe-name').value;
+  obj.type      = document.getElementById('voe-type').value;
+  const arucoRaw = document.getElementById('voe-aruco').value;
+  obj.aruco_id  = arucoRaw !== '' ? parseInt(arucoRaw) : null;
+  obj.color     = document.getElementById('voe-color').value;
+  obj.on_table  = document.getElementById('voe-ontable').checked;
+  const ix      = parseFloat(document.getElementById('voe-ix').value);
+  const iy      = parseFloat(document.getElementById('voe-iy').value);
+  if (!isNaN(ix) && !isNaN(iy)) obj.initial_pos = { x: ix, y: iy };
+
+  document.getElementById('voe-title').textContent = obj.name || obj.id;
+  _visionRenderObjects();
+  // Auto-save after short debounce
+  clearTimeout(visionObjChanged._timer);
+  visionObjChanged._timer = setTimeout(visionSaveObjects, 800);
+}
+
+function visionNewObject() {
+  const id  = 'obj_' + Date.now();
+  const obj = {
+    id,
+    name:        'New Object',
+    type:        'cylinder',
+    aruco_id:    null,
+    color:       'unknown',
+    initial_pos: { x: 1500, y: 1000 },
+    current_pos: { x: 1500, y: 1000 },
+    on_table:    true,
+    last_seen_ms: null,
+    notes:       '',
+  };
+  _visionObjects.push(obj);
+  _visionRenderObjects();
+  visionSelectObject(id);
+}
+
+async function visionDeleteObject() {
+  if (!_visionActiveObjId) return;
+  if (!confirm(`Delete object "${_visionActiveObjId}"?`)) return;
+  _visionObjects = _visionObjects.filter(o => o.id !== _visionActiveObjId);
+  _visionActiveObjId = null;
+  document.getElementById('vision-obj-editor')?.classList.add('hidden');
+  _visionRenderObjects();
+  await visionSaveObjects();
+}
+
+// Periodically refresh object positions in the list (for live updates from detections)
+setInterval(() => {
+  if (activeView !== 'vision') return;
+  fetch('/api/vision/objects').then(r => r.json()).then(objs => {
+    // Merge only current_pos and last_seen_ms from server (don't overwrite edits)
+    objs.forEach(serverObj => {
+      const local = _visionObjects.find(o => o.id === serverObj.id);
+      if (local) {
+        local.current_pos  = serverObj.current_pos;
+        local.last_seen_ms = serverObj.last_seen_ms;
+        local.on_table     = serverObj.on_table;
+      }
+    });
+    _visionRenderObjects();
+    // Refresh editor last-seen if open
+    if (_visionActiveObjId) {
+      const obj = _visionObjects.find(o => o.id === _visionActiveObjId);
+      if (obj) {
+        const ls = document.getElementById('voe-lastseen');
+        if (ls && obj.last_seen_ms) {
+          ls.textContent = `cur=(${obj.current_pos?.x?.toFixed(0)??'?'}, ${obj.current_pos?.y?.toFixed(0)??'?'}) mm`;
+        }
+      }
+    }
+  }).catch(() => {});
+}, 2000);
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//  REMOTE CONTROL VIEW
+// ═══════════════════════════════════════════════════════════════════════════════
+
+let _remoteDrawerOpen = false;
+
+function toggleRemoteDrawer(navBtn) {
+  const drawer  = document.getElementById('remote-drawer');
+  const navBtnEl = navBtn ?? document.getElementById('nav-remote');
+  if (!drawer) return;
+
+  _remoteDrawerOpen = !_remoteDrawerOpen;
+  drawer.classList.toggle('closed', !_remoteDrawerOpen);
+  navBtnEl?.classList.toggle('drawer-open', _remoteDrawerOpen);
+
+  if (_remoteDrawerOpen) {
+    // Make sure we are on the map view (drawer lives there)
+    if (activeView !== 'map') {
+      const mapBtn = document.querySelector('.nav-btn[data-view="map"]');
+      switchView('map', mapBtn);
+    }
+    _remoteInitDial();
+    if (lastState?.robot) remoteUpdateTheta(lastState.robot.theta * 180 / Math.PI);
+    _remoteUpdateDial();
+  }
+}
+
+let _remoteCurDeg  = 0;      // current heading (degrees, math: 0=East, CCW positive)
+let _remoteTgtDeg  = 0;      // target heading (degrees, math: 0=East, CCW positive)
+let _remoteSnapDeg = 5;      // snap interval for drag clamping
+let _remoteDragging = false;
+let _remoteMotionBusy = false;
+let _remoteDialReady  = false;
+
+const R_OUTER  = 145;  // outer ring radius (SVG units)
+const R_TICK_M = 14;   // major tick height (every 30°)
+const R_TICK_m = 7;    // minor tick height (every 10°)
+const R_LABELS = 113;  // label radius
+const R_ARC    = 100;  // delta arc radius
+const R_CURIND = 110;  // current-heading indicator line end
+const R_TGTIND = 128;  // target indicator line end & dot
+const ROBOT_R  = 36;   // robot image half-size
+
+// ── Polar geometry helpers ─────────────────────────────────────────────────────
+
+function _deg2xy(r, deg) {
+  // Math convention: 0=East (right), 90=North (top), CCW positive
+  const rad = deg * Math.PI / 180;
+  return { x: r * Math.cos(rad), y: -r * Math.sin(rad) };
+}
+
+function _normDeg(d) {
+  return ((d % 360) + 360) % 360;
+}
+
+function _shortDelta(from, to) {
+  let d = _normDeg(to) - _normDeg(from);
+  if (d > 180)  d -= 360;
+  if (d < -180) d += 360;
+  return d;
+}
+
+// ── One-time dial initialisation ───────────────────────────────────────────────
+
+function _remoteInitDial() {
+  if (_remoteDialReady) return;
+  _remoteDialReady = true;
+
+  const svg  = document.getElementById('remote-dial');
+  if (!svg) return;
+
+  // ── Tick layer ─────────────────────────────────────────────────────────────
+  const g = document.getElementById('dial-ticks-layer');
+
+  // Outer ring
+  const ring = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+  ring.setAttribute('cx', 0); ring.setAttribute('cy', 0);
+  ring.setAttribute('r', R_OUTER);
+  ring.setAttribute('fill', 'none');
+  ring.setAttribute('stroke', 'var(--surface3)');
+  ring.setAttribute('stroke-width', '1.5');
+  g.appendChild(ring);
+
+  // Inner ring
+  const ring2 = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+  ring2.setAttribute('cx', 0); ring2.setAttribute('cy', 0);
+  ring2.setAttribute('r', R_ARC + 12);
+  ring2.setAttribute('fill', 'none');
+  ring2.setAttribute('stroke', 'var(--surface3)');
+  ring2.setAttribute('stroke-width', '0.8');
+  ring2.setAttribute('stroke-dasharray', '2 4');
+  g.appendChild(ring2);
+
+  // Ticks and labels
+  for (let deg = 0; deg < 360; deg += 10) {
+    const isMajor = (deg % 30 === 0);
+    const h  = isMajor ? R_TICK_M : R_TICK_m;
+    const p1 = _deg2xy(R_OUTER, deg);
+    const p2 = _deg2xy(R_OUTER - h, deg);
+
+    const tick = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+    tick.setAttribute('x1', p1.x.toFixed(2)); tick.setAttribute('y1', p1.y.toFixed(2));
+    tick.setAttribute('x2', p2.x.toFixed(2)); tick.setAttribute('y2', p2.y.toFixed(2));
+    tick.setAttribute('stroke', isMajor ? 'var(--text)' : 'var(--text-dim)');
+    tick.setAttribute('stroke-width', isMajor ? '1.5' : '0.8');
+    g.appendChild(tick);
+
+    if (isMajor) {
+      const lp = _deg2xy(R_LABELS, deg);
+      const lbl = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+      lbl.setAttribute('x', lp.x.toFixed(2));
+      lbl.setAttribute('y', lp.y.toFixed(2));
+      lbl.setAttribute('text-anchor', 'middle');
+      lbl.setAttribute('dominant-baseline', 'middle');
+      // Math convention: 90=North (top), 0=East (right), 180=West, 270=South
+      const CARD_LABELS = { 90: 'N', 0: 'E', 180: 'W', 270: 'S' };
+      const cardLbl = CARD_LABELS[deg];
+      const isNorth = deg === 90;
+      const isCard  = cardLbl !== undefined;
+      lbl.setAttribute('font-size', isCard ? '11' : '9');
+      lbl.setAttribute('font-weight', isCard ? '700' : '400');
+      lbl.setAttribute('fill', isNorth ? 'var(--brand)' : (isCard ? 'var(--text)' : 'var(--text-dim)'));
+      lbl.setAttribute('font-family', 'monospace');
+      lbl.textContent = cardLbl ?? deg + '°';
+      g.appendChild(lbl);
+    }
+  }
+
+  // Center dot
+  const cdot = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+  cdot.setAttribute('cx', 0); cdot.setAttribute('cy', 0); cdot.setAttribute('r', 4);
+  cdot.setAttribute('fill', 'var(--brand)');
+  g.appendChild(cdot);
+
+  // ── Apply brand colors to dynamic elements ────────────────────────────────
+  const curLine = document.getElementById('dial-cur-line');
+  if (curLine) curLine.setAttribute('stroke', 'var(--text-dim)');
+
+  const tgtLine = document.getElementById('dial-tgt-line');
+  if (tgtLine) tgtLine.setAttribute('stroke', 'var(--brand)');
+
+  const tgtDot = document.getElementById('dial-tgt-dot');
+  if (tgtDot) {
+    tgtDot.setAttribute('stroke', 'var(--brand)');
+    tgtDot.setAttribute('fill', 'var(--surface1)');
+  }
+
+  const tgtLabel = document.getElementById('dial-tgt-label');
+  if (tgtLabel) {
+    tgtLabel.setAttribute('fill', 'var(--brand)');
+    tgtLabel.setAttribute('font-family', 'monospace');
+  }
+
+  // ── Drag events on the SVG ────────────────────────────────────────────────
+  svg.addEventListener('mousedown',  _remoteDialMouseDown);
+  svg.addEventListener('mousemove',  _remoteDialMouseMove);
+  svg.addEventListener('mouseup',    _remoteDialMouseUp);
+  svg.addEventListener('mouseleave', _remoteDialMouseUp);
+  svg.addEventListener('touchstart', e => { e.preventDefault(); _remoteDialMouseDown(e.touches[0]); }, { passive: false });
+  svg.addEventListener('touchmove',  e => { e.preventDefault(); _remoteDialMouseMove(e.touches[0]); }, { passive: false });
+  svg.addEventListener('touchend',   e => { _remoteDialMouseUp(); }, { passive: false });
+
+  // ── Generate goPolar direction buttons in a ring around the dial ────────
+  // remote-dial-outer is 440×440, dial-wrap is 320×320 at top:60/left:60
+  // Centre of outer div = (220, 220). Ring radius = 185px.
+  const POLAR_CX = 220, POLAR_CY = 220, POLAR_R = 185;
+  // Math convention: 0=East, 90=North, 180=West, 270=South
+  const CARDINAL = { 90:'N', 0:'E', 180:'W', 270:'S' };
+  const polarContainer = document.getElementById('remote-polar-btns');
+  if (polarContainer) {
+    polarContainer.innerHTML = '';
+    for (let i = 0; i < 12; i++) {
+      const deg = i * 30;
+      const rad = deg * Math.PI / 180;
+      // Math convention: x=cos, y=-sin (North at top)
+      const cx  = POLAR_CX + POLAR_R * Math.cos(rad);
+      const cy  = POLAR_CY - POLAR_R * Math.sin(rad);
+      const label = CARDINAL[deg] ?? deg + '°';
+      const isCard = CARDINAL[deg] !== undefined;
+      const btn = document.createElement('button');
+      btn.className = 'remote-polar-btn' + (isCard ? ' cardinal' : '');
+      btn.style.left = cx.toFixed(1) + 'px';
+      btn.style.top  = cy.toFixed(1) + 'px';
+      btn.style.pointerEvents = 'auto';
+      btn.textContent = label;
+      btn.title = `goPolar ${deg}° (${label})`;
+      btn.addEventListener('click', () => remoteGoPolar(deg));
+      polarContainer.appendChild(btn);
+    }
+  }
+
+  // Initial render
+  _remoteUpdateDial();
+}
+
+// ── Dial update ────────────────────────────────────────────────────────────────
+
+function _remoteUpdateDial() {
+  const cur = _normDeg(_remoteCurDeg);
+  const tgt = _normDeg(_remoteTgtDeg);
+  const delta = _shortDelta(cur, tgt);
+
+  // Robot image rotation — HTML img with CSS transform
+  const robotImg = document.getElementById('dial-robot-img');
+  if (robotImg) robotImg.style.transform = `translate(-50%, -50%) rotate(${-cur.toFixed(2)}deg)`;
+
+  // Current heading line
+  const curLine = document.getElementById('dial-cur-line');
+  if (curLine) {
+    const p = _deg2xy(R_CURIND, cur);
+    curLine.setAttribute('x2', p.x.toFixed(2));
+    curLine.setAttribute('y2', p.y.toFixed(2));
+  }
+
+  // Target indicator (line + dot + label)
+  const tgtLine = document.getElementById('dial-tgt-line');
+  const tgtDot  = document.getElementById('dial-tgt-dot');
+  const tgtLbl  = document.getElementById('dial-tgt-label');
+  const tp = _deg2xy(R_TGTIND, tgt);
+  if (tgtLine) { tgtLine.setAttribute('x2', tp.x.toFixed(2)); tgtLine.setAttribute('y2', tp.y.toFixed(2)); }
+  if (tgtDot)  { tgtDot.setAttribute('cx', tp.x.toFixed(2));  tgtDot.setAttribute('cy', tp.y.toFixed(2)); }
+  if (tgtLbl) {
+    const lp = _deg2xy(R_TGTIND + 18, tgt);
+    tgtLbl.setAttribute('x', lp.x.toFixed(2));
+    tgtLbl.setAttribute('y', lp.y.toFixed(2));
+    tgtLbl.textContent = tgt.toFixed(0) + '°';
+  }
+
+  // Delta arc
+  const arc = document.getElementById('dial-delta-arc');
+  if (arc) {
+    arc.setAttribute('stroke', delta >= 0 ? '#3b82f6' : '#f59e0b');
+    if (Math.abs(delta) < 0.5) {
+      arc.setAttribute('d', '');
+    } else {
+      const p1 = _deg2xy(R_ARC, cur);
+      const p2 = _deg2xy(R_ARC, tgt);
+      // Go from cur toward tgt the short way (math CCW = SVG sweep=0)
+      const sweep = delta >= 0 ? 0 : 1;
+      const large = Math.abs(delta) > 180 ? 1 : 0;
+      arc.setAttribute('d',
+        `M ${p1.x.toFixed(2)} ${p1.y.toFixed(2)} ` +
+        `A ${R_ARC} ${R_ARC} 0 ${large} ${sweep} ${p2.x.toFixed(2)} ${p2.y.toFixed(2)}`);
+    }
+  }
+
+  // Readout
+  const sign = delta >= 0 ? '+' : '';
+  document.getElementById('rr-cur')?.setAttribute('data-v',   cur.toFixed(1));
+  document.getElementById('rr-cur'  )&&(document.getElementById('rr-cur').textContent   = cur.toFixed(1) + '°');
+  document.getElementById('rr-tgt'  )&&(document.getElementById('rr-tgt').textContent   = tgt.toFixed(1) + '°');
+  document.getElementById('rr-delta')&&(document.getElementById('rr-delta').textContent = sign + delta.toFixed(1) + '°');
+
+  // Target input sync
+  const tgtInput = document.getElementById('remote-tgt-input');
+  if (tgtInput && document.activeElement !== tgtInput) tgtInput.value = Math.round(tgt);
+
+  // Go button label
+  const go = document.getElementById('remote-go-btn');
+  if (go) {
+    const sign2 = delta >= 0 ? '+' : '';
+    go.textContent = `▶  TURN  ${sign2}${delta.toFixed(1)}°`;
+    go.disabled = _remoteMotionBusy;
+    go.className = 'remote-go-btn' + (_remoteMotionBusy ? ' busy' : '');
+  }
+}
+
+// ── Drag logic ─────────────────────────────────────────────────────────────────
+
+function _remoteAngleFromEvent(evt) {
+  const svg  = document.getElementById('remote-dial');
+  if (!svg) return 0;
+  const rect = svg.getBoundingClientRect();
+  const cx   = rect.left + rect.width  / 2;
+  const cy   = rect.top  + rect.height / 2;
+  const dx   = evt.clientX - cx;
+  const dy   = evt.clientY - cy;
+  // Math convention: 0=East, CCW positive (SVG y-axis is down, so negate dy)
+  let angle  = Math.atan2(-dy, dx) * 180 / Math.PI;
+  if (angle < 0) angle += 360;
+  return angle;
+}
+
+function _remoteDialMouseDown(e) {
+  _remoteDragging = true;
+  const a = _remoteAngleFromEvent(e);
+  remoteSetTarget(a);
+}
+
+function _remoteDialMouseMove(e) {
+  if (!_remoteDragging) return;
+  const a = _remoteAngleFromEvent(e);
+  remoteSetTarget(a);
+}
+
+function _remoteDialMouseUp() {
+  _remoteDragging = false;
+}
+
+// ── Public API ─────────────────────────────────────────────────────────────────
+
+function remoteSetTarget(deg) {
+  const snapped = Math.round(deg / _remoteSnapDeg) * _remoteSnapDeg;
+  _remoteTgtDeg = _normDeg(snapped);
+  _remoteUpdateDial();
+}
+
+function remoteDelta(deltaDeg) {
+  if (deltaDeg === 0) {
+    // Reset: target = current
+    _remoteTgtDeg = _normDeg(_remoteCurDeg);
+  } else {
+    _remoteTgtDeg = _normDeg(_remoteTgtDeg + deltaDeg);
+  }
+  _remoteUpdateDial();
+}
+
+function remoteSnapChanged() {
+  _remoteSnapDeg = +(document.getElementById('remote-snap-sel')?.value ?? 5);
+  // Re-snap the current target
+  remoteSetTarget(_remoteTgtDeg);
+}
+
+function remoteUpdateTheta(thetaDeg) {
+  // Firmware theta is already math convention (0=East, CCW+) — use as-is
+  _remoteCurDeg = thetaDeg;
+  if (_remoteDrawerOpen) _remoteUpdateDial();
+}
+
+async function remoteSendTurn() {
+  if (_remoteMotionBusy) return;
+  const tgt   = _normDeg(_remoteTgtDeg);
+  const delta = _shortDelta(_normDeg(_remoteCurDeg), tgt);
+  if (Math.abs(delta) < 0.5) return;
+
+  _remoteMotionBusy = true;
+  _remoteUpdateDial();
+
+  const status = document.getElementById('remote-status');
+  if (status) { status.textContent = `Sending turn(${tgt.toFixed(1)}°)…`; status.className = 'remote-status-busy'; }
+
+  try {
+    // turn() takes an absolute angle in the table frame (math convention, same as _remoteTgtDeg)
+    const res = await fetch('/api/exec', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ cmd: `turn(${tgt.toFixed(2)})` }),
+    });
+    const data = await res.json();
+    if (status) {
+      if (data.ok) {
+        const sign = delta >= 0 ? '+' : '';
+        status.textContent = `✓ Done — turn → ${tgt.toFixed(1)}° (Δ${sign}${delta.toFixed(1)}°)`;
+        status.className = 'remote-status-ok';
+      } else {
+        status.textContent = `✗ ${data.res ?? 'error'}`;
+        status.className = 'remote-status-err';
+      }
+    }
+  } catch (e) {
+    if (status) { status.textContent = `✗ Request failed`; status.className = 'remote-status-err'; }
+  }
+
+  _remoteMotionBusy = false;
+  _remoteUpdateDial();
+}
+
+async function remoteGoPolar(bearingDeg) {
+  if (_remoteMotionBusy) return;
+  const dist = parseInt(document.getElementById('remote-dist-sel')?.value ?? 200);
+  // Both bearingDeg and _remoteCurDeg are in math convention (0=East, CCW+)
+  // goPolar heading is relative: desired_direction - current_heading
+  const relAngle = _shortDelta(_remoteCurDeg, _normDeg(bearingDeg));
+
+  _remoteMotionBusy = true;
+  _remoteUpdateDial();
+  const status = document.getElementById('remote-status');
+  const CARDINAL = { 90:'N', 0:'E', 180:'W', 270:'S' };
+  const lbl = CARDINAL[bearingDeg] ?? bearingDeg + '°';
+  if (status) { status.textContent = `Sending goPolar(${relAngle.toFixed(1)}°, ${dist}mm) [→${lbl}]…`; status.className = 'remote-status-busy'; }
+
+  try {
+    const res = await fetch('/api/exec', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ cmd: `goPolar(${relAngle.toFixed(2)},${dist})` }),
+    });
+    const data = await res.json();
+    if (status) {
+      if (data.ok) {
+        status.textContent = `✓ Done — moved ${dist}mm toward ${lbl}`;
+        status.className = 'remote-status-ok';
+      } else {
+        status.textContent = `✗ ${data.res ?? 'error'}`;
+        status.className = 'remote-status-err';
+      }
+    }
+  } catch (e) {
+    if (status) { status.textContent = `✗ Request failed`; status.className = 'remote-status-err'; }
+  }
+
+  _remoteMotionBusy = false;
+  _remoteUpdateDial();
+}
+
+// (remote is now a drawer; activation handled by toggleRemoteDrawer)

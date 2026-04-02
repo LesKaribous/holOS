@@ -71,6 +71,10 @@ public:
     void pushTelemetry();              ///< Push pos + motion + safety + chrono
     void pushOccupancy();              ///< Push compressed occupancy map
 
+    /// Enable/disable a telemetry channel at runtime (called by command_tel).
+    /// channel: 0=pos  1=motion  2=safety  3=chrono  4=occ
+    void setTelemetry(uint8_t channel, bool on);
+
     // ── Fallback programs ─────────────────────────────────────────────────────
 
     void registerFallback(FallbackID id, fallback_fn fn);
@@ -108,11 +112,13 @@ private:
     static constexpr unsigned long DONE_RETRY_MS = 2000;
 
     // ── Telemetry channel mask ─────────────────────────────────────────────────
-    bool   m_telPos    = true;   ///< TEL:pos   (position)
-    bool   m_telMotion = true;   ///< TEL:motion (motion state)
-    bool   m_telSafety = true;   ///< TEL:safety
-    bool   m_telChrono = true;   ///< TEL:chrono
-    bool   m_telOcc    = true;   ///< TEL:occ   (occupancy map)
+    // Initial state driven by Settings::Log::Telemetry (set in settings.h).
+    // Toggle at runtime with: tel(pos,0)  tel(occ,1)
+    bool   m_telPos    = Settings::Log::Telemetry::POS;    ///< TEL:pos   (position)
+    bool   m_telMotion = Settings::Log::Telemetry::MOTION; ///< TEL:motion (motion state)
+    bool   m_telSafety = Settings::Log::Telemetry::SAFETY; ///< TEL:safety
+    bool   m_telChrono = Settings::Log::Telemetry::CHRONO; ///< TEL:chrono
+    bool   m_telOcc    = Settings::Log::Telemetry::OCC;    ///< TEL:occ   (occupancy map)
 
     // FW-006: only push TEL:mask when dirty
     bool   m_maskDirty          = true;   ///< Push mask on first telemetry cycle

@@ -1,17 +1,21 @@
 #include "consoleStream.h"
 #include "os/console.h"
 
-ConsoleStream::ConsoleStream(ConsoleLevel lvl, const String& origin) {
-	_ignored = false;
-	if(lvl < Console::getLevel()) _ignored = true;
+// FLASHMEM: ConsoleStream is pure logging infrastructure — never time-critical.
+// Keeping it out of ITCM (RAM1) frees precious 512KB for ISR and hotpath code.
+
+FLASHMEM ConsoleStream::ConsoleStream(ConsoleLevel lvl, const String& origin, bool forceIgnore) {
+	_ignored = forceIgnore || (lvl < Console::getLevel());
 
 	if (!_ignored) {
-		if (origin == ID_NOT_A_SERVICE) Console::write(header(lvl).c_str());
-		else Console::write((header(lvl) + "(" + origin + "): ").c_str());
+		if (origin.length() == 0 || origin == "NOT_A_SERVICE")
+			Console::write(header(lvl).c_str());
+		else
+			Console::write((header(lvl) + "(" + origin + "): ").c_str());
 	}
 }
 
-String ConsoleStream::header(ConsoleLevel lvl) {
+FLASHMEM String ConsoleStream::header(ConsoleLevel lvl) {
 	String str;
 
 	switch (lvl) {
@@ -38,69 +42,68 @@ String ConsoleStream::header(ConsoleLevel lvl) {
 }
 
 
-ConsoleStream& ConsoleStream::operator<<(short i) {
+FLASHMEM ConsoleStream& ConsoleStream::operator<<(short i) {
 	if (_ignored) return *this;
 	Console::print(i);
 	return *this;
 }
 
-ConsoleStream& ConsoleStream::operator<<(int i) {
+FLASHMEM ConsoleStream& ConsoleStream::operator<<(int i) {
 	if (_ignored) return *this;
 	Console::print(i);
 	return *this;
 }
 
-ConsoleStream& ConsoleStream::operator<<(long i) {
+FLASHMEM ConsoleStream& ConsoleStream::operator<<(long i) {
 	if (_ignored) return *this;
 	Console::print(i);
 	return *this;
 }
 
-ConsoleStream& ConsoleStream::operator<<(size_t i) {
+FLASHMEM ConsoleStream& ConsoleStream::operator<<(size_t i) {
 	if (_ignored) return *this;
 	Console::print(i);
 	return *this;
 }
 
-ConsoleStream& ConsoleStream::operator<<(float i) {
+FLASHMEM ConsoleStream& ConsoleStream::operator<<(float i) {
 	if (_ignored) return *this;
 	Console::print(i);
 	return *this;
 }
 
-ConsoleStream& ConsoleStream::operator<<(Vec2 i) {
+FLASHMEM ConsoleStream& ConsoleStream::operator<<(Vec2 i) {
 	if (_ignored) return *this;
 	Console::print(String(i));
 	return *this;
 }
 
-ConsoleStream& ConsoleStream::operator<<(Vec3 i) {
+FLASHMEM ConsoleStream& ConsoleStream::operator<<(Vec3 i) {
 	if (_ignored) return *this;
 	Console::print(String(i));
 	return *this;
 }
 
-ConsoleStream& ConsoleStream::operator<<(double i) {
+FLASHMEM ConsoleStream& ConsoleStream::operator<<(double i) {
 	if (_ignored) return *this;
 	Console::print(i);
 	return *this;
 }
 
-ConsoleStream& ConsoleStream::operator<<(char i) {
+FLASHMEM ConsoleStream& ConsoleStream::operator<<(char i) {
 	if (_ignored) return *this;
 	Console::print(i);
 	return *this;
 }
 
-ConsoleStream& ConsoleStream::operator<<(const String& i) {
+FLASHMEM ConsoleStream& ConsoleStream::operator<<(const String& i) {
 	if (_ignored) return *this;
 	Console::print(i);
 	return *this;
 }
 
-ConsoleStream& ConsoleStream::operator<<(const char* i) {
+FLASHMEM ConsoleStream& ConsoleStream::operator<<(const char* i) {
 	if (_ignored) return *this;
 	Console::print(i);
 	return *this;
 }
-

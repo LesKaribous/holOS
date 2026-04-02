@@ -92,6 +92,12 @@ FLASHMEM void registerCommands() {
     // Mission execution (test fallback from terminal / routine)
     CommandHandler::registerCommand("mission_run",               "Execute SD fallback strategy now",          command_mission_run);
     CommandHandler::registerCommand("mission_abort",             "Abort running fallback strategy",           command_mission_abort);
+
+    // Log & telemetry control (useful without holOS, on plain serial terminal)
+    CommandHandler::registerCommand("log(source,0|1)",           "Enable/disable a service log source",       command_log);
+    CommandHandler::registerCommand("loglevel(level)",           "Set global log level (VERBOSE/INFO/…)",     command_loglevel);
+    CommandHandler::registerCommand("tel(channel,0|1)",          "Enable/disable a telemetry channel",        command_tel);
+    CommandHandler::registerCommand("logstatus",                 "Print log level + source mask + tel state", command_logstatus);
 }
 
 FLASHMEM void command_stats(const args_t& args){
@@ -869,4 +875,118 @@ FLASHMEM void command_mission_run(const args_t& args) {
 FLASHMEM void command_mission_abort(const args_t& args) {
     MissionController::abort();
     Console::info("Mission") << "Abort requested" << Console::endl;
+}
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  Log & telemetry control commands
+//  Designed for use on a plain serial terminal (no holOS).
+// ─────────────────────────────────────────────────────────────────────────────
+
+// log(SOURCE, 0|1)  — enable/disable a service log source
+//   SOURCE : MOTION | SAFETY | CHRONO | INTERCOM | LOCALISATION | … | * (all)
+//   1 = enable, 0 = disable
+// Example: log(MOTION,0)   → mute Motion logs
+//          log(*,1)        → enable all sources
+FLASHMEM void command_log(const args_t& args) {
+    String src = args[0];
+    bool   on  = (args[1].toInt() != 0);
+
+    if (src == "*") {
+        if (on) Console::enableAllSources();
+        else    Console::setSourceMask(0);
+        Console::info("Log") << "All sources " << (on ? "enabled" : "disabled") << Console::endl;
+        return;
+    }
+
+    ServiceID id = Service::toID(src);
+    if (id == ID_NOT_A_SERVICE) {
+        Console::warn("Log") << "Unknown source: " << src << Console::endl;
+        return;
+    }
+
+    if (on) Console::enableSource(id);
+    else    Console::disableSource(id);
+    Console::info("Log") << src << " " << (on ? "enabled" : "disabled") << Console::endl;
+}
+
+// loglevel(LEVEL)  — set global console log level
+//   LEVEL : VERBOSE | INFO | WARNING | CRITICAL | DISABLED
+// Example: loglevel(VERBOSE)   → show all messages including trace
+//          loglevel(DISABLED)  → silence all Console output
+FLASHMEM void command_loglevel(const args_t& args) {
+    String lvlStr = args[0];
+    lvlStr.toUpperCase();
+
+    ConsoleLevel lvl;
+    if      (lvlStr == "VERBOSE"  || lvlStr == "TRACE") lvl = ConsoleLevel::VERBOSE;
+    else if (lvlStr == "INFO")                           lvl = ConsoleLevel::INFO;
+    else if (lvlStr == "SUCCESS")                        lvl = ConsoleLevel::SUCCESS;
+    else if (lvlStr == "WARNING"  || lvlStr == "WARN")   lvl = ConsoleLevel::WARNING;
+    else if (lvlStr == "CRITICAL" || lvlStr == "ERROR")  lvl = ConsoleLevel::CRITICAL;
+    else if (lvlStr == "DISABLED" || lvlStr == "OFF")    lvl = ConsoleLevel::DISABLED;
+    else {
+        Console::warn("Log") << "Unknown level: " << lvlStr
+            << " (VERBOSE/INFO/WARNING/CRITICAL/DISABLED)" << Console::endl;
+        return;
+    }
+    Console::setLevel(lvl);
+    Console::info("Log") << "Log level set to " << lvlStr << Console::endl;
+}
+
+// tel(CHANNEL, 0|1)  — enable/disable a JetsonBridge telemetry channel
+//   CHANNEL : pos | motion | safety | chrono | occ | * (all)
+//   1 = enable, 0 = disable
+// Example: tel(occ,0)   → stop sending occupancy map frames
+//          tel(*,0)     → silence all telemetry (pure terminal debug mode)
+FLASHMEM void command_tel(const args_t& args) {
+    String ch = args[0];
+    bool   on = (args[1].toInt() != 0);
+    ch.toLowerCase();
+
+    if      (ch == "pos")    jetsonBridge.setTelemetry(0, on);
+    else if (ch == "motion") jetsonBridge.setTelemetry(1, on);
+    else if (ch == "safety") jetsonBridge.setTelemetry(2, on);
+    else if (ch == "chrono") jetsonBridge.setTelemetry(3, on);
+    else if (ch == "occ")    jetsonBridge.setTelemetry(4, on);
+    else if (ch == "*") {
+        for (int i = 0; i < 5; i++) jetsonBridge.setTelemetry(i, on);
+    } else {
+        Console::warn("Log") << "Unknown telemetry channel: " << ch
+            << " (pos/motion/safety/chrono/occ/*)" << Console::endl;
+        return;
+    }
+    Console::info("Log") << "tel:" << ch << " " << (on ? "on" : "off") << Console::endl;
+}
+
+// logstatus  — print current log configuration (useful when connecting via serial)
+FLASHMEM void command_logstatus(const args_t& args) {
+    Console::line();
+    Console::println("[Log status]");
+
+    // Global level
+    ConsoleLevel lvl = Console::getLevel();
+    const char* lvlName =
+        lvl == VERBOSE  ? "VERBOSE"  :
+        lvl == INFO     ? "INFO"     :
+        lvl == SUCCESS  ? "SUCCESS"  :
+        lvl == WARNING  ? "WARNING"  :
+        lvl == CRITICAL ? "CRITICAL" : "DISABLED";
+    Console::println(String("  Level    : ") + lvlName);
+
+    // Per-source mask
+    Console::println("  Sources  :");
+    const ServiceID ids[] = {
+        ID_LIDAR, ID_CHRONO, ID_IHM, ID_SAFETY, ID_MOTION, ID_NAVIGATION,
+        ID_NEOPIXEL, ID_INTERCOM, ID_TERMINAL, ID_ACTUATORS, ID_LOCALISATION,
+        ID_VISION, ID_JETSON
+    };
+    for (auto id : ids) {
+        Console::println(String("    ") + Service::toString(id)
+            + " : " + (Console::isSourceEnabled(id) ? "ON" : "off"));
+    }
+
+    // Telemetry state — delegated to JetsonBridge
+    Console::println("  Telemetry: (use logstatus after jetson attach)");
+    Console::line();
 }

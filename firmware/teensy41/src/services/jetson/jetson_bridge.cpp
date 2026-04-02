@@ -145,6 +145,21 @@ FLASHMEM void JetsonBridge::handleRequest(Request& req) {
         return;
     }
 
+    // ── Cancel in-flight motion ───────────────────────────────────────────────
+    // forceCancel() immediately sets _isMoving=false and stops hardware.
+    // If a motion command was pending (execute() on the holOS side is waiting
+    // for DONE), we send DONE:fail now so it unblocks immediately rather than
+    // waiting for the slow CANCELING→onCanceled() deceleration path.
+    if (cmd == "cancel") {
+        if (m_motionPending) {
+            _replyMotionDone(false);
+            m_motionPending = false;
+        }
+        motion.forceCancel();
+        req.reply("ok");
+        return;
+    }
+
     // ── State sync — call after any reconnection (PR-4) ───────────────────────
     if (cmd == "sync") {
         Vec3        pos    = motion.estimatedPosition();
@@ -261,10 +276,13 @@ FLASHMEM void JetsonBridge::handleRequest(Request& req) {
         m_motionRequestId = req.ID();
         m_motionPending   = true;
 
+        // Send immediate ACK so holOS unblocks its initial reply wait.
+        // The DONE telemetry (TEL:motion:DONE:...) is sent separately when
+        // motion completes — holOS waits for that event after receiving this reply.
+        req.reply("ok");
+
         // Execute command through the standard interpreter (async)
         os.execute(const_cast<String&>(cmd));
-        // Reply is deferred — see run() / _replyMotionDone()
-        // We do NOT call req.reply() here
         return;
     }
 
@@ -486,6 +504,22 @@ FLASHMEM void JetsonBridge::_readBridgeSerial() {
             if (_bridgeBufLen < 511) _bridgeBuf[_bridgeBufLen++] = c;
         }
     }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  Telemetry channel runtime control
+// ─────────────────────────────────────────────────────────────────────────────
+
+FLASHMEM void JetsonBridge::setTelemetry(uint8_t channel, bool on) {
+    switch (channel) {
+        case 0: m_telPos    = on; break;
+        case 1: m_telMotion = on; break;
+        case 2: m_telSafety = on; break;
+        case 3: m_telChrono = on; break;
+        case 4: m_telOcc    = on; break;
+        default: break;
+    }
+    m_maskDirty = true;  // push updated mask to holOS on next cycle
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

@@ -56,4 +56,19 @@ namespace SDCard {
     /// Returns true if at least one key was applied.
     bool loadCalibration();
 
+    // ── Sequential write session ─────────────────────────────────────────────
+    // Used by MissionController to write /mission_fallback.cfg line by line.
+    // SD.h types (File) are kept out of the public interface — only sd_card.cpp
+    // includes <SD.h> directly.
+
+    /// Open `path` for writing (truncates existing file).
+    /// Returns true if the file was opened successfully.
+    bool openWrite(const char* path);
+
+    /// Append a line of text (adds '\n'). Returns false if no session is open.
+    bool appendLine(const char* line);
+
+    /// Close the current write session. Returns false if no session was open.
+    bool closeWrite();
+
 }  // namespace SDCard

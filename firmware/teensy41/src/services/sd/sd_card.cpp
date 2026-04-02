@@ -7,7 +7,9 @@ namespace SDCard {
 
 // ── Internal state ────────────────────────────────────────────────────────────
 
-static bool s_ready = false;
+static bool s_ready    = false;
+static File s_writeFile;
+static bool s_writeOpen = false;
 
 static constexpr const char* CALIB_PATH = "/calibration.cfg";
 
@@ -80,6 +82,40 @@ bool loadCalibration() {
     else
         Console::error("SDCard") << "Calibration parse failed: " << buf << Console::endl;
     return ok;
+}
+
+// ── Sequential write session ──────────────────────────────────────────────────
+
+FLASHMEM bool openWrite(const char* path) {
+    if (!s_ready) {
+        Console::error("SDCard") << "Not ready — cannot open " << path << " for write" << Console::endl;
+        return false;
+    }
+    if (s_writeOpen) {
+        s_writeFile.close();
+        s_writeOpen = false;
+    }
+    if (SD.exists(path)) SD.remove(path);
+    s_writeFile = SD.open(path, FILE_WRITE);
+    if (!s_writeFile) {
+        Console::error("SDCard") << "Cannot create: " << path << Console::endl;
+        return false;
+    }
+    s_writeOpen = true;
+    return true;
+}
+
+FLASHMEM bool appendLine(const char* line) {
+    if (!s_writeOpen) return false;
+    s_writeFile.println(line);
+    return true;
+}
+
+FLASHMEM bool closeWrite() {
+    if (!s_writeOpen) return false;
+    s_writeFile.close();
+    s_writeOpen = false;
+    return true;
 }
 
 }  // namespace SDCard

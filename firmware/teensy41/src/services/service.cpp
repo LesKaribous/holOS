@@ -1,7 +1,7 @@
 #include "service.h"
 
 
-ServiceID Service::toID(String str){
+FLASHMEM ServiceID Service::toID(String str){
     if(str.equalsIgnoreCase("LIDAR"))
         return ID_LIDAR;
 
@@ -28,12 +28,15 @@ ServiceID Service::toID(String str){
 
     if(str.equalsIgnoreCase("TERMINAL"))
         return ID_TERMINAL;
-  
+
     if(str.equalsIgnoreCase("ACTUATORS"))
         return ID_ACTUATORS;
 
     if(str.equalsIgnoreCase("LOCALISATION"))
         return ID_LOCALISATION;
+
+    if(str.equalsIgnoreCase("VISION"))
+        return ID_VISION;
 
     if(str.equalsIgnoreCase("JETSON"))
         return ID_JETSON;
@@ -41,7 +44,7 @@ ServiceID Service::toID(String str){
     return ID_NOT_A_SERVICE;
 }
 
- String Service::toString(ServiceID id){
+FLASHMEM String Service::toString(ServiceID id){
     if(id == ID_LIDAR)
         return "LIDAR";
 
@@ -68,12 +71,15 @@ ServiceID Service::toID(String str){
 
     if(id ==  ID_TERMINAL)
         return "TERMINAL";
-  
+
     if(id ==  ID_ACTUATORS)
         return "ACTUATORS";
 
     if(id ==  ID_LOCALISATION)
         return "LOCALISATION";
+
+    if(id ==  ID_VISION)
+        return "VISION";
 
     if(id ==  ID_JETSON)
         return "JETSON";
@@ -81,6 +87,6 @@ ServiceID Service::toID(String str){
     return "NOT_A_SERVICE";
 }
 
-String Service::toString() const{
+FLASHMEM String Service::toString() const{
     return toString(m_ID);
 }

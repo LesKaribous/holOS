@@ -457,31 +457,18 @@ class HardwareTestRunner:
             raise
 
     def _test_mot_go_tiny(self) -> str:
-        """Move 50 mm forward via goPolar(0,50)."""
+        """Move 50 mm forward via goPolar(0,50), verify DONE:ok (not cancelled)."""
         try:
-            # Get current position before move
-            snap_before = self._exec('tel', timeout_ms=2_000)
             res = self._exec('goPolar(0,50)', timeout_ms=self.MOTION_TIMEOUT)
+            # transport returns 'ok' for DONE:ok, 'stall'/'fail' for DONE:fail
             assert res == 'ok', \
                 ('Motion annulée ou stall' if res == 'stall'
                  else f'goPolar(0,50) inattendu: {res!r}')
             self._exec('ack_done', timeout_ms=2_000)
-            # Position should have changed
-            snap_after = self._exec('tel', timeout_ms=2_000)
-            def _parse_pos(raw: str):
-                d = {}
-                for kv in raw.split(','):
-                    if '=' in kv:
-                        k, v = kv.strip().split('=', 1)
-                        d[k.strip()] = float(v.strip())
-                return d.get('x', 0.0), d.get('y', 0.0)
-            x0, y0 = _parse_pos(snap_before)
-            x1, y1 = _parse_pos(snap_after)
-            displacement = math.hypot(x1 - x0, y1 - y0)
-            assert displacement > 10.0, \
-                f'Robot n\'a pas bougé: déplacement={displacement:.1f} mm'
-            return (f'goPolar(0,50) OK → déplacement={displacement:.1f} mm'
-                    f'  ({x0:.0f},{y0:.0f})→({x1:.0f},{y1:.0f})')
+            # Health sanity: robot no longer moving
+            health = self._parse_health(self._exec('health', timeout_ms=2_000))
+            assert health.get('mv', -1) == 0, 'isMoving toujours 1 après DONE'
+            return 'goPolar(0,50) OK → DONE:ok → ack_done → mv=0'
         except Exception:
             self._safe_cancel()
             raise

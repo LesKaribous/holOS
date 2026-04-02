@@ -1,0 +1,14 @@
+[
+  {
+    "id": "example_obj_1",
+    "name": "Cylinder A1",
+    "type": "cylinder",
+    "aruco_id": null,
+    "color": "unknown",
+    "initial_pos": { "x": 600, "y": 400 },
+    "current_pos": { "x": 600, "y": 400 },
+    "on_table": true,
+    "last_seen_ms": null,
+    "notes": "Example object — replace with actual game objects"
+  }
+]

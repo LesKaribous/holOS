@@ -95,3 +95,15 @@ void command_mission_sd_close(const args_t& args);
 // Mission — execute SD fallback now (for testing)
 void command_mission_run(const args_t& args);
 void command_mission_abort(const args_t& args);
+
+// Diagnostics — log / telemetry control
+// log(SOURCE, 0|1)     — disable/enable a service's console output
+//                        SOURCE = MOTION|SAFETY|CHRONO|INTERCOM|LOCALISATION … or * for all
+// loglevel(LEVEL)      — set global log level: VERBOSE|INFO|WARNING|CRITICAL|DISABLED
+// tel(CHANNEL, 0|1)    — disable/enable a telemetry channel
+//                        CHANNEL = pos|motion|safety|chrono|occ
+// logstatus            — print current level + source mask + telemetry state
+void command_log(const args_t& args);
+void command_loglevel(const args_t& args);
+void command_tel(const args_t& args);
+void command_logstatus(const args_t& args);

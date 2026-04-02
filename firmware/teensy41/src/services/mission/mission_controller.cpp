@@ -23,11 +23,12 @@
 #include "services/sd/sd_card.h"
 #include "services/motion/motion.h"
 #include "os/console.h"
+#include "os/os.h"
 #include "utils/commandHandler.h"
 
 #include <Arduino.h>
 
-extern Motion motion;   // provided by globals.h / os linkage
+// motion is declared via SINGLETON_EXTERN(Motion, motion) in motion.h — no extern needed
 
 namespace MissionController {
 
@@ -37,15 +38,14 @@ static constexpr size_t MAX_LINES = 256;
 static constexpr size_t LINE_LEN  = MAX_LINE_LEN;
 
 /// Loaded command lines (stripped, no comments).
-static char  s_cmds[MAX_LINES][LINE_LEN];
-static int   s_cmdCount   = 0;
+/// DMAMEM → placed in RAM2 (OCRAM, 512 KB free) instead of RAM1 (DTCM, 512 KB total).
+/// s_cmds is 32 KB — far too large for RAM1. Mission execution is not time-critical
+/// so the slightly higher RAM2 latency is irrelevant.
+static DMAMEM char  s_cmds[MAX_LINES][LINE_LEN];
+static size_t s_cmdCount   = 0;
 static bool  s_loaded     = false;
 static bool  s_running    = false;
 static bool  s_abort      = false;
-
-/// File handle used during SD write session (mission_sd_open / sdAppendLine / sdClose).
-static File  s_writeFile;
-static bool  s_writeOpen  = false;
 
 // ── Motion-command detection ──────────────────────────────────────────────────
 
@@ -98,7 +98,8 @@ FLASHMEM bool load() {
         return false;
     }
 
-    char buf[MAX_FILE_SIZE];
+    // DMAMEM: 8KB read buffer in RAM2 instead of stack — load() is not reentrant.
+    static DMAMEM char buf[MAX_FILE_SIZE];
     if (!SDCard::load(FALLBACK_PATH, buf, sizeof(buf))) {
         Console::warn("Mission") << "No fallback file on SD" << Console::endl;
         return false;
@@ -153,7 +154,7 @@ FLASHMEM void execute() {
     Console::info("Mission") << "═══ Fallback strategy start ("
                               << s_cmdCount << " cmds) ═══" << Console::endl;
 
-    for (int i = 0; i < s_cmdCount && !s_abort; ++i) {
+    for (size_t i = 0; i < s_cmdCount && !s_abort; ++i) {
         const char* cmd = s_cmds[i];
         Console::info("Mission") << "[" << (i+1) << "/" << s_cmdCount << "] " << cmd << Console::endl;
 
@@ -163,13 +164,7 @@ FLASHMEM void execute() {
         // ── Motion commands — dispatch + wait for completion ───────────────
         if (isMotionCmd(cmd)) {
             String scmd(cmd);
-            // CommandHandler::execute is protected, so go through OS-level
-            // command dispatch which is the same path as the terminal
-            args_t args = CommandHandler::extractArguments(scmd.substring(scmd.indexOf('(')+1));
-            String name = scmd.substring(0, scmd.indexOf('('));
-            if (CommandHandler::hasCommand(name)) {
-                CommandHandler::execute(name, args);
-            }
+            os.execute(scmd);   // routes through Program (friend of CommandHandler)
             // Wait for motion to complete (up to 30 s)
             unsigned long t0 = millis();
             while (!motion.hasFinished() && (millis() - t0) < 30000UL && !s_abort) {
@@ -181,19 +176,17 @@ FLASHMEM void execute() {
             continue;
         }
 
-        // ── Generic command — dispatch as-is ─────────────────────────────
-        String scmd(cmd);
-        String name = scmd.substring(0, scmd.indexOf('('));
-        if (name.length() == 0) name = scmd;  // no parentheses → name only
-        args_t args = CommandHandler::extractArguments(
-            scmd.indexOf('(') >= 0
-                ? scmd.substring(scmd.indexOf('(')+1)
-                : String("")
-        );
-        if (CommandHandler::hasCommand(name)) {
-            CommandHandler::execute(name, args);
-        } else {
-            Console::warn("Mission") << "Unknown cmd: " << cmd << Console::endl;
+        // ── Generic command — dispatch as-is via OS interpreter ──────────
+        {
+            String scmd(cmd);
+            // Append parentheses if the command has none (bare name), so the
+            // interpreter can parse it as a valid command statement.
+            if (scmd.indexOf('(') < 0) scmd += "()";
+            if (CommandHandler::hasCommand(scmd.substring(0, scmd.indexOf('(')))) {
+                os.execute(scmd);
+            } else {
+                Console::warn("Mission") << "Unknown cmd: " << cmd << Console::endl;
+            }
         }
     }
 
@@ -207,38 +200,23 @@ FLASHMEM void execute() {
     s_abort   = false;
 }
 
-// ── SD write helpers ──────────────────────────────────────────────────────────
+// ── SD write helpers — delegate to SDCard namespace (owns <SD.h>) ────────────
 
 FLASHMEM bool sdOpen() {
     if (!SDCard::isReady()) return false;
-    if (s_writeOpen) {
-        s_writeFile.close();
-        s_writeOpen = false;
-    }
-    // Remove old file then create fresh
-    SD.remove(FALLBACK_PATH);
-    s_writeFile = SD.open(FALLBACK_PATH, FILE_WRITE);
-    if (!s_writeFile) {
-        Console::error("Mission") << "Cannot create " << FALLBACK_PATH << Console::endl;
-        return false;
-    }
-    s_writeOpen = true;
-    Console::info("Mission") << "SD write session opened" << Console::endl;
-    return true;
+    bool ok = SDCard::openWrite(FALLBACK_PATH);
+    if (ok) Console::info("Mission") << "SD write session opened" << Console::endl;
+    else    Console::error("Mission") << "Cannot create " << FALLBACK_PATH << Console::endl;
+    return ok;
 }
 
 FLASHMEM bool sdAppendLine(const char* line) {
-    if (!s_writeOpen) return false;
-    s_writeFile.println(line);
-    return true;
+    return SDCard::appendLine(line);
 }
 
 FLASHMEM bool sdClose() {
-    if (!s_writeOpen) return false;
-    s_writeFile.close();
-    s_writeOpen = false;
+    if (!SDCard::closeWrite()) return false;
     Console::info("Mission") << "SD write session closed. Reloading…" << Console::endl;
-    // Reload immediately so the new strategy is ready for fallback
     return load();
 }
 

@@ -120,48 +120,188 @@
 
   <!-- Left navigation -->
   <nav id="left-nav">
-    <button class="nav-btn active" data-view="map"      onclick="switchView('map',this)">
-      <span class="nav-icon">🗺</span><span class="nav-lbl">Map</span>
-    </button>
-    <button class="nav-btn" data-view="strategy" onclick="switchView('strategy',this)">
-      <span class="nav-icon">📋</span><span class="nav-lbl">Strategy</span>
-    </button>
-    <button class="nav-btn" data-view="missions" onclick="switchView('missions',this)">
-      <span class="nav-icon">🎯</span><span class="nav-lbl">Missions</span>
-    </button>
-    <button class="nav-btn" data-view="macros"   onclick="switchView('macros',this)">
-      <span class="nav-icon">⚡</span><span class="nav-lbl">Macros</span>
-    </button>
-    <button class="nav-btn" data-view="monitor"  onclick="switchView('monitor',this)">
-      <span class="nav-icon">🤖</span><span class="nav-lbl">Monitor</span>
-    </button>
-    <button class="nav-btn" data-view="terminal" onclick="switchView('terminal',this)">
-      <span class="nav-icon">📡</span><span class="nav-lbl">Terminal</span>
-    </button>
-    <button class="nav-btn" data-view="tests" onclick="switchView('tests',this)">
-      <span class="nav-icon">🧪</span><span class="nav-lbl">Tests</span>
-    </button>
-    <button class="nav-btn" data-view="network" onclick="switchView('network',this)">
+
+    <!-- ── Map (standalone) ──────────────────────────────────────────────── -->
+    <button class="nav-btn active" data-view="map" onclick="switchView('map',this)">
       <span class="nav-icon">
-        <svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round">
-          <circle cx="3"  cy="9"  r="2" fill="currentColor" stroke="none"/>
-          <circle cx="9"  cy="3"  r="2" fill="currentColor" stroke="none"/>
-          <circle cx="15" cy="9"  r="2" fill="currentColor" stroke="none"/>
-          <circle cx="9"  cy="15" r="2" fill="currentColor" stroke="none"/>
-          <line x1="5"  y1="9"  x2="13" y2="9"/>
-          <line x1="9"  y1="5"  x2="9"  y2="13"/>
-          <line x1="4.4" y1="7.6" x2="7.6" y2="4.4"/>
-          <line x1="10.4" y1="4.4" x2="13.6" y2="7.6"/>
+        <svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="2" y="2" width="6" height="6" rx="1"/><rect x="10" y="2" width="6" height="6" rx="1"/>
+          <rect x="2" y="10" width="6" height="6" rx="1"/><rect x="10" y="10" width="6" height="6" rx="1"/>
         </svg>
       </span>
-      <span class="nav-lbl">Network</span>
+      <span class="nav-lbl">Map</span>
     </button>
-    <button class="nav-btn" data-view="modules" onclick="switchView('modules',this)">
-      <span class="nav-icon">⚙</span><span class="nav-lbl">Modules</span>
+
+    <div class="nav-sep"></div>
+
+    <!-- ── Game group: Strategy · Missions · Macros ──────────────────────── -->
+    <div class="nav-group" id="nav-group-game">
+      <button class="nav-group-hdr" onclick="toggleNavGroup('game')">
+        <span class="nav-icon">
+          <svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+            <line x1="4" y1="2" x2="4" y2="16"/>
+            <path d="M4 2h10l-3.5 4 3.5 4H4"/>
+          </svg>
+        </span>
+        <span class="nav-lbl">Game</span>
+        <span class="nav-chevron"></span>
+      </button>
+      <div class="nav-group-items">
+        <button class="nav-btn nav-child" data-view="strategy" onclick="switchView('strategy',this)">
+          <span class="nav-icon">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M2 11l6 3 6-3"/><path d="M2 8l6 3 6-3"/><path d="M2 5l6-3 6 3-6 3z"/>
+            </svg>
+          </span>
+          <span class="nav-lbl">Strategy</span>
+        </button>
+        <button class="nav-btn nav-child" data-view="missions" onclick="switchView('missions',this)">
+          <span class="nav-icon">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
+              <circle cx="8" cy="8" r="5"/><circle cx="8" cy="8" r="2"/>
+              <line x1="8" y1="1" x2="8" y2="3.5"/><line x1="8" y1="12.5" x2="8" y2="15"/>
+              <line x1="1" y1="8" x2="3.5" y2="8"/><line x1="12.5" y1="8" x2="15" y2="8"/>
+            </svg>
+          </span>
+          <span class="nav-lbl">Missions</span>
+        </button>
+        <button class="nav-btn nav-child" data-view="macros" onclick="switchView('macros',this)">
+          <span class="nav-icon">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M9.5 2L3.5 9h5L6.5 14 12.5 7h-5z"/>
+            </svg>
+          </span>
+          <span class="nav-lbl">Macros</span>
+        </button>
+      </div>
+    </div>
+
+    <!-- ── Debug group: Monitor · Terminal · Network ─────────────────────── -->
+    <div class="nav-group" id="nav-group-debug">
+      <button class="nav-group-hdr" onclick="toggleNavGroup('debug')">
+        <span class="nav-icon">
+          <svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M14 3.5a4 4 0 00-4.8 5.4L2.5 15a1.7 1.7 0 002.4 2.4l6.6-6.7a4 4 0 004.5-4.8L13.5 8 10 4.5z"/>
+          </svg>
+        </span>
+        <span class="nav-lbl">Debug</span>
+        <span class="nav-chevron"></span>
+      </button>
+      <div class="nav-group-items">
+        <button class="nav-btn nav-child" data-view="monitor" onclick="switchView('monitor',this)">
+          <span class="nav-icon">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
+              <rect x="3.5" y="3.5" width="9" height="9" rx="1.5"/>
+              <line x1="6" y1="1" x2="6" y2="3.5"/><line x1="10" y1="1" x2="10" y2="3.5"/>
+              <line x1="6" y1="12.5" x2="6" y2="15"/><line x1="10" y1="12.5" x2="10" y2="15"/>
+              <line x1="1" y1="6" x2="3.5" y2="6"/><line x1="1" y1="10" x2="3.5" y2="10"/>
+              <line x1="12.5" y1="6" x2="15" y2="6"/><line x1="12.5" y1="10" x2="15" y2="10"/>
+            </svg>
+          </span>
+          <span class="nav-lbl">Monitor</span>
+        </button>
+        <button class="nav-btn nav-child" data-view="terminal" onclick="switchView('terminal',this)">
+          <span class="nav-icon">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="1.5" y="3" width="13" height="10" rx="2"/>
+              <path d="M4.5 7L6.5 8.5 4.5 10"/>
+              <line x1="8" y1="10" x2="11.5" y2="10"/>
+            </svg>
+          </span>
+          <span class="nav-lbl">Terminal</span>
+        </button>
+        <button class="nav-btn nav-child" data-view="network" onclick="switchView('network',this)">
+          <span class="nav-icon">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
+              <circle cx="3" cy="8" r="1.5" fill="currentColor" stroke="none"/>
+              <circle cx="8" cy="3" r="1.5" fill="currentColor" stroke="none"/>
+              <circle cx="13" cy="8" r="1.5" fill="currentColor" stroke="none"/>
+              <circle cx="8" cy="13" r="1.5" fill="currentColor" stroke="none"/>
+              <line x1="4.5" y1="8" x2="11.5" y2="8"/><line x1="8" y1="4.5" x2="8" y2="11.5"/>
+              <line x1="4.1" y1="6.5" x2="6.5" y2="4.1"/><line x1="9.5" y1="4.1" x2="11.9" y2="6.5"/>
+            </svg>
+          </span>
+          <span class="nav-lbl">Network</span>
+        </button>
+      </div>
+    </div>
+
+    <!-- ── Setup group: Modules · Vision · Calibration · Tests ───────────── -->
+    <div class="nav-group" id="nav-group-setup">
+      <button class="nav-group-hdr" onclick="toggleNavGroup('setup')">
+        <span class="nav-icon">
+          <svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
+            <line x1="2" y1="5" x2="16" y2="5"/>
+            <line x1="2" y1="9" x2="16" y2="9"/>
+            <line x1="2" y1="13" x2="16" y2="13"/>
+            <circle cx="6"  cy="5"  r="2.2"/>
+            <circle cx="11" cy="9"  r="2.2"/>
+            <circle cx="5"  cy="13" r="2.2"/>
+          </svg>
+        </span>
+        <span class="nav-lbl">Setup</span>
+        <span class="nav-chevron"></span>
+      </button>
+      <div class="nav-group-items">
+        <button class="nav-btn nav-child" data-view="modules" onclick="switchView('modules',this)">
+          <span class="nav-icon">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M2 5.5L8 2l6 3.5v7L8 16 2 12.5z"/>
+              <line x1="8" y1="2" x2="8" y2="9"/>
+              <path d="M2 5.5L8 9l6-3.5"/>
+            </svg>
+          </span>
+          <span class="nav-lbl">Modules</span>
+        </button>
+        <button class="nav-btn nav-child" data-view="vision" onclick="switchView('vision',this)">
+          <span class="nav-icon">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M1 8s3-5.5 7-5.5 7 5.5 7 5.5-3 5.5-7 5.5S1 8 1 8z"/>
+              <circle cx="8" cy="8" r="2"/>
+            </svg>
+          </span>
+          <span class="nav-lbl">Vision</span>
+        </button>
+        <button class="nav-btn nav-child" data-view="calibration" onclick="switchView('calibration',this)">
+          <span class="nav-icon">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="1.5" y="5" width="13" height="6" rx="1"/>
+              <line x1="4.5" y1="8" x2="4.5" y2="11"/>
+              <line x1="7"   y1="8" x2="7"   y2="10"/>
+              <line x1="9.5" y1="8" x2="9.5" y2="11"/>
+              <line x1="12"  y1="8" x2="12"  y2="10"/>
+            </svg>
+          </span>
+          <span class="nav-lbl">Calib.</span>
+        </button>
+        <button class="nav-btn nav-child" data-view="tests" onclick="switchView('tests',this)">
+          <span class="nav-icon">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M6 2h4M6.5 2v5L2.5 13a1.4 1.4 0 001.2 2h8.6a1.4 1.4 0 001.2-2L9.5 7V2"/>
+            </svg>
+          </span>
+          <span class="nav-lbl">Tests</span>
+        </button>
+      </div>
+    </div>
+
+    <div class="nav-sep"></div>
+
+    <!-- ── Remote (standalone drawer toggle) ────────────────────────────── -->
+    <button class="nav-btn" id="nav-remote" onclick="toggleRemoteDrawer(this)">
+      <span class="nav-icon">
+        <svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="1.5" y="6" width="15" height="9" rx="3.5"/>
+          <line x1="5.5" y1="9.5" x2="5.5" y2="12.5"/>
+          <line x1="4"   y1="11"  x2="7"   y2="11"/>
+          <circle cx="12"  cy="9.5" r=".9" fill="currentColor" stroke="none"/>
+          <circle cx="13.5" cy="11" r=".9" fill="currentColor" stroke="none"/>
+          <line x1="9" y1="3" x2="9" y2="6"/>
+        </svg>
+      </span>
+      <span class="nav-lbl">Remote</span>
     </button>
-    <button class="nav-btn" data-view="calibration" onclick="switchView('calibration',this)">
-      <span class="nav-icon">📐</span><span class="nav-lbl">Calibration</span>
-    </button>
+
   </nav>
 
   <!-- Views -->
@@ -171,21 +311,93 @@
     <div id="view-map" class="view active">
       <!-- mode / display controls -->
       <div id="mode-bar">
-        <span class="mode-label">Click:</span>
-        <label><input type="radio" name="mode" value="target"     checked onchange="setMode(this.value)"> Target</label>
-        <label><input type="radio" name="mode" value="obstacle"         onchange="setMode(this.value)"> Obs+</label>
-        <label><input type="radio" name="mode" value="remove_obs"       onchange="setMode(this.value)"> Obs−</label>
-        <label class="toggle"><input type="checkbox" id="feat-robot-img" checked onchange="toggleRobotImage(this.checked)"> Robot img</label>
-        <label class="toggle"><input type="checkbox" id="feat-grid"      onchange="setFeature('show_grid',this.checked)"> Grid</label>
-        <label class="toggle"><input type="checkbox" id="feat-trail" checked onchange="setFeature('show_trail',this.checked)"> Trail</label>
-        <label class="toggle"><input type="checkbox" id="feat-path"  checked onchange="setFeature('show_path',this.checked)"> Path</label>
-        <span class="hint">Right-click → toggle grid cell</span>
+        <!-- Display toggles -->
+        <label class="mbar-toggle" title="Show robot image">
+          <input type="checkbox" id="feat-robot-img" checked onchange="toggleRobotImage(this.checked)">
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><rect x="3.5" y="3.5" width="9" height="9" rx="1.5"/><line x1="6" y1="1" x2="6" y2="3.5"/><line x1="10" y1="1" x2="10" y2="3.5"/><line x1="6" y1="12.5" x2="6" y2="15"/><line x1="10" y1="12.5" x2="10" y2="15"/><line x1="1" y1="6" x2="3.5" y2="6"/><line x1="1" y1="10" x2="3.5" y2="10"/><line x1="12.5" y1="6" x2="15" y2="6"/><line x1="12.5" y1="10" x2="15" y2="10"/></svg>
+          <span>Robot</span>
+        </label>
+        <label class="mbar-toggle" title="Show grid overlay">
+          <input type="checkbox" id="feat-grid" onchange="setFeature('show_grid',this.checked)">
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><rect x="1" y="1" width="14" height="14" rx="1"/><line x1="1" y1="5.67" x2="15" y2="5.67"/><line x1="1" y1="10.33" x2="15" y2="10.33"/><line x1="5.67" y1="1" x2="5.67" y2="15"/><line x1="10.33" y1="1" x2="10.33" y2="15"/></svg>
+          <span>Grid</span>
+        </label>
+        <label class="mbar-toggle" title="Show robot trail">
+          <input type="checkbox" id="feat-trail" checked onchange="setFeature('show_trail',this.checked)">
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12c2-4 4-2 6-6s3-1 6-4"/><circle cx="14" cy="2" r="1.5" fill="currentColor" stroke="none"/></svg>
+          <span>Trail</span>
+        </label>
+        <label class="mbar-toggle" title="Show planned path">
+          <input type="checkbox" id="feat-path" checked onchange="setFeature('show_path',this.checked)">
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="3 2"><path d="M2 14L8 4l6 10"/></svg>
+          <span>Path</span>
+        </label>
+
+        <div class="mbar-sep"></div>
+
+        <!-- Tool buttons -->
+        <button class="mbar-tool" id="tool-obs-add" onclick="toggleMapTool('obstacle')" title="Click to add obstacle">
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="8" cy="8" r="5.5"/><line x1="8" y1="5" x2="8" y2="11"/><line x1="5" y1="8" x2="11" y2="8"/></svg>
+          <span>Obs+</span>
+        </button>
+        <button class="mbar-tool" id="tool-obs-del" onclick="toggleMapTool('remove_obs')" title="Click to remove obstacle">
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="8" cy="8" r="5.5"/><line x1="5" y1="8" x2="11" y2="8"/></svg>
+          <span>Obs−</span>
+        </button>
+
+        <div class="mbar-sep"></div>
+
+        <span class="mbar-hint">Click → pin point · Right-click → toggle grid</span>
       </div>
 
       <!-- canvas + status sidebar -->
       <div id="map-body">
         <div id="canvas-wrap">
           <canvas id="field-canvas"></canvas>
+
+          <!-- Pin popover (anchored to click position) -->
+          <div id="map-pin-popover" class="map-popover hidden">
+            <div class="map-popover-coords">
+              <label>x<input id="pin-x" type="number" step="1" class="pin-coord-input"
+                      oninput="pinCoordsEdited()"></label>
+              <label>y<input id="pin-y" type="number" step="1" class="pin-coord-input"
+                      oninput="pinCoordsEdited()"></label>
+              <button class="pin-dismiss" onclick="dismissPin()" title="Close">✕</button>
+            </div>
+            <div class="map-popover-actions">
+              <button class="pin-act" onclick="pinGoHere()" title="Send robot here">
+                <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 8h10M8 4l4 4-4 4"/></svg>
+                Go
+              </button>
+              <button class="pin-act" onclick="pinSetPos()" title="Set robot position">
+                <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><circle cx="8" cy="8" r="5"/><line x1="8" y1="1" x2="8" y2="4"/><line x1="8" y1="12" x2="8" y2="15"/><line x1="1" y1="8" x2="4" y2="8"/><line x1="12" y1="8" x2="15" y2="8"/></svg>
+                Set pos
+              </button>
+              <button class="pin-act" onclick="pinCopy()" title="Copy (x, y) to clipboard">
+                <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="5" width="9" height="9" rx="1.5"/><path d="M5 11H3.5A1.5 1.5 0 012 9.5v-7A1.5 1.5 0 013.5 1h7A1.5 1.5 0 0112 2.5V5"/></svg>
+                Copy
+              </button>
+              <button class="pin-act pin-act-accent" onclick="pinAddWaypoint()" title="Add to trajectory">
+                <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="8" y1="3" x2="8" y2="13"/><line x1="3" y1="8" x2="13" y2="8"/></svg>
+                + Wpt
+              </button>
+            </div>
+          </div>
+
+          <!-- Trajectory bar (bottom of canvas) -->
+          <div id="map-traj-bar" class="map-traj-bar hidden">
+            <div class="traj-bar-hdr">
+              <span class="traj-bar-title">Trajectory</span>
+              <span class="traj-bar-count" id="traj-count">0 pts</span>
+            </div>
+            <div class="traj-bar-list" id="traj-list"></div>
+            <div class="traj-bar-actions">
+              <button class="pin-act" onclick="trajCopy()" title="Copy trajectory to clipboard">Copy</button>
+              <button class="pin-act" onclick="trajPaste()" title="Paste trajectory from clipboard">Paste</button>
+              <button class="pin-act pin-act-accent" onclick="trajExecute()" title="Execute trajectory">Execute</button>
+              <button class="pin-act pin-act-danger" onclick="trajClear()" title="Clear all waypoints">Clear</button>
+            </div>
+          </div>
         </div>
 
         <aside id="map-sidebar">
@@ -228,7 +440,105 @@
             <div id="log-output"></div>
           </section>
         </aside>
-      </div>
+
+        <!-- ── Remote control drawer (slides in from right) ─────────────────── -->
+        <div id="remote-drawer" class="remote-drawer closed">
+
+          <div class="remote-drawer-header">
+            <span class="remote-panel-title">🕹 Remote Control</span>
+            <button class="remote-drawer-close" onclick="toggleRemoteDrawer()" title="Close">✕</button>
+          </div>
+
+          <!-- Polar dial + goPolar ring buttons -->
+          <div class="remote-dial-outer">
+            <div class="remote-dial-wrap">
+              <svg id="remote-dial"
+                   viewBox="-160 -160 320 320"
+                   xmlns="http://www.w3.org/2000/svg"
+                   class="remote-dial-svg">
+                <g id="dial-ticks-layer"></g>
+                <path id="dial-delta-arc" fill="none" stroke-width="10"
+                      stroke-linecap="round" opacity="0.35"/>
+                <line id="dial-cur-line"
+                      x1="0" y1="0" x2="1" y2="0"
+                      stroke-width="2.5" stroke-linecap="round" opacity="0.55"/>
+                <line id="dial-tgt-line"
+                      x1="0" y1="0" x2="1" y2="0"
+                      stroke-width="2" stroke-linecap="round" opacity="0.9"/>
+                <circle id="dial-tgt-dot" cx="1" cy="0" r="9"
+                        stroke-width="2" fill="none" style="cursor:grab"/>
+                <text id="dial-tgt-label" x="0" y="0"
+                      text-anchor="middle" dominant-baseline="middle"
+                      font-size="9" font-family="monospace"/>
+              </svg>
+              <img id="dial-robot-img" src="/static/robot.png" class="dial-robot-overlay"
+                   alt="robot" draggable="false">
+            </div><!-- /remote-dial-wrap -->
+            <div id="remote-polar-btns"
+                 style="position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;"></div>
+          </div><!-- /remote-dial-outer -->
+
+          <!-- goPolar distance selector -->
+          <div class="remote-dist-row">
+            <span class="remote-snap-lbl">Move dist.</span>
+            <select id="remote-dist-sel" class="input-sm">
+              <option value="50">50 mm</option>
+              <option value="100">100 mm</option>
+              <option value="200" selected>200 mm</option>
+              <option value="300">300 mm</option>
+              <option value="500">500 mm</option>
+            </select>
+          </div>
+
+          <!-- Readout strip -->
+          <div class="remote-readout">
+            <div class="remote-readout-item">
+              <span class="rr-lbl">Current</span>
+              <span class="rr-val" id="rr-cur">0.0°</span>
+            </div>
+            <div class="remote-readout-sep">→</div>
+            <div class="remote-readout-item">
+              <span class="rr-lbl">Target</span>
+              <span class="rr-val rr-tgt" id="rr-tgt">0.0°</span>
+            </div>
+            <div class="remote-readout-sep">=</div>
+            <div class="remote-readout-item">
+              <span class="rr-lbl">Δ Turn</span>
+              <span class="rr-val rr-delta" id="rr-delta">0.0°</span>
+            </div>
+          </div>
+
+          <!-- Snap + target input -->
+          <div class="remote-snap-row">
+            <span class="remote-snap-lbl">Snap</span>
+            <select id="remote-snap-sel" class="input-sm" onchange="remoteSnapChanged()">
+              <option value="1">1°</option>
+              <option value="5" selected>5°</option>
+              <option value="10">10°</option>
+              <option value="15">15°</option>
+              <option value="30">30°</option>
+              <option value="45">45°</option>
+            </select>
+            <span class="remote-snap-lbl" style="margin-left:8px">Target</span>
+            <input id="remote-tgt-input" class="input-sm" type="number"
+                   min="0" max="359" step="1" value="0" style="width:64px"
+                   oninput="remoteSetTarget(+this.value)">
+            <span style="font-size:11px;color:var(--text-dim)">°</span>
+          </div>
+
+          <!-- TURN button -->
+          <button class="remote-go-btn" id="remote-go-btn" onclick="remoteSendTurn()">
+            ▶ TURN
+          </button>
+
+          <!-- Status line -->
+          <div class="remote-status-row">
+            <span id="remote-status" class="remote-status-idle">—</span>
+          </div>
+
+        </div><!-- /remote-drawer -->
+
+      </div><!-- /map-body -->
 
       <div id="coord-display">x: — &nbsp; y: —</div>
     </div><!-- /view-map -->
@@ -792,6 +1102,381 @@
         </div><!-- /calib-grid -->
       </div><!-- /calib-page -->
     </div><!-- /view-calibration -->
+
+
+    <!-- ── VISION VIEW ───────────────────────────────────────────────────────── -->
+    <div id="view-vision" class="view">
+      <div class="vision-layout">
+
+        <!-- ── LEFT: feeds + controls ──────────────────────────────────────── -->
+        <div class="vision-main">
+
+          <!-- Header bar -->
+          <div class="vision-header">
+            <label class="vision-enable-toggle" title="Enable/disable vision processing">
+              <input type="checkbox" id="vision-enabled-cb" onchange="visionToggleEnabled(this.checked)">
+              <span>Vision</span>
+            </label>
+            <span id="vision-status-badge" class="vision-badge vision-badge-off">OFF</span>
+
+            <!-- Source selector -->
+            <div class="vision-source-block">
+              <div class="vision-source-types">
+                <label class="vsrc-tab"><input type="radio" name="vsrc-type" value="usb"    checked onchange="visionSourceTypeChanged()"> USB Camera</label>
+                <label class="vsrc-tab"><input type="radio" name="vsrc-type" value="ip"           onchange="visionSourceTypeChanged()"> IP Camera</label>
+                <label class="vsrc-tab"><input type="radio" name="vsrc-type" value="video"        onchange="visionSourceTypeChanged()"> Video File</label>
+                <label class="vsrc-tab"><input type="radio" name="vsrc-type" value="image"        onchange="visionSourceTypeChanged()"> Static Image</label>
+              </div>
+              <!-- USB camera row -->
+              <div id="vsrc-usb" class="vsrc-row">
+                <label class="vsrc-lbl">Camera index</label>
+                <input id="vsrc-usb-idx" class="input-sm" type="number" min="0" max="9" value="0" style="width:56px">
+                <button class="btn-tiny" onclick="visionApplySource()">Open</button>
+              </div>
+              <!-- IP camera row -->
+              <div id="vsrc-ip" class="vsrc-row hidden">
+                <label class="vsrc-lbl">URL (RTSP / HTTP)</label>
+                <input id="vsrc-ip-url" class="input-sm" type="text" placeholder="rtsp://192.168.1.10/stream" style="flex:1">
+                <button class="btn-tiny" onclick="visionApplySource()">Connect</button>
+              </div>
+              <!-- Video file row -->
+              <div id="vsrc-video" class="vsrc-row hidden">
+                <label class="vsrc-lbl">File path</label>
+                <input id="vsrc-video-path" class="input-sm" type="text" placeholder="/path/to/video.mp4" style="flex:1">
+                <button class="btn-tiny" onclick="visionApplySource()">Open</button>
+              </div>
+              <!-- Static image row -->
+              <div id="vsrc-image" class="vsrc-row hidden">
+                <label class="vsrc-lbl">File path</label>
+                <input id="vsrc-image-path" class="input-sm" type="text" placeholder="/path/to/image.jpg" style="flex:1">
+                <button class="btn-tiny" onclick="visionApplySource()">Open</button>
+              </div>
+            </div><!-- /vision-source-block -->
+
+            <div class="vision-header-toggles">
+              <label class="toggle"><input type="checkbox" id="v-undistort"  onchange="visionCfg('undistort',this.checked)"> Undistort</label>
+              <label class="toggle"><input type="checkbox" id="v-aruco" checked onchange="visionCfg('show_aruco',this.checked)"> ArUco</label>
+              <label class="toggle"><input type="checkbox" id="v-ids"   checked onchange="visionCfg('show_ids',this.checked)"> IDs</label>
+              <label class="toggle"><input type="checkbox" id="v-rej"         onchange="visionCfg('show_rejected',this.checked)"> Rejected</label>
+              <label class="toggle"><input type="checkbox" id="v-grid"  checked onchange="visionCfg('show_grid',this.checked)"> Grid</label>
+              <label class="toggle"><input type="checkbox" id="v-overlay" checked onchange="visionCfg('show_table_overlay',this.checked)"> Overlay</label>
+              <label class="toggle"><input type="checkbox" id="v-autocolor" onchange="visionCfg('auto_color',this.checked)"> AutoColor</label>
+            </div>
+
+            <div class="vision-dict-row">
+              <label style="font-size:11px;color:var(--text-dim)">Dict</label>
+              <select id="vision-dict-sel" class="input-sm" onchange="visionCfg('dict',this.value)">
+                <option>4x4_50</option><option>4x4_100</option><option>4x4_250</option>
+                <option>5x5_50</option><option>5x5_100</option><option>6x6_50</option>
+                <option>APRILTAG_36h11</option>
+              </select>
+              <label style="font-size:11px;color:var(--text-dim);margin-left:8px">JPEG Q</label>
+              <input type="range" id="vision-quality-sl" min="30" max="95" step="5" value="70"
+                     style="width:70px" oninput="visionCfg('jpeg_quality',+this.value)">
+              <span id="vision-quality-val" style="font-size:11px;width:28px">70</span>
+            </div>
+          </div><!-- /vision-header -->
+
+          <!-- Feeds (raw + rectified + processed) -->
+          <div class="vision-feeds" id="vision-feeds-row">
+            <div class="vision-feed-wrap">
+              <div class="vision-feed-label">
+                Raw
+                <span id="vision-h-badge" class="vision-h-badge">—</span>
+              </div>
+              <img id="vision-raw-img" class="vision-img" alt="Raw feed" draggable="false">
+            </div>
+            <div class="vision-feed-wrap">
+              <div class="vision-feed-label">Rectified (top-down)</div>
+              <img id="vision-rect-img" class="vision-img" alt="Rectified view" draggable="false">
+              <div id="vision-rect-placeholder" class="vision-rect-placeholder">
+                No homography — point camera at the 4 anchor ArUco tags
+              </div>
+            </div>
+            <div class="vision-feed-wrap" id="vision-proc-wrap" style="display:none">
+              <div class="vision-feed-label">
+                Processed
+                <span id="vision-proc-mode-badge" class="vision-proc-badge">—</span>
+              </div>
+              <img id="vision-proc-img" class="vision-img" alt="Processed feed" draggable="false">
+            </div>
+          </div><!-- /vision-feeds -->
+
+          <!-- Processing pipeline -->
+          <details class="vision-section" id="vision-proc-section">
+            <summary>Processing Pipeline</summary>
+            <div class="vision-proc-panel">
+
+              <!-- Mode selector -->
+              <div class="vision-proc-row">
+                <span class="vp-lbl">Mode</span>
+                <select id="vp-mode" class="input-sm" onchange="visionProcModeChanged()">
+                  <option value="none">None (pass-through)</option>
+                  <option value="binarize">Binarize</option>
+                  <option value="color_mask">Color Mask</option>
+                  <option value="canny">Canny Edge</option>
+                  <option value="blur">Gaussian Blur</option>
+                </select>
+              </div>
+
+              <!-- Binarize controls -->
+              <div id="vp-binarize" class="vp-group hidden">
+                <div class="vision-proc-row">
+                  <span class="vp-lbl">Method</span>
+                  <select id="vp-bin-method" class="input-sm" onchange="visionProcCfg()">
+                    <option value="global">Global</option>
+                    <option value="otsu">Otsu (auto)</option>
+                    <option value="adaptive_mean">Adaptive Mean</option>
+                    <option value="adaptive_gaussian">Adaptive Gaussian</option>
+                  </select>
+                  <label class="toggle" style="margin-left:8px">
+                    <input type="checkbox" id="vp-bin-invert" onchange="visionProcCfg()"> Invert
+                  </label>
+                </div>
+                <div class="vision-proc-row" id="vp-bin-thresh-row">
+                  <span class="vp-lbl">Threshold</span>
+                  <input type="range" id="vp-bin-thresh" min="0" max="255" value="128"
+                         oninput="visionProcSlider('vp-bin-thresh','vp-bin-thresh-val');visionProcCfg()">
+                  <span id="vp-bin-thresh-val" class="vp-val">128</span>
+                </div>
+                <div class="vision-proc-row hidden" id="vp-bin-block-row">
+                  <span class="vp-lbl">Block size</span>
+                  <input type="range" id="vp-bin-block" min="3" max="51" step="2" value="11"
+                         oninput="visionProcSlider('vp-bin-block','vp-bin-block-val');visionProcCfg()">
+                  <span id="vp-bin-block-val" class="vp-val">11</span>
+                </div>
+              </div>
+
+              <!-- Color mask controls -->
+              <div id="vp-color" class="vp-group hidden">
+                <div class="vision-proc-row">
+                  <span class="vp-lbl">Preset</span>
+                  <select id="vp-color-preset" class="input-sm" onchange="visionColorPreset()">
+                    <option value="red">Red</option>
+                    <option value="green">Green</option>
+                    <option value="blue">Blue</option>
+                    <option value="yellow">Yellow</option>
+                    <option value="white">White</option>
+                    <option value="black">Black</option>
+                    <option value="brown">Brown</option>
+                    <option value="custom">Custom</option>
+                  </select>
+                  <label class="toggle" style="margin-left:8px">
+                    <input type="checkbox" id="vp-color-masked" checked onchange="visionProcCfg()"> Masked
+                  </label>
+                </div>
+                <div class="vp-hsv-grid">
+                  <span class="vp-lbl" style="grid-column:1/4">H range</span>
+                  <input type="range" id="vp-h-lo" min="0" max="179" value="0"
+                         oninput="visionProcSlider('vp-h-lo','vp-h-lo-val');visionProcCfg()">
+                  <span class="vp-val" id="vp-h-lo-val">0</span>
+                  <span class="vp-sep">–</span>
+                  <input type="range" id="vp-h-hi" min="0" max="179" value="10"
+                         oninput="visionProcSlider('vp-h-hi','vp-h-hi-val');visionProcCfg()">
+                  <span class="vp-val" id="vp-h-hi-val">10</span>
+
+                  <span class="vp-lbl" style="grid-column:1/4">S range</span>
+                  <input type="range" id="vp-s-lo" min="0" max="255" value="80"
+                         oninput="visionProcSlider('vp-s-lo','vp-s-lo-val');visionProcCfg()">
+                  <span class="vp-val" id="vp-s-lo-val">80</span>
+                  <span class="vp-sep">–</span>
+                  <input type="range" id="vp-s-hi" min="0" max="255" value="255"
+                         oninput="visionProcSlider('vp-s-hi','vp-s-hi-val');visionProcCfg()">
+                  <span class="vp-val" id="vp-s-hi-val">255</span>
+
+                  <span class="vp-lbl" style="grid-column:1/4">V range</span>
+                  <input type="range" id="vp-v-lo" min="0" max="255" value="60"
+                         oninput="visionProcSlider('vp-v-lo','vp-v-lo-val');visionProcCfg()">
+                  <span class="vp-val" id="vp-v-lo-val">60</span>
+                  <span class="vp-sep">–</span>
+                  <input type="range" id="vp-v-hi" min="0" max="255" value="255"
+                         oninput="visionProcSlider('vp-v-hi','vp-v-hi-val');visionProcCfg()">
+                  <span class="vp-val" id="vp-v-hi-val">255</span>
+
+                  <!-- 2nd hue range (for red wrap-around) -->
+                  <span class="vp-lbl" style="grid-column:1/4;color:var(--text-dim);font-size:10px">H2 (wrap, -1=off)</span>
+                  <input type="range" id="vp-h2-lo" min="0" max="179" value="160"
+                         oninput="visionProcSlider('vp-h2-lo','vp-h2-lo-val');visionProcCfg()">
+                  <span class="vp-val" id="vp-h2-lo-val">160</span>
+                  <span class="vp-sep">–</span>
+                  <input type="range" id="vp-h2-hi" min="-1" max="179" value="-1"
+                         oninput="visionProcSlider('vp-h2-hi','vp-h2-hi-val');visionProcCfg()">
+                  <span class="vp-val" id="vp-h2-hi-val">off</span>
+                </div>
+              </div>
+
+              <!-- Canny controls -->
+              <div id="vp-canny" class="vp-group hidden">
+                <div class="vision-proc-row">
+                  <span class="vp-lbl">Low</span>
+                  <input type="range" id="vp-canny-lo" min="0" max="300" value="50"
+                         oninput="visionProcSlider('vp-canny-lo','vp-canny-lo-val');visionProcCfg()">
+                  <span class="vp-val" id="vp-canny-lo-val">50</span>
+                </div>
+                <div class="vision-proc-row">
+                  <span class="vp-lbl">High</span>
+                  <input type="range" id="vp-canny-hi" min="0" max="600" value="150"
+                         oninput="visionProcSlider('vp-canny-hi','vp-canny-hi-val');visionProcCfg()">
+                  <span class="vp-val" id="vp-canny-hi-val">150</span>
+                </div>
+              </div>
+
+              <!-- Blur controls -->
+              <div id="vp-blur" class="vp-group hidden">
+                <div class="vision-proc-row">
+                  <span class="vp-lbl">Kernel</span>
+                  <input type="range" id="vp-blur-k" min="1" max="31" step="2" value="5"
+                         oninput="visionProcSlider('vp-blur-k','vp-blur-k-val');visionProcCfg()">
+                  <span class="vp-val" id="vp-blur-k-val">5</span>
+                </div>
+              </div>
+
+              <!-- Morphological post-processing (shared) -->
+              <div class="vision-proc-row" id="vp-morph-row">
+                <span class="vp-lbl">Morph</span>
+                <select id="vp-morph-op" class="input-sm" onchange="visionProcCfg()">
+                  <option value="none">None</option>
+                  <option value="erode">Erode</option>
+                  <option value="dilate">Dilate</option>
+                  <option value="open">Open</option>
+                  <option value="close">Close</option>
+                </select>
+                <input type="range" id="vp-morph-k" min="1" max="15" step="2" value="3"
+                       oninput="visionProcSlider('vp-morph-k','vp-morph-k-val');visionProcCfg()">
+                <span class="vp-val" id="vp-morph-k-val">3</span>
+              </div>
+
+            </div><!-- /vision-proc-panel -->
+          </details>
+
+          <!-- Playback controls (shown only for video file) -->
+          <div class="vision-playback hidden" id="vision-playback">
+            <button class="btn-tiny" id="vision-pp-btn" onclick="visionPlayPause()" title="Play/Pause">❙❙</button>
+            <button class="btn-tiny" onclick="visionStep(-10)" title="-10 frames">◀◀</button>
+            <button class="btn-tiny" onclick="visionStep(-1)"  title="−1 frame">◀</button>
+            <input type="range" id="vision-seek-sl" min="0" max="100" value="0" step="1"
+                   style="flex:1" oninput="visionSeek(+this.value)">
+            <button class="btn-tiny" onclick="visionStep(1)"   title="+1 frame">▶</button>
+            <button class="btn-tiny" onclick="visionStep(10)"  title="+10 frames">▶▶</button>
+            <select id="vision-speed-sel" class="input-sm" onchange="visionSetSpeed(+this.value)" style="width:60px">
+              <option value="0.25">0.25×</option>
+              <option value="0.5">0.5×</option>
+              <option value="1" selected>1×</option>
+              <option value="2">2×</option>
+              <option value="4">4×</option>
+            </select>
+            <span id="vision-frame-info" style="font-size:11px;color:var(--text-dim);white-space:nowrap">0 / 0</span>
+          </div><!-- /vision-playback -->
+
+          <!-- Anchor configuration -->
+          <details class="vision-section">
+            <summary>Anchor Tags (homography)</summary>
+            <div class="vision-anchors-grid">
+              <div class="vision-anchor-cell" id="va-tl">
+                <span class="va-corner">Top-Left</span>
+                <label>ID<input type="number" class="input-sm va-id" data-corner="top_left" value="23" onchange="visionAnchorChanged()"></label>
+                <label>X mm<input type="number" class="input-sm va-x" data-corner="top_left" value="0" onchange="visionAnchorChanged()"></label>
+                <label>Y mm<input type="number" class="input-sm va-y" data-corner="top_left" value="0" onchange="visionAnchorChanged()"></label>
+              </div>
+              <div class="vision-anchor-cell" id="va-tr">
+                <span class="va-corner">Top-Right</span>
+                <label>ID<input type="number" class="input-sm va-id" data-corner="top_right" value="22" onchange="visionAnchorChanged()"></label>
+                <label>X mm<input type="number" class="input-sm va-x" data-corner="top_right" value="3000" onchange="visionAnchorChanged()"></label>
+                <label>Y mm<input type="number" class="input-sm va-y" data-corner="top_right" value="0" onchange="visionAnchorChanged()"></label>
+              </div>
+              <div class="vision-anchor-cell" id="va-bl">
+                <span class="va-corner">Bot-Left</span>
+                <label>ID<input type="number" class="input-sm va-id" data-corner="bottom_left" value="21" onchange="visionAnchorChanged()"></label>
+                <label>X mm<input type="number" class="input-sm va-x" data-corner="bottom_left" value="0" onchange="visionAnchorChanged()"></label>
+                <label>Y mm<input type="number" class="input-sm va-y" data-corner="bottom_left" value="2000" onchange="visionAnchorChanged()"></label>
+              </div>
+              <div class="vision-anchor-cell" id="va-br">
+                <span class="va-corner">Bot-Right</span>
+                <label>ID<input type="number" class="input-sm va-id" data-corner="bottom_right" value="20" onchange="visionAnchorChanged()"></label>
+                <label>X mm<input type="number" class="input-sm va-x" data-corner="bottom_right" value="3000" onchange="visionAnchorChanged()"></label>
+                <label>Y mm<input type="number" class="input-sm va-y" data-corner="bottom_right" value="2000" onchange="visionAnchorChanged()"></label>
+              </div>
+            </div>
+          </details>
+
+          <!-- Detection log -->
+          <details class="vision-section" id="vision-det-section">
+            <summary>Detections <span id="vision-det-count" style="color:var(--text-dim)">0</span></summary>
+            <div id="vision-det-list" class="vision-det-list"></div>
+          </details>
+
+        </div><!-- /vision-main -->
+
+        <!-- ── RIGHT: object registry ───────────────────────────────────────── -->
+        <aside class="vision-sidebar">
+          <div class="vision-sidebar-header">
+            <span style="font-weight:600;font-size:13px">Object Registry</span>
+            <button class="btn-tiny green" onclick="visionNewObject()" title="Add object">＋ Add</button>
+            <button class="btn-tiny"       onclick="visionSaveObjects()" title="Save to disk">💾</button>
+          </div>
+
+          <div id="vision-objects-list" class="vision-objects-list"></div>
+
+          <!-- Object editor (shown when an object is selected) -->
+          <div id="vision-obj-editor" class="vision-obj-editor hidden">
+            <div class="vision-obj-editor-title">
+              <span id="voe-title">Edit object</span>
+              <button class="btn-tiny red" onclick="visionDeleteObject()">✕</button>
+            </div>
+
+            <div class="mission-meta-row">
+              <span class="mission-meta-lbl">Name</span>
+              <input id="voe-name" class="input-sm" style="flex:1" oninput="visionObjChanged()">
+            </div>
+            <div class="mission-meta-row">
+              <span class="mission-meta-lbl">Type</span>
+              <select id="voe-type" class="input-sm" onchange="visionObjChanged()">
+                <option value="cylinder">Cylinder</option>
+                <option value="can">Can</option>
+                <option value="puck">Puck</option>
+                <option value="plant">Plant</option>
+                <option value="obstacle">Obstacle</option>
+                <option value="other">Other</option>
+              </select>
+            </div>
+            <div class="mission-meta-row">
+              <span class="mission-meta-lbl">ArUco ID</span>
+              <input id="voe-aruco" class="input-sm" style="width:60px" type="number" min="-1"
+                     placeholder="none" oninput="visionObjChanged()">
+            </div>
+            <div class="mission-meta-row">
+              <span class="mission-meta-lbl">Color</span>
+              <select id="voe-color" class="input-sm" onchange="visionObjChanged()">
+                <option value="unknown">Unknown</option>
+                <option value="red">Red</option>
+                <option value="green">Green</option>
+                <option value="blue">Blue</option>
+                <option value="yellow">Yellow</option>
+                <option value="white">White</option>
+                <option value="black">Black</option>
+                <option value="brown">Brown</option>
+              </select>
+            </div>
+            <div class="mission-meta-row">
+              <span class="mission-meta-lbl">Init X (mm)</span>
+              <input id="voe-ix" class="input-sm" type="number" style="width:80px" oninput="visionObjChanged()">
+              <span class="mission-meta-lbl" style="margin-left:6px">Y</span>
+              <input id="voe-iy" class="input-sm" type="number" style="width:80px" oninput="visionObjChanged()">
+            </div>
+            <div class="mission-meta-row">
+              <label class="toggle">
+                <input type="checkbox" id="voe-ontable" onchange="visionObjChanged()">
+                On table
+              </label>
+            </div>
+            <div class="mission-meta-row" style="font-size:10px;color:var(--text-dim)" id="voe-lastseen"></div>
+          </div><!-- /vision-obj-editor -->
+
+        </aside><!-- /vision-sidebar -->
+
+      </div><!-- /vision-layout -->
+    </div><!-- /view-vision -->
+
 
 
   </div><!-- /views -->

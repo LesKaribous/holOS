@@ -5,8 +5,10 @@
 class ConsoleStream {
 public:
 
-	ConsoleStream(ConsoleLevel lvl, const String& origin);
-	
+	// String-origin constructor — no source-mask filtering (strategy/routine code).
+	// forceIgnore = true produces a no-op stream (all << calls are discarded).
+	ConsoleStream(ConsoleLevel lvl, const String& origin, bool forceIgnore = false);
+
 	ConsoleStream& operator<<(short);
 	ConsoleStream& operator<<(int);
 	ConsoleStream& operator<<(long);
