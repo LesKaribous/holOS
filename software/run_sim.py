@@ -194,6 +194,7 @@ sim_state = {
         'show_path':    True,
     },
     'score': 0,
+    'opponent': {'x': 0, 'y': 0, 'theta': 0, 'enabled': False},
 }
 
 
@@ -246,15 +247,14 @@ def _build_state() -> dict:
     # Sim data only available in 'sim' mode
     path_pts = [[p.x, p.y] for p in bridge.current_path()] if sim_on else []
     occ_list = occupancy.to_list()                          if sim_on else []
-    dyn_obs  = [[o.x, o.y] for o in occupancy.dynamic_obstacles] if sim_on else []
     objs     = game_objs.to_list()                          if sim_on else []
 
     return {
         'robot':     robot.to_dict(),
         'path':      path_pts,
         'occupancy': occ_list,
-        'dyn_obs':   dyn_obs,
         'game_objs': objs,
+        'opponent':  sim_state.get('opponent', {'enabled': False}),
         'motion': {
             'state':    hw_motion_state if hw_on else (bridge.motion_state() if sim_on else 'IDLE'),
             'feedrate': hw_motion_feed  if hw_on else (brain.motion.get_feedrate() if sim_on else 1.0),
@@ -362,6 +362,60 @@ def api_exec():
         return jsonify({'ok': ok, 'res': res})
     except Exception as e:
         return jsonify({'ok': False, 'res': str(e)}), 500
+
+
+# ── Actuator sequences API ────────────────────────────────────────────────────
+
+_ACT_DIR = os.path.join(os.path.dirname(__file__), 'actuator_data')
+os.makedirs(_ACT_DIR, exist_ok=True)
+
+@app.route('/api/actuator/poses', methods=['GET'])
+def api_act_poses_get():
+    path = os.path.join(_ACT_DIR, 'poses.json')
+    if os.path.exists(path):
+        with open(path) as f:
+            return jsonify(json.load(f))
+    return jsonify({})
+
+@app.route('/api/actuator/poses', methods=['POST'])
+def api_act_poses_set():
+    data = request.get_json(force=True) or {}
+    path = os.path.join(_ACT_DIR, 'poses.json')
+    with open(path, 'w') as f:
+        json.dump(data, f, indent=2)
+    return jsonify({'ok': True})
+
+@app.route('/api/actuator/sequences', methods=['GET'])
+def api_act_seq_list():
+    seqs = {}
+    for fp in glob.glob(os.path.join(_ACT_DIR, 'seq_*.json')):
+        name = os.path.basename(fp)[4:-5]  # strip seq_ and .json
+        with open(fp) as f:
+            seqs[name] = json.load(f)
+    return jsonify(seqs)
+
+@app.route('/api/actuator/sequences/<name>', methods=['GET'])
+def api_act_seq_get(name):
+    path = os.path.join(_ACT_DIR, f'seq_{name}.json')
+    if not os.path.exists(path):
+        return jsonify({'ok': False, 'error': 'not found'}), 404
+    with open(path) as f:
+        return jsonify(json.load(f))
+
+@app.route('/api/actuator/sequences/<name>', methods=['PUT'])
+def api_act_seq_put(name):
+    data = request.get_json(force=True) or {}
+    path = os.path.join(_ACT_DIR, f'seq_{name}.json')
+    with open(path, 'w') as f:
+        json.dump(data, f, indent=2)
+    return jsonify({'ok': True})
+
+@app.route('/api/actuator/sequences/<name>', methods=['DELETE'])
+def api_act_seq_del(name):
+    path = os.path.join(_ACT_DIR, f'seq_{name}.json')
+    if os.path.exists(path):
+        os.remove(path)
+    return jsonify({'ok': True})
 
 
 # ── Calibration API ───────────────────────────────────────────────────────────
@@ -972,11 +1026,6 @@ def on_field_click(data):
             0, Vec2(x, y), lambda uid, ok, r: None
         )
         brain.log(f"Manual target → ({x:.0f}, {y:.0f})")
-    elif mode == 'obstacle':
-        occupancy.add_dynamic_obstacle(Vec2(x, y))
-        brain.log(f"Obstacle @ ({x:.0f}, {y:.0f})")
-    elif mode == 'remove_obs':
-        occupancy.remove_nearest_dynamic(Vec2(x, y))
 
 
 @socketio.on('set_color')
@@ -1026,7 +1075,14 @@ def on_set_robot_pos(data):
     robot.pos = Vec2(float(data['x']), float(data['y']))
     if 'theta' in data:
         robot.theta = float(data['theta'])
-    brain.log(f"Robot pos set → ({robot.pos.x:.0f}, {robot.pos.y:.0f})")
+
+    t =_active_transport()
+    if(t.is_connected()):
+        ok, res = t.execute("setAbsPosition({},{}, {})".format(robot.pos.x, robot.pos.y, robot.theta), timeout_ms=1000)
+        if ok:
+            brain.log(f"Robot teleported to ({robot.pos.x:.0f}, {robot.pos.y:.0f}, {robot.theta:.1f}°)")
+        else:
+            brain.log("Failed to teleport robot")
 
 
 @socketio.on('paint_grid')

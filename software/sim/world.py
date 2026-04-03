@@ -100,23 +100,85 @@ class OccupancyGrid:
 
 
 class Pathfinder:
-    """8-directional A* on the 150mm occupancy grid."""
+    """8-directional A* on the 150mm occupancy grid.
+
+    Builds a *planning grid* that inflates obstacles by ROBOT_RADIUS so the
+    robot (treated as a point in A*) never gets closer than its own radius
+    to any occupied cell.  Diagonal moves are only allowed when both
+    orthogonal neighbours are free (no corner-cutting).
+    """
 
     DIRS = [
         (1, 0, 1.0), (-1, 0, 1.0), (0, 1, 1.0), (0, -1, 1.0),
         (1, 1, 1.414), (-1, 1, 1.414), (1, -1, 1.414), (-1, -1, 1.414),
     ]
 
+    # How many extra cells in each direction to inflate obstacles.
+    # ceil(ROBOT_RADIUS / GRID_CELL).  With 126mm / 150mm → 1 cell.
+    _INFLATE = max(1, int((ROBOT_RADIUS + GRID_CELL - 1) // GRID_CELL))
+
     def __init__(self, occupancy: OccupancyGrid):
         self.occ = occupancy
 
+    # ── Build inflated planning grid ────────────────────────────────────
+    def _build_plan_grid(self) -> list[list[bool]]:
+        """Mark a cell blocked if the robot centered there would intersect
+        any occupied cell (circle–rectangle collision)."""
+        pg = [[False] * GRID_H for _ in range(GRID_W)]
+        r = ROBOT_RADIUS
+        for gx in range(GRID_W):
+            for gy in range(GRID_H):
+                # Robot center when placed in this cell
+                cx = (gx + 0.5) * GRID_CELL
+                cy = (gy + 0.5) * GRID_CELL
+                # Check against all occupied cells within inflation radius
+                x0 = max(0, gx - self._INFLATE)
+                x1 = min(GRID_W - 1, gx + self._INFLATE)
+                y0 = max(0, gy - self._INFLATE)
+                y1 = min(GRID_H - 1, gy + self._INFLATE)
+                for ox in range(x0, x1 + 1):
+                    for oy in range(y0, y1 + 1):
+                        if self.occ._grid[ox][oy]:
+                            # Closest distance from circle center to cell rect
+                            cell_cx = (ox + 0.5) * GRID_CELL
+                            cell_cy = (oy + 0.5) * GRID_CELL
+                            dx = max(abs(cx - cell_cx) - GRID_CELL / 2, 0.0)
+                            dy = max(abs(cy - cell_cy) - GRID_CELL / 2, 0.0)
+                            if dx * dx + dy * dy < r * r:
+                                pg[gx][gy] = True
+                                break
+                    else:
+                        continue
+                    break
+                # Also block if too close to field walls
+                if (cx - r < 0 or cx + r > FIELD_W or
+                        cy - r < 0 or cy + r > FIELD_H):
+                    pg[gx][gy] = True
+        return pg
+
+    def _pg_blocked(self, pg, gx, gy) -> bool:
+        if gx < 0 or gx >= GRID_W or gy < 0 or gy >= GRID_H:
+            return True
+        return pg[gx][gy]
+
+    # ── A* search ───────────────────────────────────────────────────────
     def find_path(self, start: Vec2, goal: Vec2) -> list[Vec2]:
         gs = self.occ.world_to_grid(start)
         gg = self.occ.world_to_grid(goal)
         if gs == gg:
             return [start, goal]
-        if self.occ.is_cell_occupied(*gg):
-            return [start, goal]
+
+        pg = self._build_plan_grid()
+
+        # If goal cell is blocked in planning grid, try the raw grid instead
+        if pg[gg[0]][gg[1]] if (0 <= gg[0] < GRID_W and 0 <= gg[1] < GRID_H) else True:
+            if self.occ.is_cell_occupied(*gg):
+                return [start, goal]
+            # Goal is in inflation zone but not actually occupied — allow it
+            pg[gg[0]][gg[1]] = False
+        # Also unblock start if robot is already there
+        if 0 <= gs[0] < GRID_W and 0 <= gs[1] < GRID_H:
+            pg[gs[0]][gs[1]] = False
 
         g_score = {gs: 0.0}
         came_from: dict = {}
@@ -128,11 +190,17 @@ class Pathfinder:
                 return self._reconstruct(came_from, current, start, goal)
             if g > g_score.get(current, float('inf')):
                 continue
+            cx, cy = current
             for dx, dy, cost in self.DIRS:
-                nx, ny = current[0] + dx, current[1] + dy
-                neighbor = (nx, ny)
-                if self.occ.is_cell_occupied(nx, ny):
+                nx, ny = cx + dx, cy + dy
+                if self._pg_blocked(pg, nx, ny):
                     continue
+                # Diagonal corner-cut check: both orthogonal neighbors
+                # must be free to avoid clipping the corner.
+                if dx != 0 and dy != 0:
+                    if self._pg_blocked(pg, cx + dx, cy) or self._pg_blocked(pg, cx, cy + dy):
+                        continue
+                neighbor = (nx, ny)
                 ng = g + cost
                 if ng < g_score.get(neighbor, float('inf')):
                     g_score[neighbor] = ng
@@ -161,7 +229,7 @@ class Pathfinder:
             v1 = path[i]     - path[i - 1]
             v2 = path[i + 1] - path[i]
             cross = v1.x * v2.y - v1.y * v2.x
-            if abs(cross) > 500.0:
+            if abs(cross) > 200.0:   # tighter threshold (was 500)
                 result.append(path[i])
         result.append(path[-1])
         return result

@@ -17,7 +17,7 @@ class RobotPhysics:
     PD velocity control toward target position/heading.
     """
 
-    KP_POS  = 3.5    # position proportional (1/s)
+    KP_POS  = 5.5    # position proportional (1/s)
     KP_ROT  = 5.0    # rotation proportional (1/s)
 
     TRAIL_DIST  = 15.0

@@ -282,6 +282,18 @@
           </span>
           <span class="nav-lbl">Tests</span>
         </button>
+        <button class="nav-btn nav-child" data-view="actuators" onclick="switchView('actuators',this)">
+          <span class="nav-icon">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M3 12V6l3-3h4l3 3v6"/>
+              <circle cx="5.5" cy="9" r="1.5"/>
+              <circle cx="10.5" cy="9" r="1.5"/>
+              <line x1="5.5" y1="10.5" x2="5.5" y2="14"/>
+              <line x1="10.5" y1="10.5" x2="10.5" y2="14"/>
+            </svg>
+          </span>
+          <span class="nav-lbl">Actuators</span>
+        </button>
       </div>
     </div>
 
@@ -335,19 +347,19 @@
 
         <div class="mbar-sep"></div>
 
-        <!-- Tool buttons -->
-        <button class="mbar-tool" id="tool-obs-add" onclick="toggleMapTool('obstacle')" title="Click to add obstacle">
-          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="8" cy="8" r="5.5"/><line x1="8" y1="5" x2="8" y2="11"/><line x1="5" y1="8" x2="11" y2="8"/></svg>
-          <span>Obs+</span>
+        <!-- Grid brush tools -->
+        <button class="mbar-tool" id="tool-obs-add" onclick="toggleMapTool('obstacle')" title="Paint grid obstacles">
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><rect x="2" y="2" width="12" height="12" rx="1"/><line x1="8" y1="5" x2="8" y2="11"/><line x1="5" y1="8" x2="11" y2="8"/></svg>
+          <span>Grid+</span>
         </button>
-        <button class="mbar-tool" id="tool-obs-del" onclick="toggleMapTool('remove_obs')" title="Click to remove obstacle">
-          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="8" cy="8" r="5.5"/><line x1="5" y1="8" x2="11" y2="8"/></svg>
-          <span>Obs−</span>
+        <button class="mbar-tool" id="tool-obs-del" onclick="toggleMapTool('remove_obs')" title="Erase grid obstacles">
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><rect x="2" y="2" width="12" height="12" rx="1"/><line x1="5" y1="8" x2="11" y2="8"/></svg>
+          <span>Grid−</span>
         </button>
 
         <div class="mbar-sep"></div>
 
-        <span class="mbar-hint">Click → pin point · Right-click → toggle grid</span>
+        <span class="mbar-hint">Click → pin point · Brush → paint grid · Right-click → toggle cell</span>
       </div>
 
       <!-- canvas + status sidebar -->
@@ -433,6 +445,33 @@
           <section class="panel" id="color-panel">
             <h3>Game Objects <button class="btn-tiny" onclick="toggleColorPanel()">▾</button></h3>
             <div id="color-list"></div>
+          </section>
+
+          <section class="panel" id="opponent-panel">
+            <h3>Opponent
+              <label class="opp-toggle"><input type="checkbox" id="opp-enabled" onchange="toggleOpponent(this.checked)"> Enabled</label>
+            </h3>
+            <div class="opp-controls">
+              <div class="opp-row">
+                <label>X <input type="number" id="opp-x" value="1500" step="50" onchange="updateOpponentPos()"></label>
+                <label>Y <input type="number" id="opp-y" value="1000" step="50" onchange="updateOpponentPos()"></label>
+                <label>θ <input type="number" id="opp-theta" value="0" step="5" onchange="updateOpponentPos()"></label>
+              </div>
+              <div class="opp-row">
+                <button class="btn-sm" onclick="toggleMapTool('place_opp')" id="tool-place-opp" title="Click on map to place opponent">Place</button>
+              </div>
+              <div class="opp-seq-header">
+                <span>Sequence</span>
+                <button class="btn-tiny" onclick="oppSeqAdd()">+</button>
+                <button class="btn-tiny" onclick="oppSeqClear()">✕</button>
+              </div>
+              <div id="opp-seq-list" class="opp-seq-list"></div>
+              <div class="opp-row">
+                <button class="btn-sm" id="opp-seq-play" onclick="oppSeqPlay()">Play</button>
+                <button class="btn-sm" onclick="oppSeqStop()">Stop</button>
+                <label>Speed <input type="number" id="opp-seq-speed" value="200" step="50" min="50" style="width:55px"> mm/s</label>
+              </div>
+            </div>
           </section>
 
           <section class="panel log-panel">
@@ -1477,6 +1516,86 @@
       </div><!-- /vision-layout -->
     </div><!-- /view-vision -->
 
+    <!-- ════════════════════════════════════════════════════════════════════ -->
+    <!--  ACTUATORS VIEW                                                     -->
+    <!-- ════════════════════════════════════════════════════════════════════ -->
+    <div id="view-actuators" class="view">
+      <div class="act-layout">
+
+        <!-- ── Left: Servo controls ─────────────────────────────────────── -->
+        <div class="act-panel act-servos">
+          <h3>Servo Controls</h3>
+          <div class="act-group-tabs">
+            <button class="act-gtab active" onclick="actSelectGroup('CA',this)">CA (Right)</button>
+            <button class="act-gtab" onclick="actSelectGroup('AB',this)">AB (Hugger)</button>
+            <button class="act-gtab" onclick="actSelectGroup('BC',this)">BC (Banner)</button>
+          </div>
+          <div id="act-servo-list"></div>
+
+          <h4 style="margin-top:12px">Pneumatics</h4>
+          <div class="act-pneum-row">
+            <button class="btn-sm accent" onclick="actCmd('initPump()')">Init Pump</button>
+            <button class="btn-sm" onclick="actCmd('pump(1)')">Pump R</button>
+            <button class="btn-sm" onclick="actCmd('ev(1)')">EV R</button>
+            <button class="btn-sm" onclick="actCmd('pump(0)')">Pump L</button>
+            <button class="btn-sm" onclick="actCmd('ev(0)')">EV L</button>
+          </div>
+
+          <h4 style="margin-top:12px">Presets</h4>
+          <div class="act-preset-grid">
+            <button class="btn-sm" onclick="actCmd('grab(CA)')">Grab CA</button>
+            <button class="btn-sm" onclick="actCmd('drop(CA)')">Drop CA</button>
+            <button class="btn-sm" onclick="actCmd('store(CA)')">Store CA</button>
+            <button class="btn-sm" onclick="actCmd('raise(CA)')">Raise CA</button>
+            <button class="btn-sm" onclick="actCmd('lower(CA)')">Lower CA</button>
+            <button class="btn-sm" onclick="actCmd('grab(AB)')">Grab AB</button>
+            <button class="btn-sm" onclick="actCmd('drop(AB)')">Drop AB</button>
+            <button class="btn-sm" onclick="actCmd('store(AB)')">Store AB</button>
+            <button class="btn-sm" onclick="actCmd('raise(AB)')">Raise AB</button>
+            <button class="btn-sm" onclick="actCmd('lower(AB)')">Lower AB</button>
+          </div>
+        </div>
+
+        <!-- ── Center: Pose library ─────────────────────────────────────── -->
+        <div class="act-panel act-poses">
+          <h3>Pose Library
+            <button class="btn-tiny" onclick="actSnapshotPose()" title="Capture current servo positions as a pose">+ Snapshot</button>
+          </h3>
+          <div id="act-pose-list" class="act-pose-list"></div>
+          <div class="act-pose-actions">
+            <button class="btn-sm" onclick="actSavePoses()">Save to file</button>
+            <button class="btn-sm" onclick="actLoadPoses()">Load from file</button>
+          </div>
+        </div>
+
+        <!-- ── Right: Sequence builder ──────────────────────────────────── -->
+        <div class="act-panel act-seq">
+          <h3>Sequence Builder
+            <select id="act-seq-select" onchange="actLoadSeq(this.value)">
+              <option value="">— new —</option>
+            </select>
+          </h3>
+          <div class="act-seq-name-row">
+            <label>Name <input type="text" id="act-seq-name" value="untitled" placeholder="sequence name"></label>
+          </div>
+          <div id="act-seq-steps" class="act-seq-steps"></div>
+          <div class="act-seq-add-row">
+            <button class="btn-sm" onclick="actSeqAddPose()">+ Pose</button>
+            <button class="btn-sm" onclick="actSeqAddDelay()">+ Delay</button>
+            <button class="btn-sm" onclick="actSeqAddCmd()">+ Command</button>
+          </div>
+          <div class="act-seq-ctrl-row">
+            <button class="btn-sm accent" id="act-seq-play-btn" onclick="actSeqPlay()">Play</button>
+            <button class="btn-sm" onclick="actSeqStop()">Stop</button>
+            <button class="btn-sm" onclick="actSeqSave()">Save</button>
+            <button class="btn-sm" onclick="actSeqDelete()">Delete</button>
+            <button class="btn-sm" onclick="actSeqExportClip()">Copy code</button>
+          </div>
+          <div id="act-seq-status" class="act-seq-status"></div>
+        </div>
+
+      </div>
+    </div><!-- /view-actuators -->
 
 
   </div><!-- /views -->

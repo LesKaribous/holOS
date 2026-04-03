@@ -274,6 +274,8 @@ function switchView(name, btn) {
     onCalibViewActivated();
   } else if (name === 'vision') {
     onVisionViewActivated();
+  } else if (name === 'actuators') {
+    actInit();
   }
 
   // Notify server about vision view focus (controls frame push rate)
@@ -322,7 +324,7 @@ function render(s) {
   if (s.features.show_grid)  drawGrid(s);
   if (s.features.show_trail) drawTrail(s);
   if (s.features.show_path)  drawPath(s);
-  drawDynObs(s);
+  drawOpponent(s);
   drawGameObjects(s);
   drawPOIs(ctx, wx, wy, wlen, poiData);
   drawMapTraj();
@@ -421,12 +423,23 @@ function drawGrid(s) {
   }
 }
 
-function drawDynObs(s) {
-  for (const o of s.dyn_obs) {
-    ctx.beginPath(); ctx.arc(wx(o[0]), wy(o[1]), wlen(150), 0, Math.PI*2);
-    ctx.fillStyle='rgba(192,57,43,.25)'; ctx.fill();
-    ctx.strokeStyle='#c03a2bd3'; ctx.lineWidth=1.5; ctx.stroke();
-  }
+function drawOpponent(s) {
+  const opp = s.opponent;
+  if (!opp || !opp.enabled) return;
+  const cx = wx(opp.x), cy = wy(opp.y), r = wlen(120);
+  // Body circle
+  ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2);
+  ctx.fillStyle = 'rgba(231,76,60,.2)'; ctx.fill();
+  ctx.strokeStyle = '#e74c3c'; ctx.lineWidth = 2; ctx.stroke();
+  // Direction arrow
+  const th = opp.theta || 0;
+  const dx = Math.cos(th) * r, dy = -Math.sin(th) * r;
+  ctx.beginPath(); ctx.moveTo(cx, cy); ctx.lineTo(cx + dx, cy + dy);
+  ctx.strokeStyle = '#e74c3c'; ctx.lineWidth = 2; ctx.stroke();
+  // Label
+  ctx.fillStyle = '#e74c3c'; ctx.font = '11px monospace'; ctx.textAlign = 'center';
+  ctx.fillText('OPP', cx, cy - r - 4);
+  ctx.textAlign = 'start';
 }
 
 function drawPath(s) {
@@ -567,21 +580,58 @@ function toggleColorPanel() {
 }
 
 // ── Canvas interaction ─────────────────────────────────────────────────────
-canvas.addEventListener('mousemove', e => {
-  const rect=canvas.getBoundingClientRect(), w=canvasToWorld(e.clientX-rect.left,e.clientY-rect.top);
-  const inF=w.x>=0&&w.x<=FIELD_W&&w.y>=0&&w.y<=FIELD_H;
-  const el=document.getElementById('coord-display');
-  if (el) el.textContent=inF?`x: ${w.x.toFixed(0)} mm   y: ${w.y.toFixed(0)} mm`:'x:— y:—';
-});
-canvas.addEventListener('click', e => {
-  const rect=canvas.getBoundingClientRect(), w=canvasToWorld(e.clientX-rect.left,e.clientY-rect.top);
-  if (w.x<0||w.x>FIELD_W||w.y<0||w.y>FIELD_H) return;
+// (mousemove handler is combined with brush drag below)
+// ── Grid brush drag state ─────────────────────────────────────────────────
+let _brushDown = false;
+let _lastBrushCell = null;
 
-  // If an obstacle tool is active, delegate to backend
+function _paintGridCell(wx, wy) {
+  const gx = Math.floor(wx / GRID_CELL);
+  const gy = Math.floor(wy / GRID_CELL);
+  if (gx < 0 || gx >= GRID_W || gy < 0 || gy >= GRID_H) return;
+  const key = gx + ',' + gy;
+  if (_lastBrushCell === key) return;          // avoid spamming same cell
+  _lastBrushCell = key;
+  const value = (_mapTool === 'obstacle');      // true = add, false = remove
+  socket.emit('paint_grid', { gx, gy, value });
+}
+
+canvas.addEventListener('mousedown', e => {
+  if (e.button !== 0) return;
+  const rect = canvas.getBoundingClientRect(), w = canvasToWorld(e.clientX - rect.left, e.clientY - rect.top);
+  if (w.x < 0 || w.x > FIELD_W || w.y < 0 || w.y > FIELD_H) return;
+
   if (_mapTool === 'obstacle' || _mapTool === 'remove_obs') {
-    socket.emit('field_click',{x:w.x,y:w.y,button:0});
+    _brushDown = true;
+    _lastBrushCell = null;
+    _paintGridCell(w.x, w.y);
     return;
   }
+  if (_mapTool === 'place_opp') {
+    _placeOpponentAt(w.x, w.y);
+    return;
+  }
+});
+
+canvas.addEventListener('mousemove', e => {
+  const rect = canvas.getBoundingClientRect(), w = canvasToWorld(e.clientX - rect.left, e.clientY - rect.top);
+  const inF = w.x >= 0 && w.x <= FIELD_W && w.y >= 0 && w.y <= FIELD_H;
+  const el = document.getElementById('coord-display');
+  if (el) el.textContent = inF ? `x: ${w.x.toFixed(0)} mm   y: ${w.y.toFixed(0)} mm` : 'x:— y:—';
+  // drag-painting
+  if (_brushDown && inF) _paintGridCell(w.x, w.y);
+});
+
+canvas.addEventListener('mouseup', () => { _brushDown = false; _lastBrushCell = null; });
+canvas.addEventListener('mouseleave', () => { _brushDown = false; _lastBrushCell = null; });
+
+canvas.addEventListener('click', e => {
+  if (_brushDown) return; // handled by mousedown/move
+  const rect = canvas.getBoundingClientRect(), w = canvasToWorld(e.clientX - rect.left, e.clientY - rect.top);
+  if (w.x < 0 || w.x > FIELD_W || w.y < 0 || w.y > FIELD_H) return;
+
+  // Grid tools handled in mousedown
+  if (_mapTool === 'obstacle' || _mapTool === 'remove_obs' || _mapTool === 'place_opp') return;
 
   // Default: drop a pin and show popover
   _mapPin = { x: Math.round(w.x), y: Math.round(w.y) };
@@ -590,9 +640,13 @@ canvas.addEventListener('click', e => {
 });
 canvas.addEventListener('contextmenu', e => {
   e.preventDefault();
-  const rect=canvas.getBoundingClientRect(), w=canvasToWorld(e.clientX-rect.left,e.clientY-rect.top);
-  if (w.x<0||w.x>FIELD_W||w.y<0||w.y>FIELD_H) return;
-  socket.emit('field_click',{x:w.x,y:w.y,button:2});
+  const rect = canvas.getBoundingClientRect(), w = canvasToWorld(e.clientX - rect.left, e.clientY - rect.top);
+  if (w.x < 0 || w.x > FIELD_W || w.y < 0 || w.y > FIELD_H) return;
+  // Right-click = toggle cell
+  const gx = Math.floor(w.x / GRID_CELL), gy = Math.floor(w.y / GRID_CELL);
+  if (gx >= 0 && gx < GRID_W && gy >= 0 && gy < GRID_H) {
+    socket.emit('field_click', { x: w.x, y: w.y, button: 2 });
+  }
 });
 
 // ── Controls ──────────────────────────────────────────────────────────────
@@ -619,13 +673,14 @@ let _mapTraj = [];      // [{x, y}, ...] — trajectory waypoints
 function toggleMapTool(tool) {
   if (_mapTool === tool) {
     _mapTool = null;
-    setMode('target'); // reset backend mode
   } else {
     _mapTool = tool;
-    setMode(tool);
   }
   document.getElementById('tool-obs-add')?.classList.toggle('active', _mapTool === 'obstacle');
   document.getElementById('tool-obs-del')?.classList.toggle('active', _mapTool === 'remove_obs');
+  document.getElementById('tool-place-opp')?.classList.toggle('active', _mapTool === 'place_opp');
+  // Set cursor style
+  canvas.style.cursor = _mapTool ? 'crosshair' : '';
 }
 
 // ── Pin popover show/hide ───────────────────────────────────────────────────
@@ -808,6 +863,118 @@ function drawMapTraj() {
     ctx.fillText(i + 1, px, py + 0.5);
   }
 }
+// ═══════════════════════════════════════════════════════════════════════════════
+//  FAKE OPPONENT SYSTEM
+// ═══════════════════════════════════════════════════════════════════════════════
+
+let _oppSeq = [];           // [{x, y, theta}, ...]
+let _oppSeqPlaying = false;
+let _oppSeqTimer = null;
+
+function toggleOpponent(enabled) {
+  socket.emit('set_opponent_enabled', { enabled });
+}
+
+function updateOpponentPos() {
+  const x = parseFloat(document.getElementById('opp-x')?.value || 0);
+  const y = parseFloat(document.getElementById('opp-y')?.value || 0);
+  const theta = parseFloat(document.getElementById('opp-theta')?.value || 0) * Math.PI / 180;
+  socket.emit('set_opponent_pos', { x, y, theta });
+}
+
+function _placeOpponentAt(wx, wy) {
+  const elX = document.getElementById('opp-x');
+  const elY = document.getElementById('opp-y');
+  if (elX) elX.value = Math.round(wx);
+  if (elY) elY.value = Math.round(wy);
+  // Enable if not already
+  const cb = document.getElementById('opp-enabled');
+  if (cb && !cb.checked) { cb.checked = true; toggleOpponent(true); }
+  updateOpponentPos();
+  toggleMapTool('place_opp'); // deactivate tool after placing
+}
+
+function oppSeqAdd() {
+  const x = parseFloat(document.getElementById('opp-x')?.value || 0);
+  const y = parseFloat(document.getElementById('opp-y')?.value || 0);
+  const theta = parseFloat(document.getElementById('opp-theta')?.value || 0);
+  _oppSeq.push({ x, y, theta });
+  _renderOppSeq();
+}
+
+function oppSeqClear() {
+  _oppSeq = [];
+  _renderOppSeq();
+}
+
+function oppSeqRemove(idx) {
+  _oppSeq.splice(idx, 1);
+  _renderOppSeq();
+}
+
+function _renderOppSeq() {
+  const el = document.getElementById('opp-seq-list');
+  if (!el) return;
+  if (_oppSeq.length === 0) { el.innerHTML = '<span class="opp-empty">No waypoints</span>'; return; }
+  el.innerHTML = _oppSeq.map((p, i) =>
+    `<div class="opp-seq-item">
+       <span class="opp-seq-idx">${i+1}</span>
+       <span>(${p.x}, ${p.y})</span>
+       <button class="btn-tiny" onclick="oppSeqRemove(${i})">✕</button>
+     </div>`
+  ).join('');
+}
+
+function oppSeqPlay() {
+  if (_oppSeq.length < 2) { showToast('Need at least 2 waypoints'); return; }
+  const speed = parseFloat(document.getElementById('opp-seq-speed')?.value || 200);
+  _oppSeqPlaying = true;
+  document.getElementById('opp-seq-play')?.classList.add('active');
+
+  let segIdx = 0;
+  let segProgress = 0;
+
+  function tick() {
+    if (!_oppSeqPlaying || segIdx >= _oppSeq.length - 1) {
+      _oppSeqPlaying = false;
+      document.getElementById('opp-seq-play')?.classList.remove('active');
+      return;
+    }
+    const a = _oppSeq[segIdx], b = _oppSeq[segIdx + 1];
+    const dist = Math.hypot(b.x - a.x, b.y - a.y);
+    const dt = 1/30;  // 30 Hz tick
+    const step = (speed * dt) / (dist || 1);
+    segProgress += step;
+
+    if (segProgress >= 1) {
+      segProgress = 0;
+      segIdx++;
+      if (segIdx >= _oppSeq.length - 1) {
+        // Loop back
+        segIdx = 0;
+      }
+    }
+    const p = _oppSeq[segIdx], q = _oppSeq[Math.min(segIdx + 1, _oppSeq.length - 1)];
+    const t = Math.min(segProgress, 1);
+    const cx = p.x + (q.x - p.x) * t;
+    const cy = p.y + (q.y - p.y) * t;
+    const th = Math.atan2(q.y - p.y, q.x - p.x);
+    socket.emit('set_opponent_pos', { x: cx, y: cy, theta: th });
+
+    _oppSeqTimer = setTimeout(tick, dt * 1000);
+  }
+  tick();
+}
+
+function oppSeqStop() {
+  _oppSeqPlaying = false;
+  if (_oppSeqTimer) { clearTimeout(_oppSeqTimer); _oppSeqTimer = null; }
+  document.getElementById('opp-seq-play')?.classList.remove('active');
+}
+
+// Init opponent sequence list
+_renderOppSeq();
+
 function setFeature(k,v)  { socket.emit('set_feature',{feature:k,value:v}); }
 function setFeedrate(v) {
   document.getElementById('feedrate-val').textContent=parseFloat(v).toFixed(2)+'×';
@@ -4109,3 +4276,389 @@ async function remoteGoPolar(bearingDeg) {
 }
 
 // (remote is now a drawer; activation handled by toggleRemoteDrawer)
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//  ACTUATOR PAGE — Servo controls, Pose library, Sequence builder
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// ── Servo definitions (matches firmware groups.h) ──────────────────────────
+const ACT_GROUPS = {
+  CA: {
+    label: 'CA (Right Manip)',
+    servos: [
+      { id: 0, name: 'Grabber R',  min: 0, max: 180, def: 121, poses: { 0: 162, 1: 162, 2: 121 } },
+      { id: 1, name: 'Elevator',   min: 0, max: 180, def: 50,  poses: { 0: 50, 1: 50, 2: 5 } },
+      { id: 2, name: 'Grabber L',  min: 0, max: 180, def: 65,  poses: { 0: 20, 1: 20, 2: 65 } },
+    ],
+  },
+  AB: {
+    label: 'AB (Hugger)',
+    servos: [
+      { id: 3, name: 'Hug Elevator', min: 0, max: 180, def: 155, poses: { 0: 155, 1: 155, 2: 90 } },
+      { id: 4, name: 'Hug Grab',     min: 0, max: 180, def: 90,  poses: { 0: 90, 1: 30, 2: 90 } },
+    ],
+  },
+  BC: {
+    label: 'BC (Banner)',
+    servos: [],
+  },
+};
+
+let _actGroup = 'CA';
+let _actServoAngles = {};   // { "CA:0": 121, "CA:2": 65, ... }
+let _actPoses = {};         // { poseName: { "CA:0": angle, ... } }
+let _actSequences = {};     // { seqName: { steps: [...] } }
+let _actSeqSteps = [];      // current editing steps
+let _actSeqPlaying = false;
+let _actSeqAbort = false;
+
+// ── Init: load poses + sequences from backend ──────────────────────────────
+async function actInit() {
+  try {
+    const [posesRes, seqsRes] = await Promise.all([
+      fetch('/api/actuator/poses').then(r => r.json()),
+      fetch('/api/actuator/sequences').then(r => r.json()),
+    ]);
+    _actPoses = posesRes || {};
+    _actSequences = seqsRes || {};
+  } catch (e) { console.warn('actInit failed:', e); }
+  actRenderServos();
+  actRenderPoses();
+  actRenderSeqSelect();
+  _actSeqSteps = [];
+  actRenderSeqSteps();
+}
+
+// ── Group tab switch ───────────────────────────────────────────────────────
+function actSelectGroup(group, btn) {
+  _actGroup = group;
+  document.querySelectorAll('.act-gtab').forEach(b => b.classList.remove('active'));
+  btn?.classList.add('active');
+  actRenderServos();
+}
+
+// ── Servo slider rendering ─────────────────────────────────────────────────
+function actRenderServos() {
+  const el = document.getElementById('act-servo-list');
+  if (!el) return;
+  const g = ACT_GROUPS[_actGroup];
+  if (!g || g.servos.length === 0) {
+    el.innerHTML = '<span class="act-empty">No servos in this group</span>';
+    return;
+  }
+  el.innerHTML = g.servos.map(s => {
+    const key = `${_actGroup}:${s.id}`;
+    const val = _actServoAngles[key] ?? s.def;
+    const poseNames = ['DROP', 'GRAB', 'STORE'];
+    const poseBtns = Object.entries(s.poses).map(([pi, a]) =>
+      `<button class="act-pose-btn" onclick="actServoMoveTo('${_actGroup}',${s.id},${a})" title="${poseNames[pi]||pi}: ${a}°">${poseNames[pi]||pi}</button>`
+    ).join('');
+    return `<div class="act-servo-row">
+      <div class="act-servo-hdr">
+        <span class="act-servo-name">${s.name}</span>
+        <span class="act-servo-val" id="act-val-${key}">${val}°</span>
+      </div>
+      <div class="act-servo-slider-row">
+        <input type="range" min="${s.min}" max="${s.max}" value="${val}" class="act-slider"
+          id="act-slider-${key}"
+          oninput="actSliderMove('${key}',this.value)"
+          onchange="actSliderSend('${_actGroup}',${s.id},'${key}')">
+        <button class="btn-tiny" onclick="actSliderSend('${_actGroup}',${s.id},'${key}')" title="Send to robot">Go</button>
+      </div>
+      <div class="act-servo-poses">${poseBtns}</div>
+    </div>`;
+  }).join('');
+}
+
+function actSliderMove(key, val) {
+  _actServoAngles[key] = parseInt(val);
+  const el = document.getElementById('act-val-' + key);
+  if (el) el.textContent = val + '°';
+}
+
+async function actSliderSend(group, servoId, key) {
+  const angle = _actServoAngles[key] ?? 90;
+  await actCmd(`servo(${group},${servoId},${angle})`);
+}
+
+async function actServoMoveTo(group, servoId, angle) {
+  const key = `${group}:${servoId}`;
+  _actServoAngles[key] = angle;
+  const slider = document.getElementById('act-slider-' + key);
+  if (slider) slider.value = angle;
+  const valEl = document.getElementById('act-val-' + key);
+  if (valEl) valEl.textContent = angle + '°';
+  await actCmd(`servo(${group},${servoId},${angle})`);
+}
+
+async function actCmd(cmd) {
+  try {
+    const res = await fetch('/api/exec', {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ cmd, timeout_ms: 5000 })
+    });
+    const d = await res.json();
+    const st = document.getElementById('act-seq-status');
+    if (st) st.textContent = d.ok ? `✓ ${cmd}` : `✗ ${cmd}: ${d.res}`;
+    return d;
+  } catch (e) {
+    const st = document.getElementById('act-seq-status');
+    if (st) st.textContent = `✗ ${cmd}: request failed`;
+    return { ok: false, res: 'error' };
+  }
+}
+
+// ── Pose Library ───────────────────────────────────────────────────────────
+function actSnapshotPose() {
+  const name = prompt('Pose name:', `pose_${Object.keys(_actPoses).length}`);
+  if (!name) return;
+  // Capture current slider angles
+  const snapshot = {};
+  for (const [gname, g] of Object.entries(ACT_GROUPS)) {
+    for (const s of g.servos) {
+      const key = `${gname}:${s.id}`;
+      snapshot[key] = _actServoAngles[key] ?? s.def;
+    }
+  }
+  _actPoses[name] = snapshot;
+  actRenderPoses();
+  actSavePosesRemote();
+}
+
+function actRenderPoses() {
+  const el = document.getElementById('act-pose-list');
+  if (!el) return;
+  const names = Object.keys(_actPoses);
+  if (names.length === 0) {
+    el.innerHTML = '<span class="act-empty">No poses saved. Use "+ Snapshot" to capture current positions.</span>';
+    return;
+  }
+  el.innerHTML = names.map(name => {
+    const p = _actPoses[name];
+    const summary = Object.entries(p).map(([k, v]) => `${k}=${v}`).join(', ');
+    return `<div class="act-pose-item">
+      <span class="act-pose-name">${name}</span>
+      <span class="act-pose-summary">${summary}</span>
+      <div class="act-pose-btns">
+        <button class="btn-tiny" onclick="actPoseApply('${name}')" title="Send all servos to these positions">Apply</button>
+        <button class="btn-tiny" onclick="actPoseDelete('${name}')" title="Remove pose">✕</button>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+async function actPoseApply(name) {
+  const p = _actPoses[name];
+  if (!p) return;
+  for (const [key, angle] of Object.entries(p)) {
+    const [group, sid] = key.split(':');
+    const servoId = parseInt(sid);
+    _actServoAngles[key] = angle;
+    const slider = document.getElementById('act-slider-' + key);
+    if (slider) slider.value = angle;
+    const valEl = document.getElementById('act-val-' + key);
+    if (valEl) valEl.textContent = angle + '°';
+    // Fire command (don't await each one — parallel send)
+    actCmd(`servo(${group},${servoId},${angle})`);
+  }
+}
+
+function actPoseDelete(name) {
+  delete _actPoses[name];
+  actRenderPoses();
+  actSavePosesRemote();
+}
+
+async function actSavePosesRemote() {
+  await fetch('/api/actuator/poses', {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify(_actPoses)
+  });
+}
+
+function actSavePoses() {
+  const blob = new Blob([JSON.stringify(_actPoses, null, 2)], { type: 'application/json' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'actuator_poses.json';
+  a.click();
+}
+
+function actLoadPoses() {
+  const input = document.createElement('input');
+  input.type = 'file'; input.accept = '.json';
+  input.onchange = async () => {
+    const file = input.files[0]; if (!file) return;
+    const text = await file.text();
+    try {
+      const data = JSON.parse(text);
+      Object.assign(_actPoses, data);
+      actRenderPoses();
+      actSavePosesRemote();
+      showToast(`Loaded ${Object.keys(data).length} poses`);
+    } catch (e) { showToast('Invalid JSON'); }
+  };
+  input.click();
+}
+
+// ── Sequence Builder ───────────────────────────────────────────────────────
+function actRenderSeqSelect() {
+  const sel = document.getElementById('act-seq-select');
+  if (!sel) return;
+  const names = Object.keys(_actSequences);
+  sel.innerHTML = '<option value="">— new —</option>' +
+    names.map(n => `<option value="${n}">${n}</option>`).join('');
+}
+
+function actLoadSeq(name) {
+  if (!name) { _actSeqSteps = []; actRenderSeqSteps(); return; }
+  const seq = _actSequences[name];
+  if (!seq) return;
+  document.getElementById('act-seq-name').value = name;
+  _actSeqSteps = JSON.parse(JSON.stringify(seq.steps || []));
+  actRenderSeqSteps();
+}
+
+function actSeqAddPose() {
+  const names = Object.keys(_actPoses);
+  if (names.length === 0) { showToast('Create poses first'); return; }
+  const name = prompt('Pose name to add:', names[0]);
+  if (!name || !_actPoses[name]) { showToast('Unknown pose'); return; }
+  _actSeqSteps.push({ type: 'pose', pose: name });
+  actRenderSeqSteps();
+}
+
+function actSeqAddDelay() {
+  const ms = prompt('Delay (ms):', '500');
+  if (!ms) return;
+  _actSeqSteps.push({ type: 'delay', ms: parseInt(ms) || 500 });
+  actRenderSeqSteps();
+}
+
+function actSeqAddCmd() {
+  const cmd = prompt('Raw command:', 'grab(CA)');
+  if (!cmd) return;
+  _actSeqSteps.push({ type: 'cmd', cmd });
+  actRenderSeqSteps();
+}
+
+function actSeqRemoveStep(idx) {
+  _actSeqSteps.splice(idx, 1);
+  actRenderSeqSteps();
+}
+
+function actSeqMoveStep(idx, dir) {
+  const ni = idx + dir;
+  if (ni < 0 || ni >= _actSeqSteps.length) return;
+  [_actSeqSteps[idx], _actSeqSteps[ni]] = [_actSeqSteps[ni], _actSeqSteps[idx]];
+  actRenderSeqSteps();
+}
+
+function actRenderSeqSteps() {
+  const el = document.getElementById('act-seq-steps');
+  if (!el) return;
+  if (_actSeqSteps.length === 0) {
+    el.innerHTML = '<span class="act-empty">No steps. Add poses, delays, or commands.</span>';
+    return;
+  }
+  el.innerHTML = _actSeqSteps.map((s, i) => {
+    let icon, label;
+    if (s.type === 'pose')  { icon = '🎯'; label = `Pose: <b>${s.pose}</b>`; }
+    else if (s.type === 'delay') { icon = '⏱'; label = `Wait ${s.ms} ms`; }
+    else if (s.type === 'cmd')   { icon = '⚡'; label = `<code>${s.cmd}</code>`; }
+    else { icon = '?'; label = JSON.stringify(s); }
+    return `<div class="act-seq-step" id="act-step-${i}">
+      <span class="act-step-idx">${i+1}</span>
+      <span class="act-step-icon">${icon}</span>
+      <span class="act-step-label">${label}</span>
+      <div class="act-step-btns">
+        <button class="btn-tiny" onclick="actSeqMoveStep(${i},-1)" title="Move up">↑</button>
+        <button class="btn-tiny" onclick="actSeqMoveStep(${i},1)" title="Move down">↓</button>
+        <button class="btn-tiny" onclick="actSeqRemoveStep(${i})">✕</button>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+async function actSeqSave() {
+  const name = (document.getElementById('act-seq-name')?.value || 'untitled').trim().replace(/\s+/g, '_');
+  if (!name) return;
+  const data = { steps: _actSeqSteps };
+  await fetch(`/api/actuator/sequences/${encodeURIComponent(name)}`, {
+    method: 'PUT', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify(data)
+  });
+  _actSequences[name] = data;
+  actRenderSeqSelect();
+  document.getElementById('act-seq-select').value = name;
+  showToast(`Sequence "${name}" saved`);
+}
+
+async function actSeqDelete() {
+  const name = document.getElementById('act-seq-select')?.value;
+  if (!name) return;
+  await fetch(`/api/actuator/sequences/${encodeURIComponent(name)}`, { method: 'DELETE' });
+  delete _actSequences[name];
+  actRenderSeqSelect();
+  _actSeqSteps = [];
+  actRenderSeqSteps();
+  showToast(`Sequence "${name}" deleted`);
+}
+
+async function actSeqPlay() {
+  if (_actSeqPlaying) return;
+  if (_actSeqSteps.length === 0) { showToast('Empty sequence'); return; }
+  _actSeqPlaying = true;
+  _actSeqAbort = false;
+  document.getElementById('act-seq-play-btn')?.classList.add('active');
+  const st = document.getElementById('act-seq-status');
+
+  for (let i = 0; i < _actSeqSteps.length; i++) {
+    if (_actSeqAbort) break;
+    const step = _actSeqSteps[i];
+    // Highlight current step
+    document.querySelectorAll('.act-seq-step').forEach(el => el.classList.remove('playing'));
+    document.getElementById('act-step-' + i)?.classList.add('playing');
+
+    if (step.type === 'pose') {
+      if (st) st.textContent = `▶ Step ${i+1}: applying pose "${step.pose}"`;
+      await actPoseApply(step.pose);
+    } else if (step.type === 'delay') {
+      if (st) st.textContent = `▶ Step ${i+1}: waiting ${step.ms}ms`;
+      await new Promise(r => setTimeout(r, step.ms));
+    } else if (step.type === 'cmd') {
+      if (st) st.textContent = `▶ Step ${i+1}: ${step.cmd}`;
+      await actCmd(step.cmd);
+    }
+  }
+
+  document.querySelectorAll('.act-seq-step').forEach(el => el.classList.remove('playing'));
+  if (st) st.textContent = _actSeqAbort ? '⏹ Stopped' : '✓ Sequence complete';
+  _actSeqPlaying = false;
+  document.getElementById('act-seq-play-btn')?.classList.remove('active');
+}
+
+function actSeqStop() {
+  _actSeqAbort = true;
+}
+
+function actSeqExportClip() {
+  // Generate Python-like code from the sequence
+  const lines = _actSeqSteps.map(s => {
+    if (s.type === 'pose') {
+      const p = _actPoses[s.pose];
+      if (!p) return `# Unknown pose: ${s.pose}`;
+      return Object.entries(p).map(([key, angle]) => {
+        const [group, sid] = key.split(':');
+        return `brain.exec("servo(${group},${sid},${angle})")`;
+      }).join('\n');
+    }
+    if (s.type === 'delay') return `time.sleep(${(s.ms/1000).toFixed(3)})`;
+    if (s.type === 'cmd') return `brain.exec("${s.cmd}")`;
+    return `# unknown step`;
+  }).join('\n');
+  navigator.clipboard.writeText(lines).then(() => showToast('Copied to clipboard'));
+}
+
+// Init actuator page when navigating to it
+// (called from switchView or on page load if that's the active view)
