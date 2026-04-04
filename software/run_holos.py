@@ -387,9 +387,6 @@ def api_go():
         return jsonify({'ok': False, 'res': f'bad params: {e}'}), 400
     try:
         b = _active_brain()
-        occ_cells = b.occupancy.to_list()
-        path = b.motion._pathfinder.find_path(b.motion._pos, Vec2(x, y)) if b.motion.use_pathfinding and b.motion._pathfinder else None
-        print(f"[go] from={b.motion._pos} to=({x},{y}) pathfinding={b.motion.use_pathfinding} occ_cells={len(occ_cells)} path={path}")
         b.motion.go(x, y)
         ok = b.motion.was_successful()
         return jsonify({'ok': ok, 'res': 'ok' if ok else 'failed'})

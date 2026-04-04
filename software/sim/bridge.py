@@ -240,6 +240,17 @@ class SimBridge:
         """Execute a command. resolve_cb(uid, success, response) when done."""
         cmd = cmd.strip()
 
+        # ── Chained commands: via(x,y);...;go(x,y) ────────────────────────
+        # The motion service pre-computes A* waypoints as via() prefixes.
+        # The sim bridge does its own pathfinding in _start_motion_xy, so we
+        # simply discard the via() parts and execute the final motion command.
+        if ';' in cmd:
+            parts = [p.strip() for p in cmd.split(';')]
+            final = next((p for p in reversed(parts) if not p.startswith('via(')), None)
+            if final:
+                cmd = final
+            # (fall through to the normal command dispatch below)
+
         # ── Heartbeat ──────────────────────────────────────────────────────
         if cmd == "hb":
             resolve_cb(uid, True, "ok")
