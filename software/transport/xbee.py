@@ -355,7 +355,8 @@ class XBeeTransport(Transport):
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-_MOTION_CMDS = ('go(', 'goPolar(', 'turn(', 'align(', 'goAlign(', 'move(')
+_MOTION_CMDS = ('go(', 'go_coc(', 'goPolar(', 'turn(', 'align(', 'goAlign(', 'move(')
 
 def _is_motion_command(cmd: str) -> bool:
-    return any(cmd.startswith(c) for c in _MOTION_CMDS)
+    # A chained command like "via(x,y);go(x,y)" must also be treated as motion.
+    return any(part.strip().startswith(c) for part in cmd.split(';') for c in _MOTION_CMDS)

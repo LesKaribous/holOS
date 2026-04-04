@@ -210,7 +210,12 @@ FLASHMEM void onRobotBoot() {
     jetsonBridge.registerFallback(FallbackID::RETURN_TO_BASE, []() {
         motion.cancel();
         safety.enable();
-        async motion.go(POI::home);
+
+        if(ihm.isColor(Settings::BLUE)) {
+            async motion.go(POI::startBlue);
+        } else {
+            async motion.go(POI::startYellow);
+        }
     });
 
     // Register mission fallback: execute SD strategy when Jetson disconnects

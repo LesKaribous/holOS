@@ -61,29 +61,16 @@ static bool isColorUseful(ObjectColor color) {
 
 static BlockResult blockCollectA() {
     // Interroger la couleur avant de se déplacer (sync, 400ms max)
-    ObjectColor color = vision.queryColorSync(POI::testA, 400);
-    Console::info("Strategy") << "Zone A: " << colorName(color) << Console::endl;
-    if (!isColorUseful(color)) return BlockResult::FAILED;
+    //ObjectColor color = vision.queryColorSync(POI::testA, 400);
+    //Console::info("Strategy") << "Zone A: " << colorName(color) << Console::endl;
+    //if (!isColorUseful(color)) return BlockResult::FAILED;
 
-    async motion.goAlign(POI::testA, RobotCompass::AB, getCompassOrientation(TableCompass::SOUTH));
+    async motion.goAlign(POI::stockYellow_01, RobotCompass::AB, getCompassOrientation(TableCompass::SOUTH));
     if (!motion.wasSuccessful()) return BlockResult::FAILED;
 
-    collectStock(POI::testA, TableCompass::SOUTH, RobotCompass::AB);
+    collectStock(POI::stockYellow_01, TableCompass::WEST, RobotCompass::AB);
     return motion.wasSuccessful() ? BlockResult::SUCCESS : BlockResult::FAILED;
 }
-
-static BlockResult blockCollectB() {
-    ObjectColor color = vision.queryColorSync(POI::testB, 400);
-    Console::info("Strategy") << "Zone B: " << colorName(color) << Console::endl;
-    if (!isColorUseful(color)) return BlockResult::FAILED;
-
-    async motion.goAlign(POI::testB, RobotCompass::CA, getCompassOrientation(TableCompass::EAST));
-    if (!motion.wasSuccessful()) return BlockResult::FAILED;
-
-    collectStock(POI::testB, TableCompass::EAST, RobotCompass::CA);
-    return motion.wasSuccessful() ? BlockResult::SUCCESS : BlockResult::FAILED;
-}
-
 
 // ============================================================
 //  Conditions de faisabilité
@@ -101,16 +88,9 @@ namespace ZoneCheck {
 }
 
 static bool isZoneAFree() {
-    bool occupied = occupancy.isZoneOccupied(POI::testA, ZoneCheck::RADIUS);
+    bool occupied = occupancy.isZoneOccupied(POI::stockYellow_01, ZoneCheck::RADIUS);
     if (occupied)
         Console::warn("Strategy") << "Zone A occupee — bloc skipe" << Console::endl;
-    return !occupied;
-}
-
-static bool isZoneBFree() {
-    bool occupied = occupancy.isZoneOccupied(POI::testB, ZoneCheck::RADIUS);
-    if (occupied)
-        Console::warn("Strategy") << "Zone B occupee — bloc skipe" << Console::endl;
     return !occupied;
 }
 
@@ -132,8 +112,8 @@ FLASHMEM void match() {
         })
         .setSafetyMargin(5000)  // Ne pas démarrer un bloc si < 5s restantes
         // { nom,           priorité, points, durée estimée (ms), action,       faisabilité }
-        .add({ "collect_A", 10,       150,    Timing::COLLECT_STOCK_A, blockCollectA, isZoneAFree })
-        .add({ "collect_B",  8,        80,    Timing::COLLECT_STOCK_B, blockCollectB, isZoneBFree });
+        .add({ "collect_A", 10,       150,    Timing::COLLECT_STOCK_A, blockCollectA, isZoneAFree });
+        //.add({ "collect_B",  8,        80,    Timing::COLLECT_STOCK_B, blockCollectB, isZoneBFree });
 
     mission.run();
 
@@ -200,10 +180,10 @@ FLASHMEM void nearEnd(){
 
     // Go to the waiting point near SIMAs
     if(ihm.isColor(Settings::BLUE)) {
-        async motion.go(POI::home);
+        async motion.go(POI::startBlue);
     }
     else {
-        async motion.go(POI::home);
+        async motion.go(POI::startYellow);
     }
 
     // // Time to wait befor SIMAs leave the Backstage

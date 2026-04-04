@@ -259,7 +259,7 @@ def _build_state() -> dict:
     # Sim data only available in 'sim' mode
     path_pts = [[p.x, p.y] for p in bridge.current_path()] if sim_on else []
     occ_list = occupancy.to_list()  # updated by sim physics or by _on_occ hw telemetry
-    objs     = game_objs.to_list()                          if sim_on else []
+    objs     = game_objs.to_list()   # always include (colors set via on_set_color)
 
     return {
         'robot':     robot.to_dict(),
@@ -374,6 +374,52 @@ def api_exec():
         return jsonify({'ok': ok, 'res': res})
     except Exception as e:
         return jsonify({'ok': False, 'res': str(e)}), 500
+
+
+@app.route('/api/go', methods=['POST'])
+def api_go():
+    """Move to (x, y) via the active brain's motion service (uses pathfinder if enabled)."""
+    data = request.get_json(force=True) or {}
+    try:
+        x = float(data['x'])
+        y = float(data['y'])
+    except (KeyError, ValueError) as e:
+        return jsonify({'ok': False, 'res': f'bad params: {e}'}), 400
+    try:
+        b = _active_brain()
+        occ_cells = b.occupancy.to_list()
+        path = b.motion._pathfinder.find_path(b.motion._pos, Vec2(x, y)) if b.motion.use_pathfinding and b.motion._pathfinder else None
+        print(f"[go] from={b.motion._pos} to=({x},{y}) pathfinding={b.motion.use_pathfinding} occ_cells={len(occ_cells)} path={path}")
+        b.motion.go(x, y)
+        ok = b.motion.was_successful()
+        return jsonify({'ok': ok, 'res': 'ok' if ok else 'failed'})
+    except Exception as e:
+        return jsonify({'ok': False, 'res': str(e)}), 500
+
+
+@app.route('/api/go_traj', methods=['POST'])
+def api_go_traj():
+    """Execute a list of waypoints sequentially, each using the motion service (pathfinder enabled)."""
+    data = request.get_json(force=True) or {}
+    waypoints = data.get('waypoints', [])
+    if not waypoints:
+        return jsonify({'ok': False, 'res': 'no waypoints'}), 400
+    try:
+        b = _active_brain()
+        for i, wp in enumerate(waypoints):
+            b.motion.go(float(wp['x']), float(wp['y']))
+            if not b.motion.was_successful():
+                return jsonify({'ok': False, 'res': f'waypoint {i+1} failed'})
+        return jsonify({'ok': True, 'res': 'ok'})
+    except Exception as e:
+        return jsonify({'ok': False, 'res': str(e)}), 500
+
+
+def _active_brain():
+    """Return the brain wired to the active transport (hw if connected, else sim)."""
+    if _hw_brain is not None and _hw_transport is not None and _hw_transport.is_connected:
+        return _hw_brain
+    return brain
 
 
 # ── Actuator sequences API ────────────────────────────────────────────────────
@@ -1099,6 +1145,9 @@ def on_set_color(data):
     color_name = data['color']
     color      = COLOR_BY_NAME.get(color_name, ObjectColor.UNKNOWN)
     brain.vision.set_color(poi_name, color)
+    game_objs.set_color(poi_name, color)   # keep shared display state in sync
+    if _hw_brain is not None:
+        _hw_brain.vision.set_color(poi_name, color)
     brain.log(f"Color {poi_name} → {color_name}")
 
 

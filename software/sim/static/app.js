@@ -725,9 +725,9 @@ function pinCoordsEdited() {
 // ── Pin actions ─────────────────────────────────────────────────────────────
 function pinGoHere() {
   if (!_mapPin) return;
-  fetch('/api/exec', {
+  fetch('/api/go', {
     method: 'POST', headers: {'Content-Type':'application/json'},
-    body: JSON.stringify({ cmd: `go(${_mapPin.x},${_mapPin.y})` })
+    body: JSON.stringify({ x: _mapPin.x, y: _mapPin.y })
   }).then(r => r.json()).then(d => {
     showToast(d.ok ? `Go → (${_mapPin.x}, ${_mapPin.y})` : `Error: ${d.res}`);
   }).catch(() => showToast('Request failed'));
@@ -812,17 +812,14 @@ async function trajPaste() {
 async function trajExecute() {
   if (_mapTraj.length === 0) return;
   showToast(`Executing trajectory (${_mapTraj.length} pts)…`);
-  for (let i = 0; i < _mapTraj.length; i++) {
-    const p = _mapTraj[i];
-    try {
-      const res = await fetch('/api/exec', {
-        method: 'POST', headers: {'Content-Type':'application/json'},
-        body: JSON.stringify({ cmd: `go(${p.x},${p.y})` })
-      });
-      const d = await res.json();
-      if (!d.ok) { showToast(`Waypoint ${i+1} failed: ${d.res}`); return; }
-    } catch (e) { showToast(`Waypoint ${i+1} request failed`); return; }
-  }
+  try {
+    const res = await fetch('/api/go_traj', {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ waypoints: _mapTraj.map(p => ({ x: p.x, y: p.y })) })
+    });
+    const d = await res.json();
+    if (!d.ok) { showToast(`Trajectory failed: ${d.res}`); return; }
+  } catch (e) { showToast('Trajectory request failed'); return; }
   showToast(`Trajectory complete (${_mapTraj.length} pts)`);
 }
 
@@ -4729,4 +4726,4 @@ function actSeqExportClip() {
 }
 
 // Init actuator page when navigating to it
-// (called from switchView or on page load if that's the active view)
+// (called from switchView or on page load if that's the active view)    
