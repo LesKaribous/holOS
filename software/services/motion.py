@@ -1,13 +1,23 @@
 """
-services/motion.py — MotionService for Jetson brain.
+services/motion.py — MotionService for the Jetson brain.
 
-API mirrors the C++ Motion class and the existing sim MotionService so that
-strategy.py code is 100% identical in both real and sim modes.
+API mirrors the C++ Motion class and the sim MotionService so strategy.py
+code is 100% identical in both real and sim modes.
 
 On real hardware:  commands go via XBeeTransport → Teensy.
 In sim mode:       commands go via VirtualTransport → SimBridge → physics.
 
-In both cases the API is blocking from the strategy thread's perspective.
+Path planning (A*):
+  When a Pathfinder is provided AND use_pathfinding is True, every go() call
+  computes a path and sends it as a chained via()/go() command so the firmware
+  executes the full path without intermediate stops (pass-through waypoints).
+
+  motion.use_pathfinding = False  → direct go() commands (no A*)
+  motion.use_pathfinding = True   → A* + via() chaining (default when pathfinder present)
+
+Angle offset:
+  theta_offset_deg (default 0 in sim, HW_THETA_OFFSET_DEG on hardware) converts
+  between holOS frame (0=East) and the firmware frame (0=face A).
 """
 
 import math
@@ -34,8 +44,20 @@ class MotionService:
     Fluent options reset after each move command.
     """
 
-    def __init__(self, transport: Transport):
+    def __init__(self, transport: Transport,
+                 theta_offset_deg: float = 0.0,
+                 pathfinder=None):
         self._t = transport
+
+        # Angle offset between holOS frame and firmware frame (degrees / radians).
+        self._theta_offset_deg = theta_offset_deg
+        self._theta_offset_rad = math.radians(theta_offset_deg)
+
+        # Path planner (shared.pathfinder.Pathfinder, or None for sim/no pathfinding).
+        self._pathfinder = pathfinder
+
+        # Toggle: when False, go() sends direct commands even if a pathfinder is present.
+        self.use_pathfinding: bool = pathfinder is not None
 
         # Current position (updated via telemetry)
         self._pos   = Vec2(0, 0)
@@ -59,11 +81,12 @@ class MotionService:
     # ── Telemetry handler ─────────────────────────────────────────────────────
 
     def _on_pos_tel(self, data: str) -> None:
-        """Parse 'x=<v>,y=<v>,theta=<v>' from Teensy telemetry."""
+        """Parse 'x=<v>,y=<v>,theta=<v>' from Teensy telemetry.
+        theta from firmware is in radians (firmware frame); add offset → holOS frame."""
         try:
             parts = dict(kv.split('=') for kv in data.split(','))
             self._pos   = Vec2(float(parts.get('x', 0)), float(parts.get('y', 0)))
-            self._theta = float(parts.get('theta', 0))
+            self._theta = float(parts.get('theta', 0)) + self._theta_offset_rad
         except Exception:
             pass
 
@@ -126,7 +149,7 @@ class MotionService:
         return self
 
     def align(self, rc: RobotCompass, orientation_deg: float) -> 'MotionService':
-        cmd = f"align({rc.name},{orientation_deg:.1f})"
+        cmd = f"align({rc.name},{orientation_deg - self._theta_offset_deg:.1f})"
         self._last_ok, _ = self._t.execute(cmd, timeout_ms=15000)
         self._reset_pending()
         return self
@@ -163,32 +186,43 @@ class MotionService:
         return self._feedrate
 
     def set_abs_position(self, x: float, y: float, angle_deg: float) -> None:
-        self._t.fire(f"setAbsPosition({x:.1f},{y:.1f},{angle_deg:.2f})")
+        self._t.fire(f"setAbsPosition({x:.1f},{y:.1f},{angle_deg - self._theta_offset_deg:.2f})")
 
     # ── Internal helpers ──────────────────────────────────────────────────────
 
     def _execute_go(self, target: Vec2) -> None:
+        """Build and send a go command, optionally prepending A* via points."""
+        # ── Path planning ────────────────────────────────────────────────────
+        path_via: List[Vec2] = []
+        if self.use_pathfinding and self._pathfinder is not None:
+            path = self._pathfinder.find_path(self._pos, target)
+            # path = [start, wp1, wp2, ..., goal]; skip start (already there) and goal
+            path_via = path[1:-1]
+
         parts = []
-        # via points
+        # Caller-specified via points (strategy-level override) come first
         for v in self._pending_via:
             parts.append(f"via({v.x:.1f},{v.y:.1f})")
-        # Use go_coc (cancel-on-collide variant) when the flag is set
+        # A* intermediate waypoints as pass-through via points
+        for v in path_via:
+            parts.append(f"via({v.x:.1f},{v.y:.1f})")
+
         if self._pending_cancel_on_collide:
             parts.append(f"go_coc({target.x:.1f},{target.y:.1f})")
         else:
             parts.append(f"go({target.x:.1f},{target.y:.1f})")
+
         cmd = ";".join(parts)
-        # feedrate option
+
         if self._pending_feedrate > 0:
             self._t.fire(f"feed({self._pending_feedrate:.3f})")
         self._last_ok, _ = self._t.execute(cmd, timeout_ms=60000)
-        # Restore feedrate
         if self._pending_feedrate > 0:
             self._t.fire(f"feed({self._feedrate:.3f})")
         self._reset_pending()
 
     def _execute_go_align(self, target: Vec2, theta_deg: float) -> None:
-        cmd = f"goAlign({target.x:.1f},{target.y:.1f},{theta_deg:.2f})"
+        cmd = f"goAlign({target.x:.1f},{target.y:.1f},{theta_deg - self._theta_offset_deg:.2f})"
         if self._pending_feedrate > 0:
             self._t.fire(f"feed({self._pending_feedrate:.3f})")
         self._last_ok, _ = self._t.execute(cmd, timeout_ms=60000)
@@ -197,7 +231,7 @@ class MotionService:
         self._reset_pending()
 
     def _build_turn_cmd(self, angle_deg: float) -> str:
-        return f"turn({angle_deg:.2f})"
+        return f"turn({angle_deg - self._theta_offset_deg:.2f})"
 
     def _reset_pending(self) -> None:
         self._pending_cancel_on_collide = False

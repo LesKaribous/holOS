@@ -103,12 +103,12 @@ class XBeeTransport(Transport):
                 return True
 
             # No pong received - clean up fully before returning failure
-            print(f"[XBeeTransport] No response on {self._port} - closing port")
+            print(f"[Transport] No response on {self._port} - closing port")
             self._cleanup()
             return False
 
         except serial.SerialException as e:
-            print(f"[XBeeTransport] Connect failed: {e}")
+            print(f"[Transport] Connect failed: {e}")
             self._cleanup()
             return False
 
@@ -187,8 +187,17 @@ class XBeeTransport(Transport):
         return (True, response)
 
     def fire(self, cmd: str) -> None:
-        """Send a fire-and-forget message."""
-        self._write(f"{cmd}\n")
+        """Send a fire-and-forget command (framed, no reply awaited).
+
+        Uses the same uid:content|crc framing as execute() so T41's
+        _readBridgeSerial() accepts it. The reply from T41 (if any) will
+        arrive as an unknown uid and be silently discarded by _process_line().
+        """
+        with self._lock:
+            uid = self._uid_ctr
+            self._uid_ctr += 1
+        frame = encode_request(uid, cmd)
+        self._write(frame)
 
     # ── Telemetry subscription ────────────────────────────────────────────────
 
@@ -210,7 +219,7 @@ class XBeeTransport(Transport):
                 try:
                     self._serial.write(data.encode('ascii'))
                 except serial.SerialException as e:
-                    print(f"[XBeeTransport] Write error: {e}")
+                    print(f"[Transport] Write error: {e}")
 
     # ── Internal: reader loop ─────────────────────────────────────────────────
 
@@ -227,14 +236,14 @@ class XBeeTransport(Transport):
                     self._process_line(line.decode('ascii', errors='ignore'))
             except Exception as e:
                 if self._running:
-                    print(f"[XBeeTransport] Reader error: {e}")
+                    print(f"[Transport] Reader error: {e}")
                 break
 
         # If the loop exited while we were still supposed to be running,
         # it means the serial port dropped unexpectedly (USB unplugged, firmware
         # reset, etc.).  Signal disconnection so the server can update the UI.
         if self._running and self._connected:
-            print("[XBeeTransport] Reader loop exited unexpectedly — signaling disconnect")
+            print("[Transport] Reader loop exited unexpectedly — signaling disconnect")
             self._cleanup()
             if self._on_disconnect:
                 self._on_disconnect()
@@ -243,12 +252,12 @@ class XBeeTransport(Transport):
         kind, id_or_type, data = parse_frame(line)
 
         if kind == 'ping':
-            print(f"[XBeeTransport] Received ping")
+            print(f"[Transport] Received ping")
             self._write("pong\n")
             return
 
         if kind == 'pong':
-            print(f"[XBeeTransport] Received pong")
+            print(f"[Transport] Received pong")
             if not self._connected:
                 self._connected = True
                 if self._on_connect:
@@ -257,7 +266,7 @@ class XBeeTransport(Transport):
 
         if kind == 'reply':
             uid = id_or_type
-            print(f"[XBeeTransport] Received reply uid={uid} data={data}")
+            #print(f"[Transport] Received reply uid={uid} data={data}")
             if not self._connected:
                 # USB_DIRECT handshake: receiving any valid reply means the
                 # firmware is alive and the framed protocol is working.
@@ -271,7 +280,7 @@ class XBeeTransport(Transport):
 
         if kind == 'tel':
             ttype = id_or_type
-            print(f"[XBeeTransport] Received telemetry type={ttype} data={data}")
+            #print(f"[Transport] Received telemetry type={ttype} data={data}")
             # Handle motion done internally.
             # Firmware sends "DONE:ok,dur=…,dist=…,stall=0" (with stats appended),
             # so we must use startswith(), NOT ==, to detect a successful DONE.
@@ -285,7 +294,7 @@ class XBeeTransport(Transport):
                 try:
                     cb(data)
                 except Exception as e:
-                    print(f"[XBeeTransport] Telemetry callback error: {e}")
+                    print(f"[Transport] Telemetry callback error: {e}")
             return
 
         if kind == 'request':
@@ -332,7 +341,7 @@ class XBeeTransport(Transport):
                 if not self._waiting_motion:
                     ok, _ = self.execute("hb", timeout_ms=2000)
                     if not ok and self._connected:
-                        print("[XBeeTransport] Heartbeat failed - connection lost")
+                        print("[Transport] Heartbeat failed - connection lost")
                         # Call disconnect() — not just _connected=False — so that
                         # _cleanup() closes the serial port before on_disconnect fires.
                         # Without this, the port stays open and reconnect attempts fail

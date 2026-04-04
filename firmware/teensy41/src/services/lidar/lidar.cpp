@@ -1,6 +1,7 @@
 #include "lidar.h"
 #include "os/console.h"
 #include "services/intercom/intercom.h"
+#include "services/lidar/occupancy.h"
 //#include "services/navigation/navigation.h"
 #include "services/motion/motion.h"
 #include <stdio.h>
@@ -18,21 +19,27 @@ FLASHMEM void Lidar::attach(){
 FLASHMEM void Lidar::run(){
     static Vec3 pos;
     if(enabled()){
-        //if((millis() - m_lastPosUpdate > 100 && Vec3::distanceBetween(pos, nav.getPosition()) > 10) || millis() - m_lastPosUpdate > 1000){
-        if(/*(*/millis() - m_lastPosUpdate > 50 /*&& Vec3::distanceBetween(pos, motion.estimatedPosition()) > 10)*/ || millis() - m_lastPosUpdate > 1000){
+        // Position update: send robot pose to T40 so the LIDAR grid is aligned.
+        if(millis() - m_lastPosUpdate > 50 || millis() - m_lastPosUpdate > 1000){
             m_lastPosUpdate = millis();
-            //pos = nav.getPosition();
             pos = motion.estimatedPosition();
             char buf[80];
             snprintf(buf, sizeof(buf), "pos(%.1f,%.1f,%.1f)", pos.x, pos.y, pos.z*RAD_TO_DEG);
             intercom.sendRequest(buf);
         }
-        /*
-        if(millis() - m_lastOccupancyRequest > 150){
+
+        // Occupancy poll: request dynamic-only sparse cells from T40 at ~5 Hz.
+        if(millis() - m_lastOccupancyRequest > 200){
             m_lastOccupancyRequest = millis();
-            intercom.sendRequest("getOccupancyMap()", 1000, onOccupancyResponse, onOccupancyTimeout);
-        }*/
+            intercom.sendRequest("oD", 500, onOccDynResponse, nullptr);
+        }
     }
+}
+
+// Static callback — called by Intercom when T40 replies to "oD".
+// Parses sparse "gx,gy;…" into the OccupancyMap singleton used by safety.
+FLASHMEM void Lidar::onOccDynResponse(Request& req) {
+    occupancy.decompressSparse(String(req.getResponse()));
 }
 
 FLASHMEM void Lidar::enable(){

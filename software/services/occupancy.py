@@ -1,101 +1,74 @@
 """
-services/occupancy.py — OccupancyService for Jetson brain.
+services/occupancy.py — OccupancyService for the Jetson brain.
 
-Receives occupancy map from Teensy via telemetry, provides A* path planning.
-The map is a 20×13 binary grid (GRID_W × GRID_H) packed as hex bytes.
+Wraps the shared OccupancyGrid and wires it to hardware telemetry:
+  - Subscribes to TEL:occ_dyn  (sparse dynamic cells from T40 via T41, new protocol)
+  - Static layer is loaded from JSON at startup and deployed to T40 on demand.
+
+The grid is passed in from outside (Brain creates it and shares it with MotionService
+so both use the same map for path planning).
 """
 
-import threading
-from typing import Optional
-
 from transport.base import Transport
-from shared.config import Vec2, GRID_W, GRID_H, GRID_CELL, FIELD_W, FIELD_H, ROBOT_RADIUS
+from shared.occupancy import OccupancyGrid
+from shared.config    import Vec2
 
 
 class OccupancyService:
 
-    def __init__(self, transport: Transport):
+    def __init__(self, transport: Transport, grid: OccupancyGrid):
         self._t    = transport
-        self._lock = threading.Lock()
-        self._grid: list[list[bool]] = [[False] * GRID_H for _ in range(GRID_W)]
-        self._dynamic_obstacles: list[Vec2] = []
-        self._t.subscribe_telemetry("occ", self._on_occ_tel)
+        self._grid = grid
+        self._t.subscribe_telemetry("occ_dyn", self._on_occ_dyn_tel)
 
     # ── Telemetry handler ─────────────────────────────────────────────────────
 
-    def _on_occ_tel(self, data: str) -> None:
-        """
-        Decode hex-encoded occupancy map.
-        Format: 'AABBCC...' (ceil(GRID_W*GRID_H/8) bytes as hex pairs).
+    def _on_occ_dyn_tel(self, data: str) -> None:
+        """Decode sparse dynamic-cell list from T40.
+
+        Protocol: 'gx,gy;gx,gy;...' — semicolon-separated pairs.
+        Empty string means no dynamic obstacles.
         """
         try:
-            raw = bytes.fromhex(data.strip())
-            with self._lock:
-                bit = 0
-                for gx in range(GRID_W):
-                    for gy in range(GRID_H):
-                        byte_idx = bit // 8
-                        bit_idx  = bit % 8
-                        if byte_idx < len(raw):
-                            self._grid[gx][gy] = bool((raw[byte_idx] >> bit_idx) & 1)
-                        bit += 1
+            cells = []
+            data = data.strip()
+            if data:
+                for token in data.split(';'):
+                    token = token.strip()
+                    if not token:
+                        continue
+                    gx_s, gy_s = token.split(',')
+                    cells.append((int(gx_s), int(gy_s)))
+            self._grid.set_dynamic_cells(cells)
         except Exception as e:
-            print(f"[OccupancyService] Map decode error: {e}")
+            print(f"[OccupancyService] occ_dyn decode error: {e}")
 
-    # ── Queries ───────────────────────────────────────────────────────────────
+    # ── Grid access (for strategy / pathfinder) ───────────────────────────────
+
+    @property
+    def grid(self) -> OccupancyGrid:
+        return self._grid
 
     def is_cell_occupied(self, gx: int, gy: int) -> bool:
-        if gx < 0 or gx >= GRID_W or gy < 0 or gy >= GRID_H:
-            return True
-        with self._lock:
-            return self._grid[gx][gy]
+        return self._grid.is_cell_occupied(gx, gy)
 
     def is_occupied_circle(self, center: Vec2, radius: float) -> bool:
-        if (center.x - radius < 0 or center.x + radius > FIELD_W or
-                center.y - radius < 0 or center.y + radius > FIELD_H):
-            return True
-        x0 = max(0, int((center.x - radius) // GRID_CELL))
-        x1 = min(GRID_W - 1, int((center.x + radius) // GRID_CELL))
-        y0 = max(0, int((center.y - radius) // GRID_CELL))
-        y1 = min(GRID_H - 1, int((center.y + radius) // GRID_CELL))
-        with self._lock:
-            for gx in range(x0, x1 + 1):
-                for gy in range(y0, y1 + 1):
-                    if self._grid[gx][gy]:
-                        cx = (gx + 0.5) * GRID_CELL
-                        cy = (gy + 0.5) * GRID_CELL
-                        dx = max(abs(center.x - cx) - GRID_CELL / 2, 0.0)
-                        dy = max(abs(center.y - cy) - GRID_CELL / 2, 0.0)
-                        if dx * dx + dy * dy < radius * radius:
-                            return True
-        return False
+        return self._grid.is_occupied_circle(center, radius)
 
     def is_zone_occupied(self, center: Vec2, radius: float) -> bool:
-        return self.is_occupied_circle(center, radius)
+        return self._grid.is_zone_occupied(center, radius)
 
     def world_to_grid(self, pos: Vec2) -> tuple:
-        return (int(pos.x // GRID_CELL), int(pos.y // GRID_CELL))
+        return self._grid.world_to_grid(pos)
 
     def grid_to_world(self, gx: int, gy: int) -> Vec2:
-        return Vec2((gx + 0.5) * GRID_CELL, (gy + 0.5) * GRID_CELL)
-
-    def add_dynamic_obstacle(self, pos: Vec2) -> None:
-        with self._lock:
-            self._dynamic_obstacles.append(Vec2(pos.x, pos.y))
-
-    def clear_dynamic_obstacles(self) -> None:
-        with self._lock:
-            self._dynamic_obstacles.clear()
-
-    def request_update(self) -> None:
-        """Ask Teensy to push an occupancy map update."""
-        self._t.fire("occ")
+        return self._grid.grid_to_world(gx, gy)
 
     def to_list(self) -> list:
-        cells = []
-        with self._lock:
-            for gx in range(GRID_W):
-                for gy in range(GRID_H):
-                    if self._grid[gx][gy]:
-                        cells.append({'gx': gx, 'gy': gy})
-        return cells
+        return self._grid.to_list()
+
+    # ── On-demand update request ──────────────────────────────────────────────
+
+    def request_update(self) -> None:
+        """Ask T41 to push an immediate occ_dyn update (fire-and-forget)."""
+        self._t.fire("occ")

@@ -208,9 +208,26 @@ FLASHMEM void JetsonBridge::handleRequest(Request& req) {
         return;
     }
 
-    // ── Occupancy map ─────────────────────────────────────────────────────────
+    // ── Occupancy map (legacy full bitmap) ───────────────────────────────────
     if (cmd == "occ") {
         req.reply(occupancy.compress().c_str());
+        return;
+    }
+
+    // ── Deploy static map to T40 ──────────────────────────────────────────────
+    // Command format: setStaticMap(HEX_STRING)
+    // Jetson sends the packed hex bitmap; we relay it to T40 via intercom.
+    if (cmd.startsWith("setStaticMap(")) {
+        int open  = cmd.indexOf('(');
+        int close = cmd.lastIndexOf(')');
+        if (open >= 0 && close > open) {
+            String hex = cmd.substring(open + 1, close);
+            // Forward to T40 as sM(hex)
+            String ic_cmd = "sM(" + hex + ")";
+            intercom.sendRequest(ic_cmd.c_str(), 3000);
+            Console::info("JetsonBridge") << "Static map deployed to T40 (" << hex.length() << " hex chars)" << Console::endl;
+        }
+        req.reply("ok");
         return;
     }
 
@@ -396,16 +413,28 @@ FLASHMEM void JetsonBridge::pushTelemetry() {
 
 FLASHMEM void JetsonBridge::pushOccupancy() {
     if (!m_telOcc) return;
-    // occupancy.compress() returns a String — one unavoidable alloc until T4.0 API changes
-    String compressed = occupancy.compress();
-    char buf[128];
-    snprintf(buf, sizeof(buf), "TEL:occ:%s", compressed.c_str());
+    // Build sparse "gx,gy;gx,gy;…" from the dynamic-only occupancy map.
+    // The map is updated at ~5 Hz by Lidar::onOccDynResponse().
+    char buf[TQUEUE_FRAME];
+    int  pos = 0;
+    bool first = true;
+    pos += snprintf(buf + pos, sizeof(buf) - pos, "TEL:occ_dyn:");
+    for (int gx = 0; gx < GRID_WIDTH && pos < (int)sizeof(buf) - 8; ++gx) {
+        for (int gy = 0; gy < GRID_HEIGHT && pos < (int)sizeof(buf) - 8; ++gy) {
+            if (occupancy.isCellOccupied(gx, gy)) {
+                if (!first) buf[pos++] = ';';
+                pos += snprintf(buf + pos, sizeof(buf) - pos, "%d,%d", gx, gy);
+                first = false;
+            }
+        }
+    }
     _pushFrame(buf);
 }
 
 FLASHMEM void JetsonBridge::_pushFrame(const char* msg) {
-    // Compute CRC and build framed message into a stack buffer
-    char framed[128];
+    // Compute CRC and build framed message into a stack buffer.
+    // Buffer sized to TQUEUE_FRAME so occupancy frames always fit.
+    char framed[TQUEUE_FRAME];
     uint8_t crc = CRC8.smbus((const uint8_t*)msg, strlen(msg));
     int n = snprintf(framed, sizeof(framed), "%s|%d", msg, (int)crc);
     if (n <= 0 || n >= (int)sizeof(framed)) return;  // truncated — drop

@@ -203,6 +203,36 @@ FLASHMEM String OccupancyMap::compress() const {
 
 
 // ============================================================
+//  Décompression sparse (cellules dynamiques depuis T40 en format "gx,gy;…")
+// ============================================================
+
+FLASHMEM void OccupancyMap::decompressSparse(const String& sparse) {
+    // Reset dynamic layer
+    for (int i = 0; i < GRID_WIDTH; ++i)
+        for (int j = 0; j < GRID_HEIGHT; ++j)
+            m_map[i][j] = 0;
+
+    if (sparse.length() == 0) return;
+
+    // Parse "gx,gy;gx,gy;…"
+    int start = 0;
+    while (start < (int)sparse.length()) {
+        int semicolon = sparse.indexOf(';', start);
+        int end = (semicolon == -1) ? (int)sparse.length() : semicolon;
+
+        String token = sparse.substring(start, end);
+        int comma = token.indexOf(',');
+        if (comma > 0) {
+            int gx = token.substring(0, comma).toInt();
+            int gy = token.substring(comma + 1).toInt();
+            if (isInBounds(gx, gy)) m_map[gx][gy] = 1;
+        }
+
+        start = end + 1;
+    }
+}
+
+// ============================================================
 //  Décompression (données reçues du robot secondaire)
 // ============================================================
 

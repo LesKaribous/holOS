@@ -190,7 +190,7 @@ class SimBridge:
                 "motion", "DONE:ok" if success else "DONE:fail"
             )
 
-    # ── Safety ────────────────────────────────────────────────────────────────
+    # ── Safety ────────────────────────────────────────
 
     def _tick_safety(self, dt: float) -> None:
         if not self._safety_enabled:
@@ -361,9 +361,14 @@ class SimBridge:
                          cancel_on_collide: bool = False) -> None:
         path = self._pf.find_path(self._robot.pos, target)
         wps  = []
+        prev = self._robot.pos
         for i, p in enumerate(path[1:]):
             is_last = (i == len(path) - 2)
-            wps.append(_Waypoint(p, None, not is_last, cancel_on_collide))
+            # Compute bearing toward this waypoint so the robot faces the
+            # direction of travel — matches real firmware behaviour.
+            bearing = math.atan2(p.y - prev.y, p.x - prev.x)
+            wps.append(_Waypoint(p, bearing, not is_last, cancel_on_collide))
+            prev = p
         self._set_motion(uid, wps, cb)
 
     def _start_motion_turn(self, uid: int, theta: float, cb: Callable) -> None:

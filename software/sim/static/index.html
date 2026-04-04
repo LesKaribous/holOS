@@ -356,10 +356,26 @@
           <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><rect x="2" y="2" width="12" height="12" rx="1"/><line x1="5" y1="8" x2="11" y2="8"/></svg>
           <span>Grid−</span>
         </button>
+        <button class="mbar-tool" id="btn-occ-save" onclick="saveStaticMap()" title="Save static occupancy map to disk">
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M13 13H3a1 1 0 01-1-1V4a1 1 0 011-1h8l2 2v7a1 1 0 01-1 1z"/><rect x="5" y="9" width="6" height="4"/><rect x="5" y="3" width="4" height="3"/></svg>
+          <span>&#128190; Save</span>
+        </button>
+        <button class="mbar-tool" id="btn-occ-deploy" onclick="deployStaticMap()" title="Deploy static map to T40 over serial">
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M8 2v8M5 7l3 3 3-3"/><rect x="2" y="11" width="12" height="3" rx="1"/></svg>
+          <span>&#128225; Deploy</span>
+        </button>
 
         <div class="mbar-sep"></div>
 
-        <span class="mbar-hint">Click → pin point · Brush → paint grid · Right-click → toggle cell</span>
+        <label class="mbar-toggle" title="Enable A* path planning (bypasses direct moves)">
+          <input type="checkbox" id="feat-pathfinding" checked onchange="togglePathfinding(this.checked)">
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="3" cy="13" r="1.5"/><circle cx="8" cy="3" r="1.5"/><circle cx="13" cy="13" r="1.5"/><path d="M3 11.5C3 8 5 6 8 4.5M8 4.5C11 6 13 8 13 11.5"/></svg>
+          <span>A*</span>
+        </label>
+
+        <div class="mbar-sep"></div>
+
+        <span class="mbar-hint">Click → pin point · Brush → paint static grid · Right-click → toggle cell</span>
       </div>
 
       <!-- canvas + status sidebar -->
@@ -373,6 +389,8 @@
               <label>x<input id="pin-x" type="number" step="1" class="pin-coord-input"
                       oninput="pinCoordsEdited()"></label>
               <label>y<input id="pin-y" type="number" step="1" class="pin-coord-input"
+                      oninput="pinCoordsEdited()"></label>
+              <label>θ<input id="pin-theta" type="number" step="0.1" class="pin-coord-input"
                       oninput="pinCoordsEdited()"></label>
               <button class="pin-dismiss" onclick="dismissPin()" title="Close">✕</button>
             </div>

@@ -23,6 +23,8 @@ from services.safety    import SafetyService
 from services.vision    import VisionService
 from services.chrono    import ChronoService
 from services.occupancy import OccupancyService
+from shared.occupancy   import OccupancyGrid
+from shared.pathfinder  import Pathfinder
 
 
 _STRATEGY_PATH = os.path.join(os.path.dirname(__file__), 'strategy', 'match.py')
@@ -39,15 +41,25 @@ class Brain:
         brain.stop()
     """
 
-    def __init__(self, transport: Transport):
+    def __init__(self, transport: Transport,
+                 theta_offset_deg: float = 0.0,
+                 occupancy_grid: OccupancyGrid = None):
         self._t = transport
 
+        # Shared occupancy grid — passed in from run_sim.py so sim and hw share the same instance.
+        # If not provided, create a fresh one (standalone usage, e.g. run_jetson.py).
+        grid = occupancy_grid if occupancy_grid is not None else OccupancyGrid()
+
+        # Path planner built on the shared grid
+        pathfinder = Pathfinder(grid)
+
         # Services
-        self.motion    = MotionService(transport)
+        self.motion    = MotionService(transport, theta_offset_deg=theta_offset_deg,
+                                       pathfinder=pathfinder)
         self.safety    = SafetyService(transport)
         self.vision    = VisionService(transport)
         self.chrono    = ChronoService(transport)
-        self.occupancy = OccupancyService(transport)
+        self.occupancy = OccupancyService(transport, grid)
 
         # Strategy module (hot-reloadable)
         self._strategy_module = None
@@ -146,7 +158,7 @@ class Brain:
                             return
                         self._last = now
                         time.sleep(0.1)
-                        if self.load_strategy():
+                        if brain.load_strategy():
                             if on_reload:
                                 on_reload()
 

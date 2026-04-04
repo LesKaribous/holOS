@@ -26,6 +26,10 @@ public:
     void   decompress(const String& encoded);
     String compress() const;
 
+    // Decode a sparse "gx,gy;gx,gy;…" string into m_map (dynamic cells only).
+    // Clears m_map first, then sets the specified cells.
+    void   decompressSparse(const String& sparse);
+
     // Conversions monde ↔ grille
     Vec2 gridToWorld(int gx, int gy) const; // centre de la cellule (gx, gy) en mm
     Vec2 worldToGrid(float x, float y) const; // cellule contenant le point (x, y)

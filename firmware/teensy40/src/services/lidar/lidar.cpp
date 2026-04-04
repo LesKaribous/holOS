@@ -8,60 +8,13 @@
 #include "ld06.h"
 #include <algorithm>
 
-//Yellow
-constexpr uint8_t m_static_map_A[GRID_WIDTH][GRID_HEIGHT] = {
-  {1, 1, 1, 0, 0, 0, 1, 1, 1, 0, 0, 0, 1},
-  {0, 0, 0, 0, 0, 0, 1, 1, 1, 0, 0, 0, 1},
-  {0, 0, 0, 0, 0, 0, 1, 1, 1, 0, 0, 0, 1},
-  {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
-  {1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
-  {1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
-  {1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
-  {1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
-  {1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
-  {1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
-  {1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1},
-  {1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1},
-  {1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1},
-  {1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1},
-  {1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1},
-  {1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1},
-  {1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1},
-  {1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
-  {1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
-  {1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
-};
-
-//Blue
-constexpr uint8_t m_static_map_B[GRID_WIDTH][GRID_HEIGHT] = {
-  {1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
-  {1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
-  {1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
-  {1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1},
-  {1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1},
-  {1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1},
-  {1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1},
-  {1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1},
-  {1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1},
-  {1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1},
-  {1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
-  {1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
-  {1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
-  {1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
-  {1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
-  {1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
-  {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
-  {0, 0, 0, 0, 0, 0, 1, 1, 1, 0, 0, 0, 1},
-  {0, 0, 0, 0, 0, 0, 1, 1, 1, 0, 0, 0, 1},
-  {1, 1, 1, 0, 0, 0, 1, 1, 1, 0, 0, 0, 1}
-};
-
-
 //U8G2_SH1106_128X64_NONAME_1_HW_I2C u8g2(U8G2_R2,Pin::ScreenSCL,Pin::ScreenSDA);
 
 INSTANTIATE_SERVICE(Lidar)
 
-Lidar::Lidar() : sensor(Pin::Lidar::speed, Serial1), Service(ServiceID::ID_LIDAR),  u8g2(U8G2_R2, Pin::ScreenSCL, Pin::ScreenSDA)  {}
+Lidar::Lidar() : sensor(Pin::Lidar::speed, Serial1), Service(ServiceID::ID_LIDAR),  u8g2(U8G2_R2, Pin::ScreenSCL, Pin::ScreenSDA)  {
+    memset(m_ram_static, 0, sizeof(m_ram_static));
+}
 
 void Lidar::onAttach()
 {
@@ -125,18 +78,36 @@ int Lidar::getDistance(int angle, bool absolute){
 	else return sensor.getDistanceAtAngle(angle+m_theta);
 }
 
-void Lidar::setStaticMap(bool staticMap){
-	this->staticMap = staticMap;
+void Lidar::setStaticMapHex(const String& hex) {
+    // Decode a packed bitmap: gx outer loop, gy inner loop, LSB first.
+    // 20×13 = 260 bits = 33 bytes = 66 hex nibbles. Extra chars are ignored.
+    if (hex.length() < GRID_WIDTH * GRID_HEIGHT / 4) return; // sanity check
+    memset(m_ram_static, 0, sizeof(m_ram_static));
+    int bit = 0;
+    for (int gx = 0; gx < GRID_WIDTH; ++gx) {
+        for (int gy = 0; gy < GRID_HEIGHT; ++gy) {
+            int byteIdx  = bit / 8;
+            int bitInByte = bit % 8;
+            int nibbleIdx = byteIdx * 2;
+            if (nibbleIdx + 1 >= (int)hex.length()) break;
+            // Parse byte from two hex nibbles
+            char hi = hex[nibbleIdx];
+            char lo = hex[nibbleIdx + 1];
+            auto hexVal = [](char c) -> uint8_t {
+                if (c >= '0' && c <= '9') return c - '0';
+                if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+                if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+                return 0;
+            };
+            uint8_t byteVal = (hexVal(hi) << 4) | hexVal(lo);
+            m_ram_static[gx][gy] = (byteVal >> bitInByte) & 0x01;
+            ++bit;
+        }
+    }
 }
 
-bool Lidar::isStaticOccupied(int x, int y){
-	if(staticMap){
-   		return (x >= 0 && x < GRID_WIDTH && y >= 0 && y < GRID_HEIGHT && m_static_map_A[x][y] > 0);
-	}else{
-
-		return (x >= 0 && x < GRID_WIDTH && y >= 0 && y < GRID_HEIGHT && m_static_map_B[x][y] > 0);
-	}
-
+bool Lidar::isStaticOccupied(int x, int y) {
+    return (x >= 0 && x < GRID_WIDTH && y >= 0 && y < GRID_HEIGHT && m_ram_static[x][y] > 0);
 }
 
 int Lidar::getCount(int angle, bool absolute){
@@ -175,6 +146,26 @@ BinaryPayload Lidar::getOccupancyMap() {
     }
 
     return {packed, sizeof(packed)};
+}
+
+String Lidar::getOccupancyDyn() {
+    CartesianGrid* grid = sensor.getCartesianGrid();
+    if (grid == nullptr) return "";
+
+    String out;
+    bool first = true;
+    for (int x = 0; x < GRID_WIDTH; ++x) {
+        for (int y = 0; y < GRID_HEIGHT; ++y) {
+            if (grid->isOccupied(x, y)) {   // dynamic only — no static
+                if (!first) out += ';';
+                out += String(x);
+                out += ',';
+                out += String(y);
+                first = false;
+            }
+        }
+    }
+    return out;
 }
 
 

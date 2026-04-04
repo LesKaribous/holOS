@@ -133,9 +133,11 @@ private:
     char     _bridgeBuf[512];
     uint16_t _bridgeBufLen = 0;
 
-    // JB-1: Fixed ring buffer — zero heap allocation for queued telemetry
+    // JB-1: Fixed ring buffer — zero heap allocation for queued telemetry.
+    // TQUEUE_FRAME raised to 256 to accommodate TEL:occ_dyn sparse frames
+    // (up to ~30 dynamic cells × 6 chars + 12-char header = ~192 chars + CRC).
     static constexpr uint8_t  TQUEUE_SLOTS = 16;
-    static constexpr uint16_t TQUEUE_FRAME = 128;
+    static constexpr uint16_t TQUEUE_FRAME = 256;
     char    _tqPool[TQUEUE_SLOTS][TQUEUE_FRAME];
     uint8_t _tqHead  = 0;
     uint8_t _tqTail  = 0;

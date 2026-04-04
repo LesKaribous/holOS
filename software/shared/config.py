@@ -21,6 +21,11 @@ MATCH_DURATION_S = 100.0    # seconds
 ROBOT_RADIUS     = 125.98   # mm  (circumradius)
 WHEEL_RADIUS     = 30.0     # mm
 
+# Angle offset between the holOS frame (0 = East, CCW+) and the firmware frame.
+# Firmware already tracks and sends theta in the table/holOS frame (0 = East),
+# so no data conversion is needed.  Keep at 0.0.
+HW_THETA_OFFSET_DEG = 0.0
+
 # ── Motion parameters ─────────────────────────────────────────────────────────
 MAX_SPEED        = 1800.0   # mm/s
 MAX_ACCEL        = 2000.0   # mm/s²

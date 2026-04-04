@@ -22,6 +22,7 @@ import threading
 import traceback
 import importlib.util
 import argparse
+import math
 
 # Sequence runner state
 _seq_stop   = threading.Event()
@@ -45,9 +46,12 @@ from flask_socketio import SocketIO, emit
 from shared.config import (
     FIELD_W, FIELD_H, GRID_W, GRID_H, GRID_CELL,
     Vec2, Team, ObjectColor, COLOR_HEX, COLOR_BY_NAME, ROBOT_RADIUS, POI,
+    HW_THETA_OFFSET_DEG,
 )
+from shared.occupancy  import OccupancyGrid
+from shared.pathfinder import Pathfinder
 from sim.physics   import RobotPhysics
-from sim.world     import OccupancyGrid, Pathfinder, GameObjects
+from sim.world     import GameObjects
 from sim.bridge    import SimBridge
 from sim.tests     import TestRunner, SUITES, ALL_TESTS
 from tests.hardware_tests import (
@@ -64,12 +68,19 @@ app = Flask(__name__, static_folder=_STATIC, template_folder=_STATIC)
 app.config['SEND_FILE_MAX_AGE_DEFAULT'] = 0   # no static cache in dev
 socketio = SocketIO(app, async_mode='threading', cors_allowed_origins='*')
 
+# ── Static occupancy map path ─────────────────────────────────────────────────
+
+_STATIC_OCC_PATH = os.path.join(_HERE, 'strategy', 'static_occupancy.json')
+
 # ── Simulation objects ────────────────────────────────────────────────────────
 
 robot     = RobotPhysics()
 occupancy = OccupancyGrid()
 pathfinder= Pathfinder(occupancy)
 game_objs = GameObjects()
+
+# Auto-load persisted static occupancy map
+occupancy.load_static(_STATIC_OCC_PATH)
 
 bridge    = SimBridge(robot, occupancy, pathfinder, game_objs)
 transport = VirtualTransport()
@@ -78,8 +89,9 @@ transport = VirtualTransport()
 transport.attach_bridge(bridge)
 bridge.attach_transport(transport)
 
-# Brain (strategy + services)
-brain = Brain(transport)
+# Brain (strategy + services) — share the same occupancy grid so the sim
+# pathfinder and the strategy-level OccupancyService both see the same map.
+brain = Brain(transport, occupancy_grid=occupancy)
 
 # Test runner
 test_runner = TestRunner(transport, bridge, robot, occupancy)
@@ -246,7 +258,7 @@ def _build_state() -> dict:
 
     # Sim data only available in 'sim' mode
     path_pts = [[p.x, p.y] for p in bridge.current_path()] if sim_on else []
-    occ_list = occupancy.to_list()                          if sim_on else []
+    occ_list = occupancy.to_list()  # updated by sim physics or by _on_occ hw telemetry
     objs     = game_objs.to_list()                          if sim_on else []
 
     return {
@@ -1002,6 +1014,59 @@ def api_serial_ports():
         return jsonify([])
 
 
+# ── Static occupancy map API ──────────────────────────────────────────────────
+
+@app.route('/api/occupancy/static', methods=['GET'])
+def api_occ_static_get():
+    """Return current static layer as cell list."""
+    return jsonify({'cells': occupancy.static_to_list()})
+
+
+@app.route('/api/occupancy/static', methods=['PUT'])
+def api_occ_static_put():
+    """Replace static layer and persist to JSON.
+
+    If the body contains a 'cells' key the static map is replaced with those
+    cells.  If no body / no 'cells' key is provided (e.g. the Save button just
+    wants to persist the current in-memory map) the map is left untouched and
+    only the save-to-disk step is performed.
+    """
+    data = request.get_json(force=True) or {}
+    if 'cells' in data:
+        occupancy.reset_static()
+        for cell in data['cells']:
+            occupancy.set_static_cell(int(cell['gx']), int(cell['gy']), True)
+    occupancy.save_static(_STATIC_OCC_PATH)
+    return jsonify({'ok': True})
+
+
+@app.route('/api/occupancy/deploy', methods=['POST'])
+def api_occ_deploy():
+    """Deploy static map to T40 via T41.
+    Sends 'setStaticMap(<hex>)' to T41 which relays it to T40 via intercom."""
+    t = _active_transport()
+    if not t.is_connected:
+        return jsonify({'ok': False, 'error': 'not connected'}), 503
+    hex_map = occupancy.to_static_hex()
+    ok, res = t.execute(f'setStaticMap({hex_map})', timeout_ms=3000)
+    return jsonify({'ok': ok, 'res': res})
+
+
+# ── Path-planning toggle API ──────────────────────────────────────────────────
+
+@app.route('/api/pathfinding', methods=['POST'])
+def api_pathfinding():
+    """Toggle pathfinding on/off.  Body: {'enabled': true|false}"""
+    data = request.get_json(force=True) or {}
+    enabled = bool(data.get('enabled', True))
+    sim_state['features']['pathfinding'] = enabled
+    # Apply to active brain (sim or hw)
+    brain.motion.use_pathfinding = enabled
+    if _hw_brain is not None:
+        _hw_brain.motion.use_pathfinding = enabled
+    return jsonify({'ok': True, 'pathfinding': enabled})
+
+
 # ── SocketIO events ───────────────────────────────────────────────────────────
 
 @socketio.on('connect')
@@ -1051,7 +1116,7 @@ def on_stop_strategy():
 def on_reset():
     brain.stop_match()
     robot.reset_to_start(sim_state['team'])
-    occupancy.reset()
+    occupancy.reset_dynamic()   # Keep static layer across resets
     sim_state['score'] = 0
     brain.log("Simulation reset")
 
@@ -1076,9 +1141,14 @@ def on_set_robot_pos(data):
     if 'theta' in data:
         robot.theta = float(data['theta'])
 
-    t =_active_transport()
-    if(t.is_connected()):
-        ok, res = t.execute("setAbsPosition({},{}, {})".format(robot.pos.x, robot.pos.y, robot.theta), timeout_ms=1000)
+    t = _active_transport()
+    if t.is_connected:
+        # robot.theta is in radians in the holOS frame; firmware expects degrees in its own frame.
+        theta_fw_deg = math.degrees(robot.theta)
+        # Map Y is flipped (holOS Y+ = North on canvas); firmware Y+ = South, so invert before sending.
+        fw_y = FIELD_H - robot.pos.y
+        brain.log(f"Teleporting to ({robot.pos.x:.0f}, {robot.pos.y:.0f}, {theta_fw_deg:0.1}°)")
+        ok, res = t.execute("setAbsPosition({},{},{:.2f})".format(robot.pos.x, fw_y, theta_fw_deg), timeout_ms=1000)
         if ok:
             brain.log(f"Robot teleported to ({robot.pos.x:.0f}, {robot.pos.y:.0f}, {robot.theta:.1f}°)")
         else:
@@ -1087,11 +1157,10 @@ def on_set_robot_pos(data):
 
 @socketio.on('paint_grid')
 def on_paint_grid(data):
-    """Set or clear an occupancy-grid cell directly."""
+    """Set or clear a static occupancy-grid cell."""
     gx, gy = int(data['gx']), int(data['gy'])
     value = bool(data['value'])
-    if 0 <= gx < GRID_W and 0 <= gy < GRID_H:
-        occupancy._grid[gx][gy] = value
+    occupancy.set_static_cell(gx, gy, value)
 
 
 @socketio.on('set_opponent_pos')
@@ -1100,7 +1169,7 @@ def on_set_opponent_pos(data):
     sim_state['opponent'] = {
         'x':       float(data['x']),
         'y':       float(data['y']),
-        'theta':   float(data.get('theta', 0)),
+        'theta':   float(data.get('theta'), 0),
         'enabled': True,
     }
 
@@ -1186,7 +1255,10 @@ def on_serial_connect(data):
                 # Reset live telemetry on new connection
                 _hw_tel_data = {k: None for k in _hw_tel_data}
 
-                _hw_brain = Brain(t)
+                _hw_brain = Brain(t, theta_offset_deg=HW_THETA_OFFSET_DEG,
+                                  occupancy_grid=occupancy)
+                # Sync pathfinding toggle from current UI state
+                _hw_brain.motion.use_pathfinding = sim_state['features'].get('pathfinding', True)
                 _hw_brain.load_strategy()
                 # Hardware test runner — uses real transport, web-safe prompt
                 _hw_test_runner = HardwareTestRunner(t, prompt_fn=_web_prompt)
@@ -1194,18 +1266,20 @@ def on_serial_connect(data):
                 # ── TEL:pos → update robot position (used for map display) ────
                 def _on_pos(data_str):
                     try:
-                        print(f"[TELEMETRY] pos: {data_str}")
+                        #print(f"[TELEMETRY] pos: {data_str}")
                         parts = dict(kv.split('=') for kv in data_str.split(','))
-                        robot.pos   = Vec2(float(parts['x']), float(parts['y']))
+                        robot.pos   = Vec2(float(parts['x']), FIELD_H - float(parts['y']))
+                        # Firmware sends theta in radians in the firmware frame (0 = face A).
+                        # Add HW_THETA_OFFSET to convert to holOS frame (0 = East).
                         robot.theta = float(parts['theta'])
-                        print(f"[TELEMETRY] Updated robot position to ({robot.pos.x:.1f}, {robot.pos.y:.1f})")
+                        #print(f"[TELEMETRY] Updated robot position to ({robot.pos.x:.1f}, {robot.pos.y:.1f}, {robot.theta:.1f} rad)")
                     except Exception as e:
                         print(f"[TELEMETRY] pos parsing error: {e}")
                 t.subscribe_telemetry('pos', _on_pos)
 
                 # ── TEL:motion → live motion state override ───────────────────
                 def _on_motion(data_str):
-                    print(f"[TELEMETRY] motion: {data_str}")
+                    #print(f"[TELEMETRY] motion: {data_str}")
                     _hw_tel_data['motion'] = data_str
                     # PR-2: firmware retransmits DONE every 2 s until ack_done is received.
                     # When a move was started via fire() (web UI, map click, direct command)
@@ -1230,21 +1304,39 @@ def on_serial_connect(data):
 
                 # ── TEL:safety → live safety override ────────────────────────
                 def _on_safety(data_str):
-                    print(f"[TELEMETRY] safety: {data_str}")
+                    #print(f"[TELEMETRY] safety: {data_str}")
                     _hw_tel_data['safety'] = data_str
                 t.subscribe_telemetry('safety', _on_safety)
 
                 # ── TEL:chrono → live chrono override ────────────────────────
                 def _on_chrono(data_str):
-                    print(f"[TELEMETRY] chrono: {data_str}")
+                    #print(f"[TELEMETRY] chrono: {data_str}")
                     _hw_tel_data['chrono'] = data_str
                 t.subscribe_telemetry('chrono', _on_chrono)
 
                 # ── TEL:t40 → T4.0 intercom health ───────────────────────────
                 def _on_t40(data_str):
-                    print(f"[TELEMETRY] t40: {data_str}")
+                    #print(f"[TELEMETRY] t40: {data_str}")
                     _hw_tel_data['t40'] = data_str
                 t.subscribe_telemetry('t40', _on_t40)
+
+                # ── TEL:occ_dyn → dynamic cells only from T40 ─────────────────
+                # Format: 'gx,gy;gx,gy;...' (sparse active cells, empty = clear)
+                def _on_occ_dyn(data_str):
+                    try:
+                        cells = []
+                        data_str = data_str.strip()
+                        if data_str:
+                            for token in data_str.split(';'):
+                                token = token.strip()
+                                if not token:
+                                    continue
+                                gx_s, gy_s = token.split(',')
+                                cells.append((int(gx_s), int(gy_s)))
+                        occupancy.set_dynamic_cells(cells)
+                    except Exception as e:
+                        print(f"[TELEMETRY] occ_dyn decode error: {e}")
+                t.subscribe_telemetry('occ_dyn', _on_occ_dyn)
 
                 # ── TEL:mask → update channel enable/disable state ────────────
                 def _on_mask(data_str):

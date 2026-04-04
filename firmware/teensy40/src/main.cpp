@@ -145,13 +145,26 @@ void onIntercomRequest(Request& req){
         int angle = command.substring(openBracket + 1, closedBracket).toInt();
         req.reply(lidar.getDistance(angle));
     }
-	else if (command.startsWith("oM")) ///occupancyMap
-    {   
+	else if (command.startsWith("oM")) ///occupancyMap (legacy — full static+dynamic bitmap)
+    {
         String oM = compressData(lidar.getOccupancyMap());
-        //Console::println("occupancyMap");
-        //Console::println(oM);
         req.reply(oM);
-    }else if (command.startsWith("team")) ///color(0 or 1) //Blue or yellow
+    }
+    else if (command.startsWith("oD")) ///occupancyDyn — dynamic-only sparse "gx,gy;gx,gy;…"
+    {
+        req.reply(lidar.getOccupancyDyn());
+    }
+    else if (command.startsWith("sM")) ///setStaticMap(hex) — deploy static map from holOS
+    {
+        int openBracket   = command.indexOf("(");
+        int closedBracket = command.indexOf(")");
+        if (openBracket != -1 && closedBracket != -1 && closedBracket > openBracket + 1) {
+            String hexMap = command.substring(openBracket + 1, closedBracket);
+            lidar.setStaticMapHex(hexMap);
+        }
+        req.reply("OK");
+    }
+    else if (command.startsWith("team")) ///color(0 or 1) //Blue or yellow
     {   
         int openBracket = command.indexOf("(");
         int closedBracket = command.indexOf(")");
@@ -162,7 +175,6 @@ void onIntercomRequest(Request& req){
         if(!yellow && !blue) return;
 
         pixel.setTeamColor(yellow);
-        lidar.setStaticMap(yellow); //true = YELLOW, false = BLUE
         //delay(1000);
     }
     else if (command.startsWith("off")) ///displayIntercom

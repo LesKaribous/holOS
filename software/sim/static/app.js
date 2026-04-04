@@ -10,7 +10,9 @@ const FIELD_H   = 2000;
 const GRID_W    = 20;
 const GRID_H    = 13;
 const GRID_CELL = 150;
-const ROBOT_IMG_OFFSET = 0;  // adjust if robot.png front ≠ East
+// Visual-only: rotate robot.png so face-A aligns with actual heading.
+// Negate to −Math.PI/6 if correction goes the wrong way.
+const ROBOT_IMG_OFFSET = Math.PI * 2 + Math.PI / 6;
 
 const COLOR_HEX = {
   UNKNOWN:'#888888', NONE:'#cccccc', RED:'#e03232', GREEN:'#28c228',
@@ -125,6 +127,11 @@ socket.on('state', state => {
   renderMiniMap(state);
   updateMapSidebar(state);
   if (activeView === 'monitor') updateMonitor(state);
+  // Sync pathfinding checkbox from server state
+  const pfCb = document.getElementById('feat-pathfinding');
+  if (pfCb && state.features && state.features.pathfinding !== undefined) {
+    pfCb.checked = !!state.features.pathfinding;
+  }
   if (state.hw_connecting) {
     cgSetRobotConnecting();
     _serialSetConnectBusy(true);
@@ -417,8 +424,10 @@ function drawGrid(s) {
   for (let gy=0; gy<=GRID_H; gy++) {
     ctx.beginPath(); ctx.moveTo(wx(0), wy(gy*GRID_CELL)); ctx.lineTo(wx(FIELD_W), wy(gy*GRID_CELL)); ctx.stroke();
   }
-  ctx.fillStyle = 'rgba(255, 40, 16, 0.76)';
   for (const c of s.occupancy) {
+    ctx.fillStyle = (c.layer === 'dynamic')
+      ? 'rgba(255, 140, 0, 0.82)'    // dynamic obstacles — orange
+      : 'rgba(41, 128, 185, 0.72)';  // static obstacles  — blue
     ctx.fillRect(wx(c.gx*GRID_CELL)+1, wy((c.gy+1)*GRID_CELL)+1, wlen(GRID_CELL)-2, wlen(GRID_CELL)-2);
   }
 }
@@ -634,7 +643,11 @@ canvas.addEventListener('click', e => {
   if (_mapTool === 'obstacle' || _mapTool === 'remove_obs' || _mapTool === 'place_opp') return;
 
   // Default: drop a pin and show popover
-  _mapPin = { x: Math.round(w.x), y: Math.round(w.y) };
+  // Theta: keep previous pin's theta for waypoint chaining; fall back to robot's current theta
+  const _prevTheta = _mapPin != null
+    ? _mapPin.theta
+    : (lastState?.robot ? lastState.robot.theta * 180 / Math.PI : 0);
+  _mapPin = { x: Math.round(w.x), y: Math.round(w.y), theta: _prevTheta };
   _showPinPopover(e.clientX - rect.left, e.clientY - rect.top);
   if (lastState) render(lastState);
 });
@@ -665,7 +678,7 @@ function setMode(mode)    { socket.emit('set_mode',{mode}); }
 //  MAP PIN & TRAJECTORY SYSTEM
 // ═══════════════════════════════════════════════════════════════════════════════
 
-let _mapPin  = null;    // {x, y} — current pin position (world mm)
+let _mapPin  = null;    // {x, y, theta} — current pin position (world mm)
 let _mapTool = null;    // null | 'obstacle' | 'remove_obs'
 let _mapTraj = [];      // [{x, y}, ...] — trajectory waypoints
 
@@ -692,6 +705,7 @@ function _showPinPopover(canvasPx, canvasPy) {
   pop.classList.remove('hidden');
   document.getElementById('pin-x').value = _mapPin.x;
   document.getElementById('pin-y').value = _mapPin.y;
+  document.getElementById('pin-theta').value = (_mapPin.theta ?? 0).toFixed(1);
 }
 
 function dismissPin() {
@@ -704,6 +718,7 @@ function pinCoordsEdited() {
   if (!_mapPin) return;
   _mapPin.x = +(document.getElementById('pin-x')?.value ?? 0);
   _mapPin.y = +(document.getElementById('pin-y')?.value ?? 0);
+  _mapPin.theta = +(document.getElementById('pin-theta')?.value ?? 0);
   if (lastState) render(lastState);
 }
 
@@ -720,13 +735,13 @@ function pinGoHere() {
 
 function pinSetPos() {
   if (!_mapPin) return;
-  socket.emit('set_robot_pos', { x: _mapPin.x, y: _mapPin.y });
-  showToast(`Position set → (${_mapPin.x}, ${_mapPin.y})`);
+  socket.emit('set_robot_pos', { x: _mapPin.x, y: _mapPin.y, theta: _mapPin.theta || 0 });
+  showToast(`Position set → (${_mapPin.x}, ${_mapPin.y}, ${_mapPin.theta || 0})`);
 }
 
 function pinCopy() {
   if (!_mapPin) return;
-  const text = `(${_mapPin.x}, ${_mapPin.y})`;
+  const text = `(${_mapPin.x}, ${_mapPin.y}, ${_mapPin.theta || 0})`;
   navigator.clipboard.writeText(text).then(() => {
     showToast(`Copied ${text}`);
   }).catch(() => showToast('Copy failed'));
@@ -827,6 +842,22 @@ function drawMapPin() {
   // center dot
   ctx.beginPath(); ctx.arc(px, py, 3, 0, Math.PI * 2);
   ctx.fillStyle = '#2980b9'; ctx.fill();
+  // heading arrow (canvas Y is flipped: world CCW → canvas CW, so negate theta)
+  if (_mapPin.theta != null) {
+    const a = -(_mapPin.theta * Math.PI / 180);  // world deg → canvas rad
+    const arrowLen = 22, headLen = 7;
+    const ex = px + Math.cos(a) * arrowLen;
+    const ey = py + Math.sin(a) * arrowLen;
+    ctx.beginPath();
+    ctx.moveTo(px, py);
+    ctx.lineTo(ex, ey);
+    ctx.strokeStyle = '#2980b9'; ctx.lineWidth = 2; ctx.stroke();
+    // arrowhead
+    ctx.save(); ctx.translate(ex, ey); ctx.rotate(a);
+    ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(-headLen, -4); ctx.lineTo(-headLen, 4); ctx.closePath();
+    ctx.fillStyle = '#2980b9'; ctx.fill();
+    ctx.restore();
+  }
 }
 
 function drawMapTraj() {
@@ -976,6 +1007,41 @@ function oppSeqStop() {
 _renderOppSeq();
 
 function setFeature(k,v)  { socket.emit('set_feature',{feature:k,value:v}); }
+
+// ── Occupancy static map ──────────────────────────────────────────────────
+async function saveStaticMap() {
+  const btn = document.getElementById('btn-occ-save');
+  if (btn) { btn.disabled = true; btn.textContent = '…'; }
+  try {
+    const r = await fetch('/api/occupancy/static', { method: 'PUT' });
+    const j = await r.json();
+    if (btn) { btn.textContent = j.ok ? '✓ Saved' : '✗ Error'; }
+  } catch(e) {
+    if (btn) btn.textContent = '✗ Error';
+  }
+  setTimeout(() => { if (btn) { btn.disabled = false; btn.innerHTML = '&#128190; Save'; } }, 2000);
+}
+
+async function deployStaticMap() {
+  const btn = document.getElementById('btn-occ-deploy');
+  if (btn) { btn.disabled = true; btn.textContent = '…'; }
+  try {
+    const r = await fetch('/api/occupancy/deploy', { method: 'POST' });
+    const j = await r.json();
+    if (btn) { btn.textContent = j.ok ? '✓ Sent' : '✗ ' + (j.error || 'Error'); }
+  } catch(e) {
+    if (btn) btn.textContent = '✗ Error';
+  }
+  setTimeout(() => { if (btn) { btn.disabled = false; btn.innerHTML = '&#128225; Deploy'; } }, 2000);
+}
+
+function togglePathfinding(on) {
+  fetch('/api/pathfinding', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ enabled: on }),
+  });
+}
 function setFeedrate(v) {
   document.getElementById('feedrate-val').textContent=parseFloat(v).toFixed(2)+'×';
   socket.emit('set_feedrate',{value:parseFloat(v)});
@@ -1920,7 +1986,7 @@ const _nNodes = [
     xr:0.50, yr:0.25 },
   { id:'t40',     label:'Teensy 4.0',      icon:'🔧',
     role:'Secondary MCU',
-    sw:['TwinActuator firmware', 'PlatformIO · C++17'],
+    sw:['TwinActuator firmware', 'PlatformIO · C++17', 'Static map (RAM)'],
     xr:0.88, yr:0.25 },
   { id:'sim',     label:'Simulator',       icon:'🎮',
     role:'Virtual robot',
@@ -2498,7 +2564,7 @@ const TEST_ICONS = {
 
 // ── Init ─────────────────────────────────────────────────────────────────────
 function initTests() {
-  // Fetch catalog from server
+  // Fetch (or re-fetch) catalog from server — called on init and on catalog change.
   fetch('/api/tests/catalog')
     .then(r => r.json())
     .then(catalog => {
@@ -2515,47 +2581,47 @@ function initTests() {
     .catch(() => {
       // Server may not be running yet — silently ignore
     });
-
-  // SocketIO events
-  socket.on('test_progress', data => {
-    _setTestStatus(data.id, data.status);
-    if (data.status === 'running') {
-      _logEntry(data.id, 'running', '…', null);
-    }
-  });
-
-  socket.on('test_result', data => {
-    const status = data.passed ? 'passed' : 'failed';
-    _setTestStatus(data.id, status, data.duration_ms);
-    _logEntry(data.id, status, data.msg, data.duration_ms);
-    _updateSummary();
-  });
-
-  socket.on('test_done', () => {
-    _testRunning = false;
-    _updateButtons();
-    _updateSummary();
-  });
-
-  // Re-fetch catalog when connection mode changes (sim ↔ hardware ↔ idle)
-  socket.on('tests_catalog_changed', data => {
-    _testStatus   = {};
-    _testDuration = {};
-    _testCatalog  = {};
-    _testRunning  = false;
-    _updateButtons();
-    if (data && data.mode === 'idle') {
-      clearTestLog();
-      _logHeader('⚠ Connexion perdue — reconnectez le robot');
-    }
-    initTests();
-  });
-
-  // Interactive test prompt — show overlay, wait for user to click Continue
-  socket.on('test_prompt', data => {
-    _showTestPrompt(data.msg || '');
-  });
 }
+
+// SocketIO listeners registered ONCE (not inside initTests to avoid duplicates)
+socket.on('test_progress', data => {
+  _setTestStatus(data.id, data.status);
+  if (data.status === 'running') {
+    _logEntry(data.id, 'running', '…', null);
+  }
+});
+
+socket.on('test_result', data => {
+  const status = data.passed ? 'passed' : 'failed';
+  _setTestStatus(data.id, status, data.duration_ms);
+  _logEntry(data.id, status, data.msg, data.duration_ms);
+  _updateSummary();
+});
+
+socket.on('test_done', () => {
+  _testRunning = false;
+  _updateButtons();
+  _updateSummary();
+});
+
+// Re-fetch catalog when connection mode changes (sim ↔ hardware ↔ idle)
+socket.on('tests_catalog_changed', data => {
+  _testStatus   = {};
+  _testDuration = {};
+  _testCatalog  = {};
+  _testRunning  = false;
+  _updateButtons();
+  if (data && data.mode === 'idle') {
+    clearTestLog();
+    _logHeader('⚠ Connexion perdue — reconnectez le robot');
+  }
+  initTests();
+});
+
+// Interactive test prompt — show overlay, wait for user to click Continue
+socket.on('test_prompt', data => {
+  _showTestPrompt(data.msg || '');
+});
 
 // ── Catalog UI ───────────────────────────────────────────────────────────────
 function _buildCatalogUI() {
@@ -4074,7 +4140,8 @@ function _remoteUpdateDial() {
 
   // Robot image rotation — HTML img with CSS transform
   const robotImg = document.getElementById('dial-robot-img');
-  if (robotImg) robotImg.style.transform = `translate(-50%, -50%) rotate(${-cur.toFixed(2)}deg)`;
+  const imgOffDeg = ROBOT_IMG_OFFSET * 180 / Math.PI;
+  if (robotImg) robotImg.style.transform = `translate(-50%, -50%) rotate(${(-cur + imgOffDeg).toFixed(2)}deg)`;
 
   // Current heading line
   const curLine = document.getElementById('dial-cur-line');
@@ -4657,8 +4724,4 @@ function actSeqExportClip() {
     if (s.type === 'cmd') return `brain.exec("${s.cmd}")`;
     return `# unknown step`;
   }).join('\n');
-  navigator.clipboard.writeText(lines).then(() => showToast('Copied to clipboard'));
-}
-
-// Init actuator page when navigating to it
-// (called from switchView or on page load if that's the active view)
+    navigator.clipboard.writeText(lines
