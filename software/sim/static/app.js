@@ -12,7 +12,7 @@ const GRID_H    = 13;
 const GRID_CELL = 150;
 // Visual-only: rotate robot.png so face-A aligns with actual heading.
 // Negate to −Math.PI/6 if correction goes the wrong way.
-const ROBOT_IMG_OFFSET = Math.PI * 2 + Math.PI / 6;
+const ROBOT_IMG_OFFSET = Math.PI + Math.PI / 6;
 
 const COLOR_HEX = {
   UNKNOWN:'#888888', NONE:'#cccccc', RED:'#e03232', GREEN:'#28c228',
@@ -97,7 +97,7 @@ function resizeCanvas() {
   ctx.fillRect(0, 0, W, H);
   ctx.strokeStyle = 'rgba(26,82,118,.35)';
   ctx.lineWidth   = Math.max(1.5, scale * 4);
-  ctx.strokeRect(wx(0), wy(FIELD_H), wlen(FIELD_W), wlen(FIELD_H));
+  ctx.strokeRect(wx(0), wy(0), wlen(FIELD_W), wlen(FIELD_H));
 
   if (lastState) render(lastState);
 }
@@ -111,10 +111,10 @@ if (window.ResizeObserver) {
 
 // ── Coordinate helpers ────────────────────────────────────────────────────
 function wx(mm)   { return offX + mm * scale; }
-function wy(mm)   { return offY + (FIELD_H - mm) * scale; }
+function wy(mm)   { return offY + mm * scale; }
 function wlen(mm) { return mm * scale; }
 function canvasToWorld(cx, cy) {
-  return { x: (cx - offX) / scale, y: FIELD_H - (cy - offY) / scale };
+  return { x: (cx - offX) / scale, y: (cy - offY) / scale };
 }
 
 // ── SocketIO ──────────────────────────────────────────────────────────────
@@ -398,7 +398,7 @@ function renderMiniMap(s) {
 
 // ── Shared field drawing (reused by main + potentially prints) ─────────────
 function drawField(c, wxf, wyf, wlf, s) {
-  const fx = wxf(0), fy = wyf(FIELD_H), fw = wlf(FIELD_W), fh = wlf(FIELD_H);
+  const fx = wxf(0), fy = wyf(0), fw = wlf(FIELD_W), fh = wlf(FIELD_H);
   if (terrainImg) {
     c.drawImage(terrainImg, fx, fy, fw, fh);
     c.fillStyle = 'rgba(0,0,0,0.15)';
@@ -407,9 +407,9 @@ function drawField(c, wxf, wyf, wlf, s) {
     c.fillStyle = '#c8d4be';
     c.fillRect(fx, fy, fw, fh);
     c.fillStyle = 'rgba(180,140,0,.09)';
-    c.fillRect(wxf(0), wyf(FIELD_H), wlf(1500), wlf(FIELD_H));
+    c.fillRect(wxf(0), wyf(0), wlf(1500), wlf(FIELD_H));
     c.fillStyle = 'rgba(30,80,200,.06)';
-    c.fillRect(wxf(1500), wyf(FIELD_H), wlf(1500), wlf(FIELD_H));
+    c.fillRect(wxf(1500), wyf(0), wlf(1500), wlf(FIELD_H));
   }
   c.strokeStyle = 'rgba(26,82,118,.5)';
   c.lineWidth = Math.max(1.5, wlf(4));
@@ -428,7 +428,7 @@ function drawGrid(s) {
     ctx.fillStyle = (c.layer === 'dynamic')
       ? 'rgba(255, 140, 0, 0.82)'    // dynamic obstacles — orange
       : 'rgba(41, 128, 185, 0.72)';  // static obstacles  — blue
-    ctx.fillRect(wx(c.gx*GRID_CELL)+1, wy((c.gy+1)*GRID_CELL)+1, wlen(GRID_CELL)-2, wlen(GRID_CELL)-2);
+    ctx.fillRect(wx(c.gx*GRID_CELL)+1, wy(c.gy*GRID_CELL)+1, wlen(GRID_CELL)-2, wlen(GRID_CELL)-2);
   }
 }
 
@@ -4724,4 +4724,9 @@ function actSeqExportClip() {
     if (s.type === 'cmd') return `brain.exec("${s.cmd}")`;
     return `# unknown step`;
   }).join('\n');
-    navigator.clipboard.writeText(lines
+
+  navigator.clipboard.writeText(lines).then(() => showToast('Copied to clipboard'));
+}
+
+// Init actuator page when navigating to it
+// (called from switchView or on page load if that's the active view)

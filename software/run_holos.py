@@ -1145,10 +1145,8 @@ def on_set_robot_pos(data):
     if t.is_connected:
         # robot.theta is in radians in the holOS frame; firmware expects degrees in its own frame.
         theta_fw_deg = math.degrees(robot.theta)
-        # Map Y is flipped (holOS Y+ = North on canvas); firmware Y+ = South, so invert before sending.
-        fw_y = FIELD_H - robot.pos.y
         brain.log(f"Teleporting to ({robot.pos.x:.0f}, {robot.pos.y:.0f}, {theta_fw_deg:0.1}°)")
-        ok, res = t.execute("setAbsPosition({},{},{:.2f})".format(robot.pos.x, fw_y, theta_fw_deg), timeout_ms=1000)
+        ok, res = t.execute("setAbsPosition({},{},{:.2f})".format(robot.pos.x, robot.pos.y, theta_fw_deg), timeout_ms=1000)
         if ok:
             brain.log(f"Robot teleported to ({robot.pos.x:.0f}, {robot.pos.y:.0f}, {robot.theta:.1f}°)")
         else:
@@ -1268,7 +1266,7 @@ def on_serial_connect(data):
                     try:
                         #print(f"[TELEMETRY] pos: {data_str}")
                         parts = dict(kv.split('=') for kv in data_str.split(','))
-                        robot.pos   = Vec2(float(parts['x']), FIELD_H - float(parts['y']))
+                        robot.pos   = Vec2(float(parts['x']), float(parts['y']))
                         # Firmware sends theta in radians in the firmware frame (0 = face A).
                         # Add HW_THETA_OFFSET to convert to holOS frame (0 = East).
                         robot.theta = float(parts['theta'])
