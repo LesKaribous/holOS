@@ -65,7 +65,7 @@ FLASHMEM void Mission::run() {
         {
             uint32_t sp;
             asm volatile("mov %0, sp" : "=r"(sp));
-            Console::info("Mission") << "  pre-exec SP=" << sp << Console::endl;
+            Console::info("Mission") << "  pre-exec SP=" << String(sp) << Console::endl;
         }
 
         // --- Execution du bloc ---

@@ -42,30 +42,30 @@ static void collectStock(Vec2 target, TableCompass tc, RobotCompass rc) {
     Vec2 approach = target - PolarVec(getCompassOrientation(tc) * DEG_TO_RAD, APPROACH_OFFSET).toVec2();
     Vec2 grab     = target - PolarVec(getCompassOrientation(tc) * DEG_TO_RAD, GRAB_OFFSET).toVec2();
 
-    Console::info("Strategy") << "[collectStock] approach  SP=" << freeStack() << Console::endl;
+    Console::info("Strategy") << "[collectStock] approach  SP=" << String(freeStack()) << Console::endl;
     async motion.goAlign(approach, rc, getCompassOrientation(tc));
 
-    Console::info("Strategy") << "[collectStock] grab      SP=" << freeStack() << Console::endl;
+    Console::info("Strategy") << "[collectStock] grab      SP=" << String(freeStack()) << Console::endl;
     async motion.goAlign(grab,     rc, getCompassOrientation(tc));
 
-    Console::info("Strategy") << "[collectStock] elevator↓ SP=" << freeStack() << Console::endl;
+    Console::info("Strategy") << "[collectStock] elevator↓ SP=" << String(freeStack()) << Console::endl;
     actuators.moveElevator(rc, ElevatorPose::DOWN);
 
-    Console::info("Strategy") << "[collectStock] waitMs(1) SP=" << freeStack() << Console::endl;
+    Console::info("Strategy") << "[collectStock] waitMs(1) SP=" << String(freeStack()) << Console::endl;
     waitMs(GRAB_DELAY_MS);
 
-    Console::info("Strategy") << "[collectStock] grab()    SP=" << freeStack() << Console::endl;
+    Console::info("Strategy") << "[collectStock] grab()    SP=" << String(freeStack()) << Console::endl;
     actuators.grab(rc);
 
-    Console::info("Strategy") << "[collectStock] waitMs(2) SP=" << freeStack() << Console::endl;
+    Console::info("Strategy") << "[collectStock] waitMs(2) SP=" << String(freeStack()) << Console::endl;
     waitMs(GRAB_DELAY_MS);
 
-    Console::info("Strategy") << "[collectStock] elevator↑ SP=" << freeStack() << Console::endl;
+    Console::info("Strategy") << "[collectStock] elevator↑ SP=" << String(freeStack()) << Console::endl;
     actuators.moveElevator(rc, ElevatorPose::STORE);
 
     safety.enable();
     motion.setFeedrate(1.0f);
-    Console::info("Strategy") << "[collectStock] done      SP=" << freeStack() << Console::endl;
+    Console::info("Strategy") << "[collectStock] done      SP=" << String(freeStack()) << Console::endl;
 }
 
 
@@ -86,24 +86,24 @@ static bool isColorUseful(ObjectColor color) {
 }
 
 static BlockResult blockCollectA() {
-    Console::info("Strategy") << "[blockCollectA] START  SP=" << freeStack() << Console::endl;
+    Console::info("Strategy") << "[blockCollectA] START  SP=" << String(freeStack()) << Console::endl;
 
     // Interroger la couleur avant de se déplacer (sync, 400ms max)
     //ObjectColor color = vision.queryColorSync(POI::testA, 400);
     //Console::info("Strategy") << "Zone A: " << colorName(color) << Console::endl;
     //if (!isColorUseful(color)) return BlockResult::FAILED;
 
-    Console::info("Strategy") << "[blockCollectA] goAlign SP=" << freeStack() << Console::endl;
+    Console::info("Strategy") << "[blockCollectA] goAlign SP=" << String(freeStack()) << Console::endl;
     async motion.goAlign(POI::stockYellow_01, RobotCompass::AB, getCompassOrientation(TableCompass::SOUTH));
     if (!motion.wasSuccessful()) {
         Console::warn("Strategy") << "[blockCollectA] goAlign FAILED" << Console::endl;
         return BlockResult::FAILED;
     }
 
-    Console::info("Strategy") << "[blockCollectA] → collectStock  SP=" << freeStack() << Console::endl;
+    Console::info("Strategy") << "[blockCollectA] → collectStock  SP=" << String(freeStack()) << Console::endl;
     collectStock(POI::stockYellow_01, TableCompass::WEST, RobotCompass::AB);
 
-    Console::info("Strategy") << "[blockCollectA] END  SP=" << freeStack() << Console::endl;
+    Console::info("Strategy") << "[blockCollectA] END  SP=" << String(freeStack()) << Console::endl;
     return motion.wasSuccessful() ? BlockResult::SUCCESS : BlockResult::FAILED;
 }
 
@@ -153,7 +153,7 @@ FLASHMEM void registerBlocks() {
 // ============================================================
 
 FLASHMEM void match() {
-    Console::info("Strategy") << "match() entry  SP=" << freeStack() << Console::endl;
+    Console::info("Strategy") << "match() entry  SP=" << String(freeStack()) << Console::endl;
 
     motion.setFeedrate(1.0f);
     motion.enableCruiseMode();
