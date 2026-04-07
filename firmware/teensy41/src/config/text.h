@@ -8,10 +8,12 @@ namespace Text{
     COLOR_B[] = "Blue",
 
     //Strategy
-    STRAT_PRIMARY_A[] = "ETAGE",
-    STRAT_PRIMARY_B[] = "MATCH RDC",
-    STRAT_SECONDARY_A[] = "ETAGE",
-    STRAT_SECONDARY_B[] = "MATCH RDC",
+    // Switch OFF (false) = Séquentielle (dumb T41-only, stop-on-obstacle)
+    // Switch ON  (true)  = Intelligente  (Jetson-based, full pathfinding)
+    STRAT_PRIMARY_A[] = "Sequentiel",
+    STRAT_PRIMARY_B[] = "Intelligen",
+    STRAT_SECONDARY_A[] = "Sequentiel",
+    STRAT_SECONDARY_B[] = "Intelligen",
 
     //Lidar
     LIDAR_DISCONNECTED[] = "Waiting...",

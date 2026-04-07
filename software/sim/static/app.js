@@ -701,6 +701,58 @@ function matchStart()     { socket.emit('match_start'); }
 function matchStop()      { socket.emit('match_stop'); }
 function matchResume()    { socket.emit('match_resume'); }
 
+// ── Unified start/stop ──────────────────────────────────────────────────────
+// HW connected → match_start only (backend auto-starts Python brain if intelligent)
+// Sim only     → run_strategy (Python match.py)
+let _matchRunning = false;
+
+function unifiedStart() {
+  const isHw = _currentConnectionMode === 'usb' || _currentConnectionMode === 'xbee';
+  if (isHw) {
+    // Firmware match start (same as pulling the physical starter).
+    // The Python backend checks the strategy switch and auto-starts
+    // the Python brain only if the firmware is in intelligent mode.
+    socket.emit('match_start');
+  } else {
+    // Sim-only: just run the Python strategy
+    socket.emit('run_strategy');
+  }
+  _matchRunning = true;
+  _updateStartStopUI();
+}
+
+function unifiedStop() {
+  const isHw = _currentConnectionMode === 'usb' || _currentConnectionMode === 'xbee';
+  if (isHw) {
+    // Pause firmware match (cancel motion, set pause flag)
+    socket.emit('match_stop');
+  }
+  // Always stop the Python strategy side
+  socket.emit('stop_strategy');
+  _matchRunning = false;
+  _updateStartStopUI();
+}
+
+function _updateStartStopUI() {
+  const startBtn = document.getElementById('btn-start');
+  const stopBtn  = document.getElementById('btn-stop');
+  if (startBtn) {
+    startBtn.textContent = _matchRunning ? '▶ Running…' : '▶ Start';
+    startBtn.disabled = _matchRunning;
+  }
+  if (stopBtn) {
+    stopBtn.disabled = !_matchRunning;
+  }
+}
+
+// Update UI when match state changes from firmware
+socket.on('match_state', data => {
+  if (data.running !== undefined) {
+    _matchRunning = data.running;
+    _updateStartStopUI();
+  }
+});
+
 // ── C++ blocks from Teensy BlockRegistry ────────────────────────────────────
 let cppBlocks = [];
 
@@ -727,9 +779,6 @@ socket.on('cpp_block_result', data => {
 });
 
 // Listen for match state updates
-socket.on('match_state', data => {
-  // Could update UI indicators here
-});
 function resetSim()       { socket.emit('reset'); }
 function reloadStrategy() { socket.emit('reload_strategy'); }
 function setTeam(team) {

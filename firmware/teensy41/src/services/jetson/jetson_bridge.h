@@ -3,7 +3,6 @@
 #include "services/intercom/request.h"
 #include "config/settings.h"
 #include "utils/timer/timer.h"
-#include "program/block_registry.h"
 #include <functional>
 
 // ============================================================

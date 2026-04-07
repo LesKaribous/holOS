@@ -122,7 +122,14 @@ FLASHMEM void match() {
     motion.setFeedrate(1.0f);
     motion.enableCruiseMode();
 
-    Mission mission;
+    // IMPORTANT: Mission is static to avoid ~700 bytes on the stack.
+    // match() is only called once per boot cycle (programAuto), so
+    // re-initialization is safe.  The deep nesting of async motion
+    // commands + os.run() loops can cause stack overflow if Mission
+    // lives on the stack alongside all the nested frames.
+    static Mission mission;
+    mission = Mission();   // reinit for fresh match
+
     mission
         .setMode(Mission::SelectMode::PRIORITY)
         .setTimeProvider([]() -> uint32_t {
