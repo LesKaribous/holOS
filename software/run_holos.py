@@ -1811,27 +1811,35 @@ def on_match_start():
     """Remote match start — same effect as pulling the physical starter.
 
     After a successful firmware start, queries the strategy switch:
-      strat=1 (intelligent) → also starts the Python brain
-      strat=0 (sequential)  → firmware runs C++ blocks autonomously
+      strat=1 (remote/intelligent) → also starts the Python brain
+      strat=0 (internal/sequential) → firmware runs C++ blocks autonomously
+
+    UI feedback is emitted immediately after the firmware ACK so the webapp
+    does not appear to "do nothing" while health is being queried.
     """
     t = _active_transport()
-    if t is not None and t.is_connected:
-        ok, res = t.execute('match_start', timeout_ms=3000)
-        if ok:
-            brain.log('[MATCH] Remote start → ok')
-            # Check firmware strategy switch via health response
-            h_ok, h_res = t.execute('health', timeout_ms=2000)
-            if h_ok and 'strat=1' in (h_res or ''):
-                brain.log('[MATCH] Intelligent strategy — starting Python brain')
-                _active_brain().run_match()
-            else:
-                brain.log('[MATCH] Sequential strategy — C++ handles match')
-        else:
-            brain.log(f'[MATCH] Remote start failed: {res}')
-        emit('match_state', {'running': ok})
-    else:
-        brain.log('[MATCH] No transport connected')
+    if t is None or not t.is_connected:
+        brain.log('[MATCH] No HW transport connected — cannot start firmware match')
         emit('match_state', {'running': False, 'error': 'not_connected'})
+        return
+
+    ok, res = t.execute('match_start', timeout_ms=3000)
+    if not ok:
+        brain.log(f'[MATCH] Remote start FAILED: {res}')
+        emit('match_state', {'running': False})
+        return
+
+    # Firmware ACKed — match is starting.  Emit immediately so UI updates.
+    brain.log('[MATCH] Firmware match started ✓')
+    emit('match_state', {'running': True})
+
+    # Now check strategy switch to decide whether to also run the Python brain.
+    h_ok, h_res = t.execute('health', timeout_ms=2000)
+    if h_ok and 'strat=1' in (h_res or ''):
+        brain.log('[MATCH] Remote strategy — starting Python brain')
+        _active_brain().run_match()
+    else:
+        brain.log('[MATCH] Internal strategy — C++ handles match autonomously')
 
 
 @socketio.on('match_stop')

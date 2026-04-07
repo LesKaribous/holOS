@@ -750,6 +750,14 @@ socket.on('match_state', data => {
   if (data.running !== undefined) {
     _matchRunning = data.running;
     _updateStartStopUI();
+    // Show feedback in the status area so the user sees something
+    if (data.running) {
+      showToast('Match started');
+    } else if (data.error === 'not_connected') {
+      showToast('No hardware connected — connect via Serial first');
+    } else {
+      showToast('Match stopped');
+    }
   }
 });
 
