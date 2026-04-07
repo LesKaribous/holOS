@@ -28,8 +28,7 @@ holOS/
 │   └── teensy40/          ← Perception co-processor (LIDAR, occupancy, NeoPixel)
 │
 ├── software/
-│   ├── run_sim.py         ← Launch simulator (Flask + SocketIO, port 5000)
-│   ├── run_jetson.py      ← Launch on real Jetson hardware
+│   ├── run.py             ← Unified entry point (PC + Jetson, sim + hardware)
 │   ├── run_hardware_tests.py ← Hardware test runner
 │   ├── brain.py           ← Jetson orchestrator
 │   ├── transport/         ← Communication layer (abstract + XBee + wired + virtual)
@@ -225,7 +224,7 @@ Comments (`#`) and blank lines are ignored. Motion commands (`go`, `goPolar`, `t
 ```bash
 cd software/
 pip install -r requirements.txt
-python run_sim.py
+python run.py --sim
 # Open http://localhost:5000
 ```
 
@@ -234,11 +233,14 @@ The simulator provides a full virtual Teensy via `SimBridge`. The strategy (`str
 ### Running on Real Hardware
 
 ```bash
-# USB-wired connection (holOS wired mode):
-python run_sim.py  # holOS connects via USB to Teensy
+# PC with USB connection:
+python run.py --connect COM6
 
-# Full Jetson autonomous mode:
-python run_jetson.py --port /dev/ttyUSB0
+# Jetson (auto-detects Linux → connects /dev/ttyUSB0):
+python run.py
+
+# Jetson with specific port:
+python run.py --connect /dev/ttyTHS1
 ```
 
 Common XBee/USB ports on Jetson:
@@ -335,7 +337,7 @@ Macro step types: `move_to`, `face`, `actuator`, `wait`, `call_macro`, `if_occup
 
 Single-page app at `software/sim/static/`. Views: Map, Strategy, Missions, Macros, Tests, Calibration, Settings.
 
-Key API endpoints (Flask, `run_sim.py`):
+Key API endpoints (Flask, `run.py`):
 
 | Method | Path                             | Description                          |
 |--------|----------------------------------|--------------------------------------|
@@ -549,7 +551,7 @@ String-origin messages (from `routines.cpp`, fallback lambdas, strategy code) ar
 | `firmware/teensy41/src/services/jetson/jetson_bridge.cpp` | XBee/USB command dispatch, telemetry, watchdog |
 | `firmware/teensy41/src/services/mission/mission_controller.cpp` | SD strategy loader/executor |
 | `firmware/teensy41/src/services/motion/motion.cpp` | Holonomic motion control |
-| `software/run_sim.py` | Flask server + all Python API endpoints |
+| `software/run.py` | Flask server + all Python API endpoints |
 | `software/transport/xbee.py` | XBee transport (thread-safe write, heartbeat) |
 | `software/strategy/match.py` | Hot-reloadable match strategy |
 | `software/strategy/missions.json` | Mission definitions |

@@ -4,7 +4,7 @@ transport/virtual.py — Virtual transport for simulator mode (Windows dev).
 Instead of XBee serial, commands go directly to the SimBridge which runs the
 physics simulation. Strategy code is 100% identical between sim and real modes.
 
-The SimBridge is set externally (by run_sim.py) after both objects are created.
+The SimBridge is set externally (by run.py) after both objects are created.
 """
 
 import threading
@@ -25,7 +25,7 @@ class VirtualTransport(Transport):
     """
 
     def __init__(self):
-        self._bridge = None          # Set by run_sim.py after init
+        self._bridge = None          # Set by run.py after init
         self._connected_flag = False
 
         # Pending commands: uid → (event, result_container)
@@ -40,7 +40,7 @@ class VirtualTransport(Transport):
     # ── Bridge attachment ─────────────────────────────────────────────────────
 
     def attach_bridge(self, bridge) -> None:
-        """Called by run_sim.py to wire up the physics bridge."""
+        """Called by run.py to wire up the physics bridge."""
         self._bridge = bridge
         self._connected_flag = True
         if self._on_connect:

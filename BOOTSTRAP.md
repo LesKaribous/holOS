@@ -20,7 +20,7 @@ Jetson / PC  ←— XBee or USB-CDC (framed CRC8 protocol) —→  Teensy 4.1 (m
 
 - **Firmware** (`firmware/teensy41/`): PlatformIO C++. Service-oriented architecture. ISR-critical functions in ITCM, everything else `FLASHMEM`. Key services: Motion (stepper + PID), Safety (LIDAR), Actuators (servos + pumps), JetsonBridge (command dispatcher + fallback), Chrono (100s match timer).
 - **Software** (`software/`): Python 3. `brain.py` orchestrates everything. Transport abstraction (`transport/`) lets the same strategy code run on real hardware or simulator. Services in `services/` mirror firmware capabilities. Strategy in `strategy/match.py` is hot-reloadable.
-- **Simulator** (`software/run_sim.py`): Flask + SocketIO on port 5000. `sim/bridge.py` is a fake Teensy. `sim/physics.py` runs holonomic kinematics at 60Hz. `sim/world.py` has the occupancy grid + A* pathfinder.
+- **Entry point** (`software/run.py`): Unified for PC + Jetson. Flask + SocketIO on port 5000. Auto-detects platform (Linux=Jetson, Windows=PC). `sim/bridge.py` is a fake Teensy. `sim/physics.py` runs holonomic kinematics at 60Hz. `sim/world.py` has the occupancy grid + A* pathfinder.
 - **Web UI** (`software/sim/static/`): Single-page app — `index.html`, `app.js`, `style.css`. Canvas-based field rendering, map pins, trajectory builder, remote control drawer, actuator page with sequence editor, opponent simulation, grid brush tools.
 - **Protocol** (`shared/protocol.py`): `<id>:<cmd>|<crc8>\n` for commands, `r<id>:<response>|<crc8>\n` for replies, `TEL:<type>:<data>|<crc8>\n` for telemetry.
 
@@ -32,7 +32,7 @@ Jetson / PC  ←— XBee or USB-CDC (framed CRC8 protocol) —→  Teensy 4.1 (m
 | Wire protocol details | `ARCHITECTURE.md` (root) |
 | Python config + constants | `software/shared/config.py` |
 | Brain / orchestrator | `software/brain.py` |
-| Simulator entry point | `software/run_sim.py` |
+| Unified entry point | `software/run.py` |
 | Strategy (hot-reload) | `software/strategy/match.py` |
 | Firmware services | `firmware/teensy41/src/services/` |
 | Firmware commands | `firmware/teensy41/src/os/commands.cpp` |
@@ -44,7 +44,7 @@ Jetson / PC  ←— XBee or USB-CDC (framed CRC8 protocol) —→  Teensy 4.1 (m
 - **My profile**: Advanced C++ developer (firmware + software), intermediate Python, occasional web (JS/React/HTML/CSS).
 - **Workflow**: I describe what I want — you implement it. When touching firmware, be careful about `FLASHMEM` rules (see `AGENT.md`). When touching the web UI, keep all JS in `app.js`, all CSS in `style.css`, all HTML in `index.html` (no frameworks, no bundler).
 - **Convention**: Math angles (0=East, CCW positive, North=90°). The firmware and UI share this convention. `turn(angle)` is absolute in table frame. `goPolar(relAngle, dist)` is relative to robot heading.
-- **Testing**: Launch the sim with `cd software && python run_sim.py`, open `localhost:5000`. For firmware: `cd firmware/teensy41 && pio run` to compile, `pio run --target upload` to flash.
+- **Testing**: Launch the sim with `cd software && python run.py --sim`, open `localhost:5000`. For firmware: `cd firmware/teensy41 && pio run` to compile, `pio run --target upload` to flash.
 - **Don't**: Push to remote. Create commits without asking. Add README files I didn't request. Use frameworks or bundlers for the web UI. Skip reading `AGENT.md` when unsure about something.
 
 ### Current state (update this section each session)

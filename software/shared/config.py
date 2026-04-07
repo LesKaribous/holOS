@@ -51,6 +51,8 @@ OBS_RADIUS          = 150.0  # mm  radius used when placing dynamic obstacles
 # Both USB-CDC and XBee use the same baudrate.  The firmware auto-detects
 # which physical port is active (Serial vs Serial3).
 BRIDGE_BAUDRATE       = 57600
+USB_DIRECT_BAUDRATE   = 115200  # USB-CDC wired (high-speed direct)
+XBEE_BAUDRATE         = 57600   # XBee radio link
 HEARTBEAT_INTERVAL_S  = 0.5   # s between heartbeats
 JETSON_TIMEOUT_S      = 2.0   # s before Teensy considers Jetson lost
 CMD_TIMEOUT_MS        = 30000 # ms — max time to wait for a motion command to complete

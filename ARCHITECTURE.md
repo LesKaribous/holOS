@@ -136,8 +136,7 @@ holOS/
     │   ├── mission.py            ← Mission planner (miroir C++)
     │   └── match.py              ← ★ Stratégie HOT-RELOADABLE
     ├── brain.py                  ← Orchestrateur Jetson
-    ├── run_sim.py                ← Lancer le simulateur
-    ├── run_jetson.py             ← Lancer sur le vrai Jetson
+    ├── run.py                    ← Point d'entrée unifié (PC + Jetson)
     └── requirements.txt
 ```
 
@@ -182,7 +181,7 @@ jetsonBridge.registerFallback(FallbackID::RETURN_TO_BASE, []() {
 ### Mode Simulateur (Windows / Linux dev)
 
 ```
-run_sim.py
+run.py
     ↓
 VirtualTransport ←→ SimBridge (fake Teensy)
     ↓
@@ -198,9 +197,9 @@ Flask + SocketIO → http://localhost:5000
 ### Simulateur (Windows)
 
 ```bash
-cd py/
+cd software/
 pip install -r requirements.txt
-python run_sim.py
+python run.py --sim
 # Ouvrir http://localhost:5000
 ```
 
@@ -212,11 +211,17 @@ python run_sim.py
 ### Jetson (hardware réel)
 
 ```bash
-cd py/
+cd software/
 pip install -r requirements.txt
-python run_jetson.py --port /dev/ttyUSB0
-# ou
-python run_jetson.py --port /dev/ttyTHS1 --auto-start
+python run.py                             # auto-détecte Linux → connect /dev/ttyUSB0
+python run.py --connect /dev/ttyTHS1      # port spécifique
+python run.py --auto-start                # auto-connect + start match
+```
+
+### PC avec robot en USB
+
+```bash
+python run.py --connect COM6
 ```
 
 Ports XBee courants sur Jetson :
@@ -315,7 +320,7 @@ Les XBee utilisent DSSS (Direct Sequence Spread Spectrum) qui donne une immunit�
 **Q: Comment tester uniquement la stratégie sans le robot ?**
 
 ```bash
-python run_sim.py
+python run.py --sim
 # Puis dans l'UI : bouton "Run"
 ```
 

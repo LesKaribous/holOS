@@ -5,8 +5,7 @@ Wires up transport, services and strategy.
 Handles hot-reload of match.py, connection watchdog, and fallback.
 
 Used by:
-  run_jetson.py  — real hardware (XBeeTransport)
-  run_sim.py     — simulator    (VirtualTransport)
+  run.py  — unified entry point (simulator + hardware, PC + Jetson)
 """
 
 import os
@@ -46,8 +45,8 @@ class Brain:
                  occupancy_grid: OccupancyGrid = None):
         self._t = transport
 
-        # Shared occupancy grid — passed in from run_sim.py so sim and hw share the same instance.
-        # If not provided, create a fresh one (standalone usage, e.g. run_jetson.py).
+        # Shared occupancy grid — passed in from run.py so sim and hw share the same instance.
+        # If not provided, create a fresh one (standalone usage).
         grid = occupancy_grid if occupancy_grid is not None else OccupancyGrid()
 
         # Path planner built on the shared grid
