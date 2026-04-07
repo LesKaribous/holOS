@@ -508,9 +508,21 @@ FLASHMEM void JetsonBridge::_checkWatchdog() {
 
     if (millis() - m_lastHeartbeatMs > m_heartbeatTimeoutMs) {
         Console::warn("JetsonBridge")
-            << "Jetson heartbeat timeout! Activating fallback." << Console::endl;
+            << "Jetson heartbeat timeout!" << Console::endl;
         m_jetsonConnected = false;
-        triggerFallback(FallbackID::CUSTOM_1);  // Execute SD mission strategy if loaded
+
+        // Fallback only makes sense during an active match (AUTO state).
+        // In MANUAL/MANUAL_PROGRAM the match hasn't started — triggering a
+        // blocking Mission::run() here would freeze the entire OS and prevent
+        // programManual() (and consumeRemoteStart()) from ever executing.
+        if (os.getState() == OS::AUTO) {
+            Console::warn("JetsonBridge")
+                << "Match running — activating fallback strategy." << Console::endl;
+            triggerFallback(FallbackID::CUSTOM_1);
+        } else {
+            Console::info("JetsonBridge")
+                << "No active match — skipping fallback." << Console::endl;
+        }
     }
 }
 

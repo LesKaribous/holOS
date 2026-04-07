@@ -93,6 +93,11 @@ FLASHMEM void OS::manual_program_routine(){
 }
 
 FLASHMEM void OS::stop_routine(){
+    static bool once = false;
+    if (!once) {
+        Console::info("OS") << "Entered STOPPED state." << Console::endl;
+        once = true;
+    }
     executeRoutine(m_stopRoutine);
 }
 

@@ -362,6 +362,9 @@ FLASHMEM void onRobotAuto() {
 }
 
 FLASHMEM void onRobotStop() {
+    RUN_EVERY(
+        Console::info("OS") << "STOPPED heartbeat (alive)" << Console::endl;
+    , 5000);
     ihm.run();
 }
 
@@ -421,11 +424,16 @@ FLASHMEM void onMatchNearEnd() {
 }
 
 FLASHMEM void onMatchEnd() {
+    static bool called = false;
+    if (called) return;        // Guard against double-call via nearEnd() + match()
+    called = true;
+
+    Console::info("OS") << "onMatchEnd — shutting down." << Console::endl;
     safety.disable();
     lidar.disable();
     motion.cancel();
+    motion.disengage();        // Disengage BEFORE disable (SERVICE_METHOD_HEADER guard)
     motion.disable();
-    motion.disengage();
     actuators.disable();
     os.stop();
 }

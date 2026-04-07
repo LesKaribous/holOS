@@ -51,6 +51,7 @@ public:
     void execute(String& rawcmd);
 
     bool isBusy();
+    SystemState getState() const { return m_state; }
 
     void clearProgram();
     Program& program();
