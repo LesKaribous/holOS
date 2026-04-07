@@ -1808,12 +1808,24 @@ def on_hw_fire(data):
 
 @socketio.on('match_start')
 def on_match_start():
-    """Remote match start — same effect as pulling the physical starter."""
+    """Remote match start — same effect as pulling the physical starter.
+
+    After a successful firmware start, queries the strategy switch:
+      strat=1 (intelligent) → also starts the Python brain
+      strat=0 (sequential)  → firmware runs C++ blocks autonomously
+    """
     t = _active_transport()
     if t is not None and t.is_connected:
         ok, res = t.execute('match_start', timeout_ms=3000)
         if ok:
             brain.log('[MATCH] Remote start → ok')
+            # Check firmware strategy switch via health response
+            h_ok, h_res = t.execute('health', timeout_ms=2000)
+            if h_ok and 'strat=1' in (h_res or ''):
+                brain.log('[MATCH] Intelligent strategy — starting Python brain')
+                _active_brain().run_match()
+            else:
+                brain.log('[MATCH] Sequential strategy — C++ handles match')
         else:
             brain.log(f'[MATCH] Remote start failed: {res}')
         emit('match_state', {'running': ok})

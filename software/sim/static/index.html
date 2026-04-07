@@ -24,14 +24,10 @@
       <button id="btn-yellow" class="team-btn active" onclick="setTeam('yellow')">● Y</button>
       <button id="btn-blue"   class="team-btn"        onclick="setTeam('blue')">● B</button>
     </div>
-    <button class="btn green" onclick="runStrategy()">▶ Run</button>
-    <button class="btn red"   onclick="stopStrategy()">■ Stop</button>
+    <button class="btn green" id="btn-start" onclick="unifiedStart()" title="Start match (HW: firmware start, Sim: run strategy)">▶ Start</button>
+    <button class="btn red"   id="btn-stop"  onclick="unifiedStop()"  title="Stop/Pause match">⏸ Stop</button>
     <button class="btn"       onclick="resetSim()"    title="Reset simulation">↺</button>
     <button class="btn"       onclick="reloadStrategy()" title="Hot-reload strategy">⟳</button>
-    <span style="border-left:1px solid var(--border);height:20px;margin:0 6px;opacity:.4"></span>
-    <button class="btn green" onclick="matchStart()"  title="Remote match start (like pulling starter)">⚑ Start</button>
-    <button class="btn red"   onclick="matchStop()"   title="Pause match & cancel motion">⏸ Pause</button>
-    <button class="btn"       onclick="matchResume()"  title="Resume paused match">▶ Resume</button>
   </div>
 
   <!-- Speed -->
