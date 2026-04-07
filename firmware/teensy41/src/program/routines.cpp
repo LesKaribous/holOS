@@ -78,9 +78,8 @@ FLASHMEM void programManual() {
     // match_start bridge command sets the flag; we consume it here and
     // trigger the same os.start() path as pulling the physical starter.
     if (jetsonBridge.consumeRemoteStart()) {
-        Console::info("OS") << "Remote start — freezing settings, engaging motors." << Console::endl;
-        ihm.freezeSettings();
-        motion.engage();
+        Console::info("OS") << "Remote start from webapp." << Console::endl;
+        robotArmed();                    // Same arming sequence as physical starter
         ihm.setPage(IHM::Page::MATCH);
         os.start();
         return;

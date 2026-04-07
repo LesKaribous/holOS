@@ -511,17 +511,19 @@ FLASHMEM void JetsonBridge::_checkWatchdog() {
             << "Jetson heartbeat timeout!" << Console::endl;
         m_jetsonConnected = false;
 
-        // Fallback only makes sense during an active match (AUTO state).
-        // In MANUAL/MANUAL_PROGRAM the match hasn't started — triggering a
-        // blocking Mission::run() here would freeze the entire OS and prevent
-        // programManual() (and consumeRemoteStart()) from ever executing.
-        if (os.getState() == OS::AUTO) {
+        // Fallback only makes sense if:
+        //   1. Match is running (AUTO state)
+        //   2. Strategy switch is set to Remote (intelligent mode)
+        // In internal strategy mode, C++ already drives the match — no
+        // fallback needed.  Outside of AUTO state the match hasn't started
+        // and triggering a blocking Mission::run() would freeze the OS.
+        if (os.getState() == OS::AUTO && ihm.strategySwitch.getState()) {
             Console::warn("JetsonBridge")
-                << "Match running — activating fallback strategy." << Console::endl;
+                << "Remote match running — activating fallback strategy." << Console::endl;
             triggerFallback(FallbackID::CUSTOM_1);
         } else {
             Console::info("JetsonBridge")
-                << "No active match — skipping fallback." << Console::endl;
+                << "No fallback needed (internal strategy or no active match)." << Console::endl;
         }
     }
 }

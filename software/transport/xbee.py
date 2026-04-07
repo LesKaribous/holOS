@@ -378,7 +378,10 @@ class XBeeTransport(Transport):
         )
         self._hb_thread.start()
 
+    _HB_MAX_FAILURES = 3  # Disconnect after N consecutive failures
+
     def _heartbeat_loop(self) -> None:
+        consecutive_fails = 0
         while self._running and self._connected:
             try:
                 # Skip heartbeat while a motion command is in progress —
@@ -387,10 +390,15 @@ class XBeeTransport(Transport):
                 if not self._waiting_motion:
                     ok, _ = self.execute("hb", timeout_ms=2000)
                     self._heartbeat_ok = ok
-                    if not ok and self._connected:
-                        print("[Transport] Heartbeat failed — connection lost")
-                        self.disconnect()
-                        return
+                    if ok:
+                        consecutive_fails = 0
+                    elif self._connected:
+                        consecutive_fails += 1
+                        print(f"[Transport] Heartbeat failed ({consecutive_fails}/{self._HB_MAX_FAILURES})")
+                        if consecutive_fails >= self._HB_MAX_FAILURES:
+                            print("[Transport] Too many heartbeat failures — connection lost")
+                            self.disconnect()
+                            return
             except Exception:
                 pass
             time.sleep(HEARTBEAT_INTERVAL_S)

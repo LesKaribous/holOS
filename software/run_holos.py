@@ -248,13 +248,23 @@ def _build_state() -> dict:
     # ── Parse live hardware telemetry (when connected) ───────────────────────
     hw_motion_state = 'IDLE'
     hw_motion_feed  = 1.0
+    hw_motion_target = None
     if hw_on and _hw_tel_data.get('motion'):
         parts = _hw_tel_data['motion'].split(',')
         hw_motion_state = parts[0] if parts else 'IDLE'
+        _tx = _ty = None
         for p in parts[1:]:
             if p.startswith('feed='):
                 try: hw_motion_feed = float(p[5:])
                 except ValueError: pass
+            elif p.startswith('tx='):
+                try: _tx = float(p[3:])
+                except ValueError: pass
+            elif p.startswith('ty='):
+                try: _ty = float(p[3:])
+                except ValueError: pass
+        if _tx is not None and _ty is not None:
+            hw_motion_target = [_tx, _ty]
 
     hw_safety_detected = False
     if hw_on and _hw_tel_data.get('safety') is not None:
@@ -270,11 +280,21 @@ def _build_state() -> dict:
     occ_list = occupancy.to_list()  # updated by sim physics or by _on_occ hw telemetry
     objs     = game_objs.to_list()   # always include (colors set via on_set_color)
 
+    # Motion target: from hardware telemetry or sim bridge
+    if hw_on:
+        motion_target_pt = hw_motion_target
+    elif sim_on:
+        mt = bridge.motion_target() if hasattr(bridge, 'motion_target') else None
+        motion_target_pt = [mt.x, mt.y] if mt else None
+    else:
+        motion_target_pt = None
+
     return {
-        'robot':     robot.to_dict(),
-        'path':      path_pts,
-        'occupancy': occ_list,
-        'game_objs': objs,
+        'robot':         robot.to_dict(),
+        'path':          path_pts,
+        'motion_target': motion_target_pt,
+        'occupancy':     occ_list,
+        'game_objs':     objs,
         'opponent':  sim_state.get('opponent', {'enabled': False}),
         'motion': {
             'state':    hw_motion_state if hw_on else (bridge.motion_state() if sim_on else 'IDLE'),
