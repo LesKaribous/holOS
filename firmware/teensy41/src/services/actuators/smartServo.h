@@ -37,5 +37,13 @@ public:
     std::unordered_map<int, int> m_poses;
     
     bool m_enabled, m_sleeping;
-    const int m_pin, m_minPos, m_maxPos, m_defaultPos;
+    const int m_pin;
+    int m_minPos, m_maxPos, m_defaultPos;
+
+    // Runtime limit setters (for SD config system)
+    void setMinPos(int v) { m_minPos = v; }
+    void setMaxPos(int v) { m_maxPos = v; }
+    int getMinPos() const { return m_minPos; }
+    int getMaxPos() const { return m_maxPos; }
+    int getDefaultPos() const { return m_defaultPos; }
 };

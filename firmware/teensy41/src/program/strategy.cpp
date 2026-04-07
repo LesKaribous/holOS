@@ -1,4 +1,5 @@
 #include "strategy.h"
+#include "block_registry.h"
 #include "config/poi.h"
 #include "config/score.h"
 #include "config/env.h"
@@ -96,7 +97,25 @@ static bool isZoneAFree() {
 
 
 // ============================================================
-//  match() — point d'entrée du match
+//  registerBlocks() — Register all C++ blocks into BlockRegistry
+//  Called once at boot from onRobotBoot().
+//  These blocks become discoverable from Jetson via blocks_list
+//  and individually executable via run_block(name).
+// ============================================================
+
+FLASHMEM void registerBlocks() {
+    BlockRegistry& reg = BlockRegistry::instance();
+    reg.add("collect_A", 10, 150, Timing::COLLECT_STOCK_A, blockCollectA, isZoneAFree);
+    // reg.add("collect_B", 8, 80, Timing::COLLECT_STOCK_B, blockCollectB, isZoneBFree);
+}
+
+// ============================================================
+//  match() — point d'entrée du match (embedded fallback)
+//
+//  Builds a Mission from the BlockRegistry so that blocks
+//  already completed by Jetson (marked done) are automatically
+//  skipped.  This is the fallback strategy for when the Jetson
+//  is unavailable or when séquentielle strategy is selected.
 // ============================================================
 
 FLASHMEM void match() {
@@ -110,10 +129,11 @@ FLASHMEM void match() {
             long t = chrono.getTimeLeft();
             return (t > 0) ? (uint32_t)t : 0u;
         })
-        .setSafetyMargin(5000)  // Ne pas démarrer un bloc si < 5s restantes
-        // { nom,           priorité, points, durée estimée (ms), action,       faisabilité }
-        .add({ "collect_A", 10,       150,    Timing::COLLECT_STOCK_A, blockCollectA, isZoneAFree });
-        //.add({ "collect_B",  8,        80,    Timing::COLLECT_STOCK_B, blockCollectB, isZoneBFree });
+        .setSafetyMargin(5000);  // Ne pas démarrer un bloc si < 5s restantes
+
+    // Populate from BlockRegistry — blocks marked done are included with
+    // done=true so Mission skips them automatically.
+    BlockRegistry::instance().buildMission(mission);
 
     mission.run();
 
@@ -327,6 +347,12 @@ FLASHMEM void initPump(){
     //Wire.setClock(400000);  
 }
 
+// Tracks whether initPump() has already been called.
+// startPump() and stopPump() call initPump() automatically the first time so
+// that the test "act_ev_toggle" works even when "act_pump_init" was not run
+// beforehand.  initPump() is idempotent (calling it again is safe).
+static bool s_pumpInitialized = false;
+
 FLASHMEM void setOutput(uint8_t pin, bool state) {
     if (state) {
       pwm.setPWM(pin, 4096, 0);  // ON
@@ -336,6 +362,10 @@ FLASHMEM void setOutput(uint8_t pin, bool state) {
 }
 
 FLASHMEM void startPump(RobotCompass rc, bool side){
+    if (!s_pumpInitialized) {
+        initPump();
+        s_pumpInitialized = true;
+    }
     uint8_t evPin ;
     uint8_t pumpPin ;
     if(side) evPin = Pin::PCA9685::EV_CA_RIGHT ;
@@ -343,7 +373,22 @@ FLASHMEM void startPump(RobotCompass rc, bool side){
     if(side) pumpPin = Pin::PCA9685::PUMP_CA_RIGHT;
     else pumpPin = Pin::PCA9685::PUMP_CA_LEFT;
     setOutput(evPin, false);  // Fermer l'électrovanne
-    setOutput(pumpPin, true); // Démarrer la pompe
+
+    // Soft-start ramp over ~200ms to avoid current spike that resets serial.
+    // PCA9685 setPWM(channel, on_tick, off_tick): off_tick sets duty 0–4095.
+    //
+    // IMPORTANT: use delay() NOT waitMs().  waitMs() calls os.wait() which
+    // enters a nested run() loop.  When pump/EV commands are executed via
+    // the interpreter (os.execute → script → CommandHandler), a nested run()
+    // re-enters the script job causing interpreter state corruption → freeze.
+    // delay() hard-blocks but 200 ms is well within the 5 000 ms heartbeat
+    // timeout, so no disconnect risk.
+    constexpr uint16_t rampSteps[] = { 800, 1600, 2400, 3200, 4095 };
+    for (uint16_t duty : rampSteps) {
+        pwm.setPWM(pumpPin, 0, duty);
+        delay(40);
+    }
+    setOutput(pumpPin, true); // Full power
 }
 
 FLASHMEM void stopPump(RobotCompass rc, uint16_t evPulseDuration, bool side){
@@ -354,7 +399,17 @@ FLASHMEM void stopPump(RobotCompass rc, uint16_t evPulseDuration, bool side){
     if(side) pumpPin = Pin::PCA9685::PUMP_CA_RIGHT;
     else pumpPin = Pin::PCA9685::PUMP_CA_LEFT;
     setOutput(pumpPin, false); // Stopper la pompe
+
+    // Wait for pump back-EMF to settle before energizing the EV solenoid.
+    // Sudden pump deenergization creates a back-EMF spike from the motor
+    // inductance; simultaneously opening the EV adds an inrush current spike.
+    // The combined voltage dip can trigger a Teensy brownout reset (= USB-CDC
+    // "serial closed").  100 ms is enough for the transient to dissipate while
+    // keeping total stopPump() time well within the 3 000 ms command timeout.
+    // IMPORTANT: use delay() NOT waitMs() — same reentrancy issue as startPump.
+    delay(100);
+
     setOutput(evPin, true);    // Ouvrir l’EV
-    waitMs(evPulseDuration);    // Maintenir l’EV ouverte
+    delay(evPulseDuration);    // Maintenir l’EV ouverte
     setOutput(evPin, false);   // Fermer l’EV
 }

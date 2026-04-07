@@ -108,7 +108,11 @@ class Pathfinder:
         while heap:
             _, g, current = heapq.heappop(heap)
             if current == gg:
-                return self._reconstruct(came_from, current, start, goal)
+                path = self._reconstruct(came_from, current, start, goal)
+                if len(path) > 2:
+                    print(f"[Pathfinder] Path ({start.x:.0f},{start.y:.0f})→"
+                          f"({goal.x:.0f},{goal.y:.0f}): {len(path)-2} waypoints")
+                return path
             if g > g_score.get(current, float('inf')):
                 continue
             cx, cy = current
@@ -128,7 +132,10 @@ class Pathfinder:
                     came_from[neighbor] = current
                     heapq.heappush(heap, (ng + self._h(neighbor, gg), ng, neighbor))
 
-        return [start, goal]  # No path found — direct move fallback
+        # No path found — log and fall back to direct move
+        print(f"[Pathfinder] NO PATH from ({start.x:.0f},{start.y:.0f}) to "
+              f"({goal.x:.0f},{goal.y:.0f}) — falling back to direct move")
+        return [start, goal]
 
     def _h(self, a, b) -> float:
         return max(abs(a[0] - b[0]), abs(a[1] - b[1]))

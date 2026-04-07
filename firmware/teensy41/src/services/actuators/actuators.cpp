@@ -1,5 +1,6 @@
 #include "actuators.h"
 #include "config/settings.h"
+#include "config/runtime_config.h"
 #include "os/console.h"
 #include "services/ihm/ihm.h"
 
@@ -96,16 +97,27 @@ FLASHMEM void Actuators::createManipulator(RobotCompass rc, ManipulatorPropertie
     }else if(rc == RobotCompass::BC){
         Console::error("Actuators") << "No manipulator mounted on BC" << Console::endl;
     }else if(rc == RobotCompass::CA){
-        groupCA.createServo(CAST_POSE(ServoIDs::GRABBER_RIGHT) ,props.grabberRightPin, props.right_Store);
-        groupCA.createServo(CAST_POSE(ServoIDs::ELEVATOR) ,props.grabberElevatorPin, props.elevator_Down);
-        groupCA.createServo(CAST_POSE(ServoIDs::GRABBER_LEFT) ,props.grabberLeftPin, props.left_Store);
+        // Read min/max from runtime config (SD) with compile-time defaults as fallback
+        groupCA.createServo(CAST_POSE(ServoIDs::GRABBER_RIGHT) ,props.grabberRightPin, props.right_Store,
+                            RuntimeConfig::getInt("servo.CA.0.min", Settings::Actuators::CA::RIGHT_MIN),
+                            RuntimeConfig::getInt("servo.CA.0.max", Settings::Actuators::CA::RIGHT_MAX));
+        groupCA.createServo(CAST_POSE(ServoIDs::ELEVATOR) ,props.grabberElevatorPin, props.elevator_Down,
+                            RuntimeConfig::getInt("servo.CA.1.min", Settings::Actuators::CA::ELEVATOR_MIN),
+                            RuntimeConfig::getInt("servo.CA.1.max", Settings::Actuators::CA::ELEVATOR_MAX));
+        groupCA.createServo(CAST_POSE(ServoIDs::GRABBER_LEFT) ,props.grabberLeftPin, props.left_Store,
+                            RuntimeConfig::getInt("servo.CA.2.min", Settings::Actuators::CA::LEFT_MIN),
+                            RuntimeConfig::getInt("servo.CA.2.max", Settings::Actuators::CA::LEFT_MAX));
     }
 }
 
 FLASHMEM void Actuators::createHugger(RobotCompass rc, HuggerProperties props){
     if(rc == RobotCompass::AB){
-        groupAB.createServo(CAST_POSE(ServoIDs::HUGGER_ELEVATOR), props.liftPin, props.lift_up);
-        groupAB.createServo(CAST_POSE(ServoIDs::HUGGER_GRAB), props.gripperPin, props.gripper_drop);
+        groupAB.createServo(CAST_POSE(ServoIDs::HUGGER_ELEVATOR), props.liftPin, props.lift_up,
+                            RuntimeConfig::getInt("servo.AB.3.min", Settings::Actuators::AB::LIFT_MIN),
+                            RuntimeConfig::getInt("servo.AB.3.max", Settings::Actuators::AB::LIFT_MAX));
+        groupAB.createServo(CAST_POSE(ServoIDs::HUGGER_GRAB), props.gripperPin, props.gripper_drop,
+                            RuntimeConfig::getInt("servo.AB.4.min", Settings::Actuators::AB::GRIPPER_MIN),
+                            RuntimeConfig::getInt("servo.AB.4.max", Settings::Actuators::AB::GRIPPER_MAX));
     }else if(rc == RobotCompass::BC){
         Console::error("Actuators") << "No Hugger mounted on BC" << Console::endl;
     }else if(rc == RobotCompass::CA){

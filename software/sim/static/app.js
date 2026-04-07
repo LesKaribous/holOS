@@ -334,6 +334,7 @@ function render(s) {
   drawOpponent(s);
   drawGameObjects(s);
   drawPOIs(ctx, wx, wy, wlen, poiData);
+  drawSmallTable();
   drawMapTraj();
   drawMapPin();
   drawRobot(s);
@@ -463,6 +464,15 @@ function drawPath(s) {
     ctx.beginPath(); ctx.moveTo(px,py-d); ctx.lineTo(px+d,py); ctx.lineTo(px,py+d); ctx.lineTo(px-d,py); ctx.closePath(); ctx.fill();
   }
   ctx.setLineDash([]);
+  // ── Motion target crosshair ──────────────────────────────────────────
+  if (s.motion_target) {
+    const tx = wx(s.motion_target[0]), ty = wy(s.motion_target[1]);
+    const r = wlen(18);
+    ctx.strokeStyle = '#e74c3c'; ctx.lineWidth = 2.5;
+    ctx.beginPath(); ctx.arc(tx, ty, r, 0, 2*Math.PI); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(tx - r*1.4, ty); ctx.lineTo(tx + r*1.4, ty); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(tx, ty - r*1.4); ctx.lineTo(tx, ty + r*1.4); ctx.stroke();
+  }
 }
 
 function drawTrail(s) {
@@ -620,6 +630,10 @@ canvas.addEventListener('mousedown', e => {
     _placeOpponentAt(w.x, w.y);
     return;
   }
+  if (_mapTool === 'draw_table') {
+    _stDragStart = { x: w.x, y: w.y };
+    return;
+  }
 });
 
 canvas.addEventListener('mousemove', e => {
@@ -629,10 +643,26 @@ canvas.addEventListener('mousemove', e => {
   if (el) el.textContent = inF ? `x: ${w.x.toFixed(0)} mm   y: ${w.y.toFixed(0)} mm` : 'x:— y:—';
   // drag-painting
   if (_brushDown && inF) _paintGridCell(w.x, w.y);
+  // drag-draw small table preview
+  if (_stDragStart && inF) {
+    smallTable.x = Math.min(_stDragStart.x, w.x);
+    smallTable.y = Math.min(_stDragStart.y, w.y);
+    smallTable.w = Math.abs(w.x - _stDragStart.x);
+    smallTable.h = Math.abs(w.y - _stDragStart.y);
+    smallTable.enabled = true;
+    _syncSmallTableUI();
+    if (lastState) render(lastState);
+  }
 });
 
-canvas.addEventListener('mouseup', () => { _brushDown = false; _lastBrushCell = null; });
-canvas.addEventListener('mouseleave', () => { _brushDown = false; _lastBrushCell = null; });
+canvas.addEventListener('mouseup', () => {
+  _brushDown = false; _lastBrushCell = null;
+  if (_stDragStart) { _stDragStart = null; _syncSmallTableUI(); }
+});
+canvas.addEventListener('mouseleave', () => {
+  _brushDown = false; _lastBrushCell = null;
+  if (_stDragStart) { _stDragStart = null; }
+});
 
 canvas.addEventListener('click', e => {
   if (_brushDown) return; // handled by mousedown/move
@@ -640,7 +670,7 @@ canvas.addEventListener('click', e => {
   if (w.x < 0 || w.x > FIELD_W || w.y < 0 || w.y > FIELD_H) return;
 
   // Grid tools handled in mousedown
-  if (_mapTool === 'obstacle' || _mapTool === 'remove_obs' || _mapTool === 'place_opp') return;
+  if (_mapTool === 'obstacle' || _mapTool === 'remove_obs' || _mapTool === 'place_opp' || _mapTool === 'draw_table') return;
 
   // Default: drop a pin and show popover
   // Theta: keep previous pin's theta for waypoint chaining; fall back to robot's current theta
@@ -665,6 +695,41 @@ canvas.addEventListener('contextmenu', e => {
 // ── Controls ──────────────────────────────────────────────────────────────
 function runStrategy()    { socket.emit('run_strategy'); }
 function stopStrategy()   { socket.emit('stop_strategy'); }
+
+// ── Match control (remote start/stop via bridge) ────────────────────────────
+function matchStart()     { socket.emit('match_start'); }
+function matchStop()      { socket.emit('match_stop'); }
+function matchResume()    { socket.emit('match_resume'); }
+
+// ── C++ blocks from Teensy BlockRegistry ────────────────────────────────────
+let cppBlocks = [];
+
+function loadCppBlocks() {
+  fetch('/api/cpp_blocks').then(r => r.json()).then(data => {
+    cppBlocks = Array.isArray(data) ? data : [];
+    renderMacroList();       // re-render to include C++ macros
+    renderMissionList();     // re-render to include C++ blocks
+  }).catch(() => { cppBlocks = []; });
+}
+
+function runCppBlock(name) {
+  socket.emit('run_cpp_block', { name });
+}
+
+// Listen for C++ block execution result
+socket.on('cpp_block_result', data => {
+  if (data.ok) {
+    showToast(`C++ block "${data.name}" → SUCCESS`);
+  } else {
+    showToast(`C++ block "${data.name}" → FAILED`);
+  }
+  loadCppBlocks();  // refresh done states
+});
+
+// Listen for match state updates
+socket.on('match_state', data => {
+  // Could update UI indicators here
+});
 function resetSim()       { socket.emit('reset'); }
 function reloadStrategy() { socket.emit('reload_strategy'); }
 function setTeam(team) {
@@ -679,8 +744,57 @@ function setMode(mode)    { socket.emit('set_mode',{mode}); }
 // ═══════════════════════════════════════════════════════════════════════════════
 
 let _mapPin  = null;    // {x, y, theta} — current pin position (world mm)
-let _mapTool = null;    // null | 'obstacle' | 'remove_obs'
+let _mapTool = null;    // null | 'obstacle' | 'remove_obs' | 'draw_table' | 'place_opp'
 let _mapTraj = [];      // [{x, y}, ...] — trajectory waypoints
+
+// ── Small table rectangle (visual only) ─────────────────────────────────────
+let smallTable = { enabled: false, x: 500, y: 500, w: 1200, h: 800 };
+let _stDragStart = null;  // {x, y} — world coords of drag start for draw_table tool
+
+function toggleSmallTable(on) {
+  smallTable.enabled = on;
+  if (lastState) render(lastState);
+}
+
+function updateSmallTable() {
+  smallTable.x = +(document.getElementById('st-x')?.value || 0);
+  smallTable.y = +(document.getElementById('st-y')?.value || 0);
+  smallTable.w = +(document.getElementById('st-w')?.value || 0);
+  smallTable.h = +(document.getElementById('st-h')?.value || 0);
+  if (lastState) render(lastState);
+}
+
+function _syncSmallTableUI() {
+  const el = (id) => document.getElementById(id);
+  if (el('st-x')) el('st-x').value = Math.round(smallTable.x);
+  if (el('st-y')) el('st-y').value = Math.round(smallTable.y);
+  if (el('st-w')) el('st-w').value = Math.round(smallTable.w);
+  if (el('st-h')) el('st-h').value = Math.round(smallTable.h);
+  if (el('st-enabled')) el('st-enabled').checked = smallTable.enabled;
+}
+
+function drawSmallTable() {
+  if (!smallTable.enabled) return;
+  ctx.save();
+  ctx.strokeStyle = 'rgba(255, 152, 0, 0.7)';
+  ctx.lineWidth   = Math.max(1.5, scale * 3);
+  ctx.setLineDash([wlen(30), wlen(15)]);
+  ctx.strokeRect(wx(smallTable.x), wy(smallTable.y), wlen(smallTable.w), wlen(smallTable.h));
+  ctx.setLineDash([]);
+  // Fill with very light overlay
+  ctx.fillStyle = 'rgba(255, 152, 0, 0.06)';
+  ctx.fillRect(wx(smallTable.x), wy(smallTable.y), wlen(smallTable.w), wlen(smallTable.h));
+  // Label
+  ctx.fillStyle = 'rgba(255, 152, 0, 0.65)';
+  ctx.font = `${Math.max(9, wlen(40))}px sans-serif`;
+  ctx.textAlign = 'center';
+  ctx.fillText('Small Table', wx(smallTable.x + smallTable.w/2), wy(smallTable.y + smallTable.h/2) + wlen(15));
+  // Dimensions
+  ctx.font = `${Math.max(8, wlen(28))}px sans-serif`;
+  ctx.fillText(`${Math.round(smallTable.w)} × ${Math.round(smallTable.h)} mm`,
+    wx(smallTable.x + smallTable.w/2), wy(smallTable.y + smallTable.h/2) + wlen(55));
+  ctx.restore();
+}
 
 // ── Tool toggle (obstacle modes) ────────────────────────────────────────────
 function toggleMapTool(tool) {
@@ -692,6 +806,7 @@ function toggleMapTool(tool) {
   document.getElementById('tool-obs-add')?.classList.toggle('active', _mapTool === 'obstacle');
   document.getElementById('tool-obs-del')?.classList.toggle('active', _mapTool === 'remove_obs');
   document.getElementById('tool-place-opp')?.classList.toggle('active', _mapTool === 'place_opp');
+  document.getElementById('tool-draw-table')?.classList.toggle('active', _mapTool === 'draw_table');
   // Set cursor style
   canvas.style.cursor = _mapTool ? 'crosshair' : '';
 }
@@ -1071,11 +1186,58 @@ function updateMonitor(s) {
   if (sf) { sf.textContent=safe?'⚠ OBSTACLE':'OK'; sf.style.color=safe?'#c0392b':'#1a8c3c'; }
   setText('mon-obs-detected', safe?'Yes':'No');
   setText('mon-collision',    r.collided?'Yes':'No');
+
+  // ── Status LEDs ──────────────────────────────────────────────────────
+  const ledHb     = document.getElementById('led-heartbeat');
+  const ledSafety = document.getElementById('led-safety');
+  const ledMotion = document.getElementById('led-motion');
+  const ledOtos   = document.getElementById('led-otos');
+  if (ledHb) {
+    if (s.mode === 'sim')        ledHb.style.background = '#555';
+    else if (s.hw_heartbeat_ok)  ledHb.style.background = '#1a8c3c';
+    else                         ledHb.style.background = '#c0392b';
+  }
+  if (ledSafety) {
+    if (!s.safety.enabled)       ledSafety.style.background = '#555';
+    else if (s.safety.detected)  ledSafety.style.background = '#c0392b';
+    else                         ledSafety.style.background = '#1a8c3c';
+  }
+  if (ledMotion) {
+    const ms2 = s.motion.state;
+    if (ms2 === 'RUNNING')       ledMotion.style.background = '#1a8c3c';
+    else if (ms2 === 'PAUSED')   ledMotion.style.background = '#b7770d';
+    else                         ledMotion.style.background = '#555';
+  }
+  if (ledOtos) {
+    // In sim, always green; on HW, green when connected
+    if (s.mode === 'sim')        ledOtos.style.background = '#1a8c3c';
+    else if (s.hw_mode)          ledOtos.style.background = '#1a8c3c';
+    else                         ledOtos.style.background = '#555';
+  }
+
   // Game objects
   const go=document.getElementById('mon-game-objs');
   if (go) go.innerHTML=s.game_objs.filter(o=>o.color!=='UNKNOWN'&&o.color!=='NONE').map(o=>
     `<span style="display:inline-block;width:12px;height:12px;border-radius:50%;background:${COLOR_HEX[o.color]||'#888'};border:1px solid rgba(0,0,0,.2);title='${o.name}'"></span>`
   ).join('');
+
+  // ── Event log (from brain.log, filtered to events only) ──────────────
+  const logEl = document.getElementById('mon-event-log');
+  if (logEl && s.log && s.log.length) {
+    // Color-code log lines by severity
+    const colored = s.log.slice(-20).map(line => {
+      let color = '#c8ccd4';  // default grey
+      if (line.includes('FAILED') || line.includes('error') || line.includes('ERROR'))
+        color = '#e06c75';  // red
+      else if (line.includes('DETECT') || line.includes('OBSTACLE') || line.includes('CLEAR'))
+        color = '#e5c07b';  // yellow
+      else if (line.includes('OK') || line.includes('loaded') || line.includes('connected'))
+        color = '#98c379';  // green
+      return `<div style="color:${color}">${line.replace(/</g,'&lt;')}</div>`;
+    }).join('');
+    logEl.innerHTML = colored;
+    logEl.scrollTop = logEl.scrollHeight;
+  }
 }
 
 // ══════════════════════════════════════════════════════════════════════════
@@ -1254,14 +1416,29 @@ function saveMacros() {
 
 function renderMacroList() {
   const list=document.getElementById('macro-list'); if (!list) return;
-  if (!macros.length) { list.innerHTML='<span class="file-list-empty">No macros yet</span>'; return; }
-  list.innerHTML=macros.map((m,i)=>`
+  // User-defined macros
+  const userHtml = macros.map((m,i)=>`
     <div class="file-item${i===activeMacroIdx?' active':''}" onclick="selectMacro(${i})">
       <span class="file-item-name">⚡ ${escHtml(m.name)}</span>
       <span class="file-item-actions">
         <button class="btn-tiny red" onclick="event.stopPropagation();confirmDeleteMacro(${i})">🗑</button>
       </span>
     </div>`).join('');
+  // C++ blocks from Teensy BlockRegistry (read-only, with badge)
+  const cppHtml = cppBlocks.map(b => `
+    <div class="file-item cpp-block" title="C++ block — read-only, registered in firmware">
+      <span class="file-item-name">
+        <span class="badge-cpp">C++</span> ${escHtml(b.name)}
+        <span style="font-size:9px;color:var(--text-dim);margin-left:4px">#${b.priority} • ${b.score}pts${b.done?' ✓':''}</span>
+      </span>
+      <span class="file-item-actions">
+        <button class="btn-tiny green" onclick="event.stopPropagation();runCppBlock('${escHtml(b.name)}')" title="Execute on robot">▶</button>
+      </span>
+    </div>`).join('');
+  if (!macros.length && !cppBlocks.length) {
+    list.innerHTML='<span class="file-list-empty">No macros yet</span>'; return;
+  }
+  list.innerHTML = userHtml + (cppBlocks.length ? '<div class="file-list-divider">Firmware Blocks</div>' + cppHtml : '');
 }
 
 function newMacro() {
@@ -1538,11 +1715,9 @@ function saveMissions() {
 
 function renderMissionList() {
   const list = document.getElementById('mission-list'); if (!list) return;
-  if (!missions.length) {
-    list.innerHTML = '<span class="file-list-empty">Aucune mission</span>'; return;
-  }
+  // User-defined missions
   const sorted = [...missions.entries()].sort(([,a],[,b]) => b.priority - a.priority);
-  list.innerHTML = sorted.map(([i, m]) => `
+  const userHtml = sorted.map(([i, m]) => `
     <div class="file-item${i === activeMissionIdx ? ' active' : ''}" onclick="selectMission(${i})">
       <span class="file-item-name${m.enabled === false ? ' text-dim' : ''}">
         ${m.enabled === false ? '○' : '●'} ${escHtml(m.name)}
@@ -1552,6 +1727,21 @@ function renderMissionList() {
         <button class="btn-tiny red" onclick="event.stopPropagation();confirmDeleteMission(${i})">🗑</button>
       </span>
     </div>`).join('');
+  // C++ blocks as read-only mission entries
+  const cppHtml = cppBlocks.map(b => `
+    <div class="file-item cpp-block" title="C++ block — firmware embedded, ${b.estimatedMs}ms est.">
+      <span class="file-item-name">
+        <span class="badge-cpp">C++</span> ${escHtml(b.name)}
+        <span style="font-size:9px;color:var(--text-dim);margin-left:4px">#${b.priority} • ${b.score}pts • ${(b.estimatedMs/1000).toFixed(1)}s${b.done?' ✓':''}</span>
+      </span>
+      <span class="file-item-actions">
+        <button class="btn-tiny green" onclick="event.stopPropagation();runCppBlock('${escHtml(b.name)}')" title="Execute on robot">▶</button>
+      </span>
+    </div>`).join('');
+  if (!missions.length && !cppBlocks.length) {
+    list.innerHTML = '<span class="file-list-empty">Aucune mission</span>'; return;
+  }
+  list.innerHTML = userHtml + (cppBlocks.length ? '<div class="file-list-divider">Firmware Blocks</div>' + cppHtml : '');
 }
 
 function newMission() {
@@ -1822,6 +2012,7 @@ function missionDeploySD() {
 // ── Hook switchView for missions ──────────────────────────────────────────
 function onMissionsViewActivated() {
   loadMissions();
+  loadCppBlocks();
   // Refresh macro selector in case macros changed
   if (activeMissionIdx >= 0) _refreshMacroSelector(missions[activeMissionIdx]?.macro_id || '');
 }
@@ -1877,12 +2068,10 @@ function serialRefreshPorts() {
 function serialConnect() {
   // Accept port from robot-panel selector OR terminal selector
   const port = (document.getElementById('serial-port-sel') || document.getElementById('t-port-sel'))?.value;
-  const mode = (document.getElementById('serial-mode-sel') || document.getElementById('t-mode-sel'))?.value || 'xbee';
-  const baud = (mode === 'wired') ? 115200 : 31250;
   if (!port) { showToast('Select a serial port first'); return; }
   cgSetRobotConnecting();
   setSerialStatus('Connecting…', '');
-  socket.emit('serial_connect', {port, baud});
+  socket.emit('serial_connect', {port});
 }
 function serialDisconnect() {
   socket.emit('serial_disconnect');
@@ -1908,11 +2097,15 @@ socket.on('serial_status', d => {
   setSerialStatus(d.msg, d.ok ? 'ok' : (d.connecting ? '' : 'err'));
   // Connecting = spinner state, already set by cgSetRobotConnecting()
   if (d.connecting) return;
-  // For immediate feedback on failure, clear the connecting state right away.
-  // Success / final state will follow via state.hw_mode on the next physics tick.
-  if (!d.ok) {
-    cgSetRobot(false);
-    _serialSetConnectBusy(false);
+  _serialSetConnectBusy(false);
+  if (d.ok) {
+    // Immediately reflect the successful connection in the UI
+    const mode = d.bridge === 'xbee' ? 'xbee' : 'usb';
+    cgSetConnectionMode(mode, 'hw', d.port || '');
+    // Refresh C++ blocks from newly connected hardware
+    loadCppBlocks();
+  } else {
+    cgSetConnectionMode('idle');
   }
 });
 
@@ -2003,10 +2196,10 @@ const _nNodes = [
 // proto: base protocol label
 // configurable: shows connect panel when clicked
 const _nLinks = [
-  { id:'hw',      from:'pc',     to:'t41',     proto:'USB-CDC',               baud:115200,  configurable:true  },
+  { id:'hw',      from:'pc',     to:'t41',     proto:'USB-CDC',               baud:57600,   configurable:true  },
   { id:'uart',    from:'t41',    to:'t40',     proto:'UART Intercom',         baud:31250,   configurable:false },
   { id:'sim',     from:'sim',    to:'pc',      proto:'VirtualTransport',      baud:null,    configurable:false },
-  { id:'xbee',    from:'jetson', to:'t41',     proto:'XBee 868 MHz',          baud:31250,   configurable:false, offline:true },
+  { id:'xbee',    from:'jetson', to:'t41',     proto:'XBee 868 MHz',          baud:57600,   configurable:false, offline:true },
   { id:'espcam_j',from:'espcam', to:'jetson',  proto:'WiFi · MJPEG',          baud:null,    configurable:false, offline:true },
   { id:'espcam_p',from:'espcam', to:'pc',      proto:'WiFi · MJPEG',          baud:null,    configurable:false, offline:true },
 ];
@@ -2382,12 +2575,7 @@ function _ncPanelHW() {
         <select id="np-port-sel" class="input-sm" style="flex:1;min-width:0"></select>
         <button class="btn-tiny" onclick="_ncRefreshPorts()" title="Refresh">↺</button>
       </div>
-      <label class="np-label">Bridge mode</label>
-      <select id="np-mode-sel" class="input-sm" style="width:100%;margin-bottom:10px">
-        <option value="wired" selected>USB Wired — 115 200 bps</option>
-        <option value="xbee">XBee / Jetson — 31 250 bps</option>
-      </select>
-      <div style="display:flex;gap:6px">
+      <div style="display:flex;gap:6px;margin-top:4px">
         <button id="np-connect-btn" class="btn green btn-sm" style="flex:1" onclick="_ncDoConnect()">Connect HW</button>
         <button class="btn red btn-sm" style="flex:1" onclick="serialDisconnect()">Disconnect</button>
       </div>
@@ -2395,15 +2583,12 @@ function _ncPanelHW() {
         <button class="btn btn-sm" style="width:100%;background:#6366f1;color:#fff" onclick="connectSim()">▶ Start Simulator</button>
       </div>
     </div>
-    <div class="np-hint"><b>USB Wired:</b> T4.1 connects directly over USB-CDC @ 115 200 bps.<br>
-      <b>XBee / Jetson:</b> holOS runs on the Jetson; T4.1 communicates via XBee radio @ 31 250 bps.<br>
+    <div class="np-hint">Select a COM port and click <b>Connect HW</b>. The firmware auto-detects whether USB-CDC or XBee is active (57 600 bps).<br>
       <b>Simulator:</b> Virtual robot with physics — no hardware needed.</div>`;
 }
 
 function _ncPanelHWInit() {
   _ncRefreshPorts();
-  const mm=document.getElementById('serial-mode-sel'), nm=document.getElementById('np-mode-sel');
-  if (mm&&nm) nm.value=mm.value;
   const btn=document.getElementById('np-connect-btn');
   if (btn) btn.disabled=_ns.hw==='connecting';
 }
@@ -2418,11 +2603,10 @@ function _ncRefreshPorts() {
 }
 
 function _ncDoConnect() {
-  const ps=document.getElementById('np-port-sel'), ms=document.getElementById('np-mode-sel');
+  const ps=document.getElementById('np-port-sel');
   if (!ps?.value) { showToast('Select a serial port first'); return; }
-  const mp=document.getElementById('serial-port-sel'), mm=document.getElementById('serial-mode-sel');
+  const mp=document.getElementById('serial-port-sel');
   if (mp) mp.value=ps.value;
-  if (mm) mm.value=ms?ms.value:'wired';
   serialConnect();
 }
 
@@ -2453,7 +2637,7 @@ function _ncPanelXBeeLink() {
   return `<div class="np-section">
       <div class="np-row"><span>Status</span><span class="np-badge np-offline">Offline</span></div>
       <div class="np-row"><span>Protocol</span><span>XBee 868 MHz UART</span></div>
-      <div class="np-row"><span>Baudrate</span><span>31 250 bps</span></div>
+      <div class="np-row"><span>Baudrate</span><span>57 600 bps</span></div>
     </div>
     <div class="np-hint">This path is used when holOS is deployed on the Jetson. The Jetson relays commands to T4.1 via XBee radio. Configure the Jetson node IP to enable this route.</div>`;
 }
@@ -2530,6 +2714,7 @@ window.addEventListener('load', () => {
 
   // Load data
   loadMacros();
+  loadCppBlocks();
   serialRefreshPorts();
   initTests();
 });
@@ -3592,13 +3777,32 @@ function _visionSyncSourceSelector(source) {
 }
 
 async function visionApplySource() {
+  const type = document.querySelector('input[name="vsrc-type"]:checked')?.value ?? 'usb';
   const src = _visionGetSourceString();
-  if (!src && src !== '0') return;
-  await fetch('/api/vision/source', {
-    method:  'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body:    JSON.stringify({ source: src }),
-  });
+  if (!src && src !== '0') {
+    // Show error feedback instead of silently failing
+    const msgs = { ip: 'Enter an RTSP/HTTP URL', video: 'Enter a video file path', image: 'Enter an image file path' };
+    const msg = msgs[type] || 'Select a source';
+    const badge = document.getElementById('v-status-badge');
+    if (badge) { badge.textContent = msg; badge.className = 'v-badge v-badge-err'; }
+    return;
+  }
+  try {
+    const badge = document.getElementById('v-status-badge');
+    if (badge) { badge.textContent = 'Connecting...'; badge.className = 'v-badge v-badge-warn'; }
+    const resp = await fetch('/api/vision/source', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ source: src }),
+    });
+    if (!resp.ok) {
+      const err = await resp.text();
+      if (badge) { badge.textContent = `Error: ${err.slice(0,40)}`; badge.className = 'v-badge v-badge-err'; }
+    }
+  } catch (e) {
+    const badge = document.getElementById('v-status-badge');
+    if (badge) { badge.textContent = `Connection failed`; badge.className = 'v-badge v-badge-err'; }
+  }
 }
 
 // ── Processing pipeline ───────────────────────────────────────────────────────
@@ -3966,6 +4170,50 @@ let _remoteSnapDeg = 5;      // snap interval for drag clamping
 let _remoteDragging = false;
 let _remoteMotionBusy = false;
 let _remoteDialReady  = false;
+let _remoteFrame      = 'table';  // 'table' (N/S/E/W) or 'robot' (A/AB/B/BC/C/CA)
+
+// Labels for 12 directions at 30° intervals
+const _REMOTE_TABLE_LABELS = { 0:'E', 30:'ENE', 60:'NNE', 90:'N', 120:'NNW', 150:'WNW', 180:'W', 210:'WSW', 240:'SSW', 270:'S', 300:'SSE', 330:'ESE' };
+const _REMOTE_TABLE_CARDINAL = { 90:'N', 0:'E', 180:'W', 270:'S' };
+// Robot compass: A=0° (face A, front), AB=60°, B=120°, BC=180°, C=240°, CA=300°
+const _REMOTE_ROBOT_LABELS = { 0:'A', 60:'AB', 120:'B', 180:'BC', 240:'C', 300:'CA' };
+const _REMOTE_ROBOT_CARDINAL = { 0:'A', 60:'AB', 120:'B', 180:'BC', 240:'C', 300:'CA' };
+
+function _remoteRebuildPolarButtons() {
+  const POLAR_CX = 220, POLAR_CY = 220, POLAR_R = 185;
+  const polarContainer = document.getElementById('remote-polar-btns');
+  if (!polarContainer) return;
+  polarContainer.innerHTML = '';
+
+  const isRobot = _remoteFrame === 'robot';
+  const labels   = isRobot ? _REMOTE_ROBOT_LABELS : _REMOTE_TABLE_LABELS;
+  const cardinal = isRobot ? _REMOTE_ROBOT_CARDINAL : _REMOTE_TABLE_CARDINAL;
+  const step     = isRobot ? 60 : 30;
+  const count    = isRobot ? 6  : 12;
+
+  for (let i = 0; i < count; i++) {
+    const deg = i * step;
+    const rad = deg * Math.PI / 180;
+    const cx  = POLAR_CX + POLAR_R * Math.cos(rad);
+    const cy  = POLAR_CY - POLAR_R * Math.sin(rad);
+    const label = labels[deg] ?? deg + '\u00B0';
+    const isCard = cardinal[deg] !== undefined;
+    const btn = document.createElement('button');
+    btn.className = 'remote-polar-btn' + (isCard ? ' cardinal' : '');
+    btn.style.left = cx.toFixed(1) + 'px';
+    btn.style.top  = cy.toFixed(1) + 'px';
+    btn.style.pointerEvents = 'auto';
+    btn.textContent = label;
+    btn.title = isRobot ? `Move toward face ${label}` : `Move ${label} (${deg}\u00B0)`;
+    btn.addEventListener('click', () => remoteGoPolar(deg));
+    polarContainer.appendChild(btn);
+  }
+}
+
+function remoteFrameChanged() {
+  _remoteFrame = document.getElementById('remote-frame-sel')?.value ?? 'table';
+  _remoteRebuildPolarButtons();
+}
 
 const R_OUTER  = 145;  // outer ring radius (SVG units)
 const R_TICK_M = 14;   // major tick height (every 30°)
@@ -4096,33 +4344,7 @@ function _remoteInitDial() {
   svg.addEventListener('touchend',   e => { _remoteDialMouseUp(); }, { passive: false });
 
   // ── Generate goPolar direction buttons in a ring around the dial ────────
-  // remote-dial-outer is 440×440, dial-wrap is 320×320 at top:60/left:60
-  // Centre of outer div = (220, 220). Ring radius = 185px.
-  const POLAR_CX = 220, POLAR_CY = 220, POLAR_R = 185;
-  // Math convention: 0=East, 90=North, 180=West, 270=South
-  const CARDINAL = { 90:'N', 0:'E', 180:'W', 270:'S' };
-  const polarContainer = document.getElementById('remote-polar-btns');
-  if (polarContainer) {
-    polarContainer.innerHTML = '';
-    for (let i = 0; i < 12; i++) {
-      const deg = i * 30;
-      const rad = deg * Math.PI / 180;
-      // Math convention: x=cos, y=-sin (North at top)
-      const cx  = POLAR_CX + POLAR_R * Math.cos(rad);
-      const cy  = POLAR_CY - POLAR_R * Math.sin(rad);
-      const label = CARDINAL[deg] ?? deg + '°';
-      const isCard = CARDINAL[deg] !== undefined;
-      const btn = document.createElement('button');
-      btn.className = 'remote-polar-btn' + (isCard ? ' cardinal' : '');
-      btn.style.left = cx.toFixed(1) + 'px';
-      btn.style.top  = cy.toFixed(1) + 'px';
-      btn.style.pointerEvents = 'auto';
-      btn.textContent = label;
-      btn.title = `goPolar ${deg}° (${label})`;
-      btn.addEventListener('click', () => remoteGoPolar(deg));
-      polarContainer.appendChild(btn);
-    }
-  }
+  _remoteRebuildPolarButtons();
 
   // Initial render
   _remoteUpdateDial();
@@ -4304,16 +4526,21 @@ async function remoteSendTurn() {
 async function remoteGoPolar(bearingDeg) {
   if (_remoteMotionBusy) return;
   const dist = parseInt(document.getElementById('remote-dist-sel')?.value ?? 200);
-  // Both bearingDeg and _remoteCurDeg are in math convention (0=East, CCW+)
-  // goPolar heading is relative: desired_direction - current_heading
-  const relAngle = _shortDelta(_remoteCurDeg, _normDeg(bearingDeg));
+  const isRobot = _remoteFrame === 'robot';
+
+  // In TABLE mode: bearingDeg is absolute table direction, convert to robot-relative
+  // In ROBOT mode: bearingDeg is already robot-relative (face direction)
+  const relAngle = isRobot
+    ? bearingDeg   // face A=0°, AB=60°, ... directly relative to robot body
+    : _shortDelta(_remoteCurDeg, _normDeg(bearingDeg));
 
   _remoteMotionBusy = true;
   _remoteUpdateDial();
   const status = document.getElementById('remote-status');
-  const CARDINAL = { 90:'N', 0:'E', 180:'W', 270:'S' };
-  const lbl = CARDINAL[bearingDeg] ?? bearingDeg + '°';
-  if (status) { status.textContent = `Sending goPolar(${relAngle.toFixed(1)}°, ${dist}mm) [→${lbl}]…`; status.className = 'remote-status-busy'; }
+  const labels = isRobot ? _REMOTE_ROBOT_LABELS : _REMOTE_TABLE_LABELS;
+  const lbl = labels[bearingDeg] ?? bearingDeg + '\u00B0';
+  const frameTag = isRobot ? '[robot]' : '[table]';
+  if (status) { status.textContent = `${frameTag} goPolar(${relAngle.toFixed(1)}°, ${dist}mm) → ${lbl}…`; status.className = 'remote-status-busy'; }
 
   try {
     const res = await fetch('/api/exec', {
@@ -4324,7 +4551,7 @@ async function remoteGoPolar(bearingDeg) {
     const data = await res.json();
     if (status) {
       if (data.ok) {
-        status.textContent = `✓ Done — moved ${dist}mm toward ${lbl}`;
+        status.textContent = `✓ ${frameTag} ${dist}mm → ${lbl}`;
         status.className = 'remote-status-ok';
       } else {
         status.textContent = `✗ ${data.res ?? 'error'}`;
@@ -4346,20 +4573,22 @@ async function remoteGoPolar(bearingDeg) {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 // ── Servo definitions (matches firmware groups.h) ──────────────────────────
+// Default actuator groups — min/max match firmware Settings::Actuators defaults.
+// In HW mode, these can be overridden by querying act_info() from the Teensy.
 const ACT_GROUPS = {
   CA: {
     label: 'CA (Right Manip)',
     servos: [
-      { id: 0, name: 'Grabber R',  min: 0, max: 180, def: 121, poses: { 0: 162, 1: 162, 2: 121 } },
-      { id: 1, name: 'Elevator',   min: 0, max: 180, def: 50,  poses: { 0: 50, 1: 50, 2: 5 } },
-      { id: 2, name: 'Grabber L',  min: 0, max: 180, def: 65,  poses: { 0: 20, 1: 20, 2: 65 } },
+      { id: 0, name: 'Grabber R',  min: 110, max: 170, def: 121, poses: { 0: 162, 1: 162, 2: 121 } },
+      { id: 1, name: 'Elevator',   min: 0,   max: 60,  def: 5,   poses: { 0: 50, 1: 50, 2: 5 } },
+      { id: 2, name: 'Grabber L',  min: 10,  max: 75,  def: 65,  poses: { 0: 20, 1: 20, 2: 65 } },
     ],
   },
   AB: {
     label: 'AB (Hugger)',
     servos: [
-      { id: 3, name: 'Hug Elevator', min: 0, max: 180, def: 155, poses: { 0: 155, 1: 155, 2: 90 } },
-      { id: 4, name: 'Hug Grab',     min: 0, max: 180, def: 90,  poses: { 0: 90, 1: 30, 2: 90 } },
+      { id: 3, name: 'Hug Elevator', min: 80,  max: 165, def: 155, poses: { 0: 155, 1: 155, 2: 90 } },
+      { id: 4, name: 'Hug Grab',     min: 20,  max: 100, def: 90,  poses: { 0: 90, 1: 30, 2: 90 } },
     ],
   },
   BC: {
@@ -4425,9 +4654,14 @@ function actRenderServos() {
       <div class="act-servo-slider-row">
         <input type="range" min="${s.min}" max="${s.max}" value="${val}" class="act-slider"
           id="act-slider-${key}"
-          oninput="actSliderMove('${key}',this.value)"
-          onchange="actSliderSend('${_actGroup}',${s.id},'${key}')">
+          oninput="actSliderMove('${key}',this.value)">
         <button class="btn-tiny" onclick="actSliderSend('${_actGroup}',${s.id},'${key}')" title="Send to robot">Go</button>
+      </div>
+      <div class="act-servo-limits">
+        <input type="number" class="act-lim-input" id="act-min-${key}" value="${s.min}" title="Min">
+        <span class="act-lim-sep">–</span>
+        <input type="number" class="act-lim-input" id="act-max-${key}" value="${s.max}" title="Max">
+        <button class="btn-tiny" onclick="actSetLimits('${_actGroup}',${s.id},'${key}')" title="Apply new limits">Set</button>
       </div>
       <div class="act-servo-poses">${poseBtns}</div>
     </div>`;
@@ -4440,9 +4674,16 @@ function actSliderMove(key, val) {
   if (el) el.textContent = val + '°';
 }
 
-async function actSliderSend(group, servoId, key) {
-  const angle = _actServoAngles[key] ?? 90;
-  await actCmd(`servo(${group},${servoId},${angle})`);
+// Debounce slider sends: only send the LAST angle after the user stops
+// moving the slider for 80 ms.  Prevents flooding /api/exec with dozens
+// of requests that exhaust the browser connection pool → UI freeze.
+let _actSliderTimers = {};
+function actSliderSend(group, servoId, key) {
+  clearTimeout(_actSliderTimers[key]);
+  _actSliderTimers[key] = setTimeout(() => {
+    const angle = _actServoAngles[key] ?? 90;
+    actCmd(`servo(${group},${servoId},${angle})`);
+  }, 80);
 }
 
 async function actServoMoveTo(group, servoId, angle) {
@@ -4455,11 +4696,41 @@ async function actServoMoveTo(group, servoId, angle) {
   await actCmd(`servo(${group},${servoId},${angle})`);
 }
 
+async function actSetLimits(group, servoId, key) {
+  const minEl = document.getElementById('act-min-' + key);
+  const maxEl = document.getElementById('act-max-' + key);
+  if (!minEl || !maxEl) return;
+  const newMin = parseInt(minEl.value), newMax = parseInt(maxEl.value);
+  if (isNaN(newMin) || isNaN(newMax) || newMin >= newMax) {
+    minEl.style.borderColor = 'red'; maxEl.style.borderColor = 'red';
+    return;
+  }
+  minEl.style.borderColor = ''; maxEl.style.borderColor = '';
+  // Send to firmware (updates runtime config + servo limits)
+  const r = await actCmd(`servo_limits(${group},${servoId},${newMin},${newMax})`);
+  if (r && r.ok) {
+    // Update local ACT_GROUPS and re-render
+    const g = ACT_GROUPS[group];
+    if (g) {
+      const s = g.servos.find(x => x.id === servoId);
+      if (s) { s.min = newMin; s.max = newMax; }
+    }
+    actRenderServos();
+  }
+}
+
+let _actBusy = false;
 async function actCmd(cmd) {
+  if (_actBusy) {
+    const st = document.getElementById('act-seq-status');
+    if (st) st.textContent = `⏳ busy — skipped ${cmd}`;
+    return { ok: false, res: 'busy' };
+  }
+  _actBusy = true;
   try {
     const res = await fetch('/api/exec', {
       method: 'POST', headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({ cmd, timeout_ms: 5000 })
+      body: JSON.stringify({ cmd, timeout_ms: 3000 })
     });
     const d = await res.json();
     const st = document.getElementById('act-seq-status');
@@ -4469,6 +4740,8 @@ async function actCmd(cmd) {
     const st = document.getElementById('act-seq-status');
     if (st) st.textContent = `✗ ${cmd}: request failed`;
     return { ok: false, res: 'error' };
+  } finally {
+    _actBusy = false;
   }
 }
 

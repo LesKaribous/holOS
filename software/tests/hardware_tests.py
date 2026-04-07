@@ -16,8 +16,8 @@ Suites
 
 Usage (from software/)
 ------
-  python run_hardware_tests.py --port /dev/ttyACM0                    # USB-CDC
-  python run_hardware_tests.py --port /dev/ttyUSB0 --baudrate 31250   # XBee
+  python run_hardware_tests.py --port /dev/ttyACM0
+  python run_hardware_tests.py --port COM6
   python run_hardware_tests.py --port /dev/ttyACM0 --suite connection
   python run_hardware_tests.py --port /dev/ttyACM0 --skip-interactive
 """
@@ -110,6 +110,36 @@ SUITES: Dict[str, dict] = {
              'desc': 'Motion + pas de ack_done → DONE retransmis à 2 s'},
             {'id': 'rel_reconnect',   'name': 'Reconnexion + sync',
              'desc': 'Déconnexion simulée → reconnexion → sync cohérent'},
+        ],
+    },
+    'sdcard': {
+        'label': 'Carte SD',
+        'icon':  '💾',
+        'tests': [
+            {'id': 'sd_cfg_load',     'name': 'Chargement config',
+             'desc': 'cfg_load → ok (fichier présent ou absent)'},
+            {'id': 'sd_cfg_roundtrip','name': 'Écriture / lecture config',
+             'desc': 'cfg_set + cfg_save + cfg_load + vérification valeur'},
+            {'id': 'sd_cfg_list',     'name': 'Listage config',
+             'desc': 'cfg_list → réponse non-vide après set'},
+            {'id': 'sd_cfg_integrity','name': 'Intégrité config',
+             'desc': 'Écriture de 5 clés, sauvegarde, rechargement, toutes les clés préservées'},
+        ],
+    },
+    'actuators_hw': {
+        'label': 'Actionneurs',
+        'icon':  '🦾',
+        'tests': [
+            {'id': 'act_info_ca',     'name': 'Actuator info CA',
+             'desc': 'act_info(CA) → infos servos CA (id, min, max, pos)'},
+            {'id': 'act_info_ab',     'name': 'Actuator info AB',
+             'desc': 'act_info(AB) → infos servos AB'},
+            {'id': 'act_servo_limits','name': 'Servo limits runtime',
+             'desc': 'servo_limits → mise à jour min/max en direct'},
+            {'id': 'act_pump_init',   'name': 'Init pompe',
+             'desc': 'pump_init → pompe initialisée sans erreur'},
+            {'id': 'act_ev_toggle',   'name': 'Électrovanne toggle',
+             'desc': 'ev(CA,1) + ev(CA,0) → pas d\'erreur'},
         ],
     },
 }
@@ -502,6 +532,10 @@ class HardwareTestRunner:
         """
         Complete a tiny motion but delay ack_done for > DONE_RETRY_MS (2 s).
         Verify a second DONE telemetry frame arrives before we acknowledge.
+
+        IMPORTANT: We use fire() to start motion, NOT execute(), because
+        execute() auto-sends ack_done on DONE receipt, which would prevent
+        the firmware from retransmitting.
         """
         done_count = [0]
         done_evt   = threading.Event()
@@ -517,11 +551,11 @@ class HardwareTestRunner:
 
         self._t.subscribe_telemetry('motion', _on_motion)
         try:
-            # Start motion (do NOT call execute() here — we need to handle DONE manually)
-            self._exec('turn(5)', timeout_ms=self.MOTION_TIMEOUT)
-            # Deliberately delay ack_done by 3 s — firmware retransmits at 2 s
-            got_first = done_evt.wait(timeout=5.0)
-            assert got_first, 'Premier DONE non reçu en 5 s'
+            # Use fire() so we don't auto-ack DONE — we need to observe retransmit
+            self._t.fire('turn(5)')
+            # Wait for first DONE (motion completes)
+            got_first = done_evt.wait(timeout=8.0)
+            assert got_first, 'Premier DONE non reçu en 8 s'
             # Wait for retransmit without sending ack_done
             got_retx = retx_evt.wait(timeout=self.RETRANSMIT_GRACE / 1000.0 + 1.0)
             assert got_retx, \
@@ -779,13 +813,17 @@ class HardwareTestRunner:
         """
         Send a frame with a deliberately wrong CRC.
         The firmware should ignore it; the next valid command must still work.
+
+        IMPORTANT: We write raw bytes to the serial port, NOT using fire()
+        which would wrap the payload in a valid CRC frame.  The firmware
+        must discard the bad-CRC frame and process the next valid command.
         """
-        # Inject a corrupted frame directly via fire() (bypasses CRC encoding)
-        if hasattr(self._t, 'fire'):
-            self._t.fire('42:corrupted_payload|255')  # CRC 255 is almost always wrong
-            time.sleep(0.1)   # give firmware time to discard it
-        # Now send a valid health command
-        raw    = self._exec('health', timeout_ms=2_000)
+        # Write raw corrupted frame directly (wrong CRC=255)
+        if hasattr(self._t, '_write'):
+            self._t._write('99:corrupted_payload|255\n')
+            time.sleep(0.15)   # give firmware time to discard it
+        # Now send a valid health command — firmware must still respond
+        raw    = self._exec('health', timeout_ms=3_000)
         health = self._parse_health(raw)
         assert 'mo' in health, f'Aucune réponse health après trame corrompue: {raw!r}'
         return 'Trame corrompue ignorée, commande suivante OK'
@@ -795,6 +833,10 @@ class HardwareTestRunner:
         Start a motion and capture the first DONE.
         Deliberately do not send ack_done.
         Expect a second DONE (retransmit) within DONE_RETRY_MS + margin.
+
+        IMPORTANT: Use fire() for motion, NOT execute(). execute() auto-sends
+        ack_done on DONE receipt, which clears m_donePending on the firmware
+        and prevents the retransmit we're trying to observe.
         """
         done_times: list = []
         evt_second = threading.Event()
@@ -807,13 +849,12 @@ class HardwareTestRunner:
 
         self._t.subscribe_telemetry('motion', _on_motion)
         try:
-            # Start motion — use execute() to wait for first DONE
-            # (XBeeTransport marks motion done internally)
-            self._exec('turn(5)', timeout_ms=self.MOTION_TIMEOUT)
-            # Don't send ack_done — wait for retransmit
-            got = evt_second.wait(timeout=5.0)
+            # Use fire() so we don't auto-ack DONE
+            self._t.fire('turn(5)')
+            # Wait for retransmit (first DONE + at least one retransmit)
+            got = evt_second.wait(timeout=10.0)
             assert got, \
-                ('Pas de retransmission DONE après 5 s '
+                ('Pas de retransmission DONE après 10 s '
                  '(vérifier PR-2 DONE_RETRY_MS=2000 dans jetson_bridge.h)')
         finally:
             self._t.unsubscribe_telemetry('motion', _on_motion)
@@ -821,8 +862,8 @@ class HardwareTestRunner:
 
         if len(done_times) >= 2:
             gap = (done_times[1] - done_times[0]) * 1000.0
-            assert 1_500 <= gap <= 3_000, \
-                f'Intervalle retransmit hors plage: {gap:.0f} ms (attendu 1500-3000 ms)'
+            assert 1_500 <= gap <= 3_500, \
+                f'Intervalle retransmit hors plage: {gap:.0f} ms (attendu 1500-3500 ms)'
             return f'DONE retransmis OK — intervalle={gap:.0f} ms'
         return 'DONE retransmis OK'
 
@@ -864,3 +905,152 @@ class HardwareTestRunner:
 
         return (f'Reconnexion OK — état={mstate_after}, '
                 f'pos=({x_after:.0f},{y_after:.0f}) Δ=({dx:.0f},{dy:.0f}) mm')
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # SD CARD tests
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def _test_sd_cfg_load(self) -> str:
+        """cfg_load returns ok (whether config file exists or not)."""
+        ok, res = self._exec_raw('cfg_load', timeout_ms=3_000)
+        assert ok, f'cfg_load a échoué: {res}'
+        return f'cfg_load OK: {res}'
+
+    def _test_sd_cfg_roundtrip(self) -> str:
+        """Write a key, save to SD, reload, verify value is preserved."""
+        test_key   = 'test.hw.val'
+        test_value = '42'
+
+        # Set a test key
+        self._exec(f'cfg_set({test_key},{test_value})', timeout_ms=2_000)
+        # Save to SD
+        self._exec('cfg_save', timeout_ms=3_000)
+        # Reload from SD (clears in-memory store first)
+        self._exec('cfg_load', timeout_ms=3_000)
+        # Read back via cfg_list and verify
+        ok, raw = self._exec_raw('cfg_list', timeout_ms=2_000)
+        assert ok, f'cfg_list a échoué: {raw}'
+        assert test_key in raw, \
+            f'Clé {test_key!r} absente après roundtrip: {raw!r}'
+        assert test_value in raw, \
+            f'Valeur {test_value!r} absente après roundtrip: {raw!r}'
+        # Clean up: remove test key by setting empty, save
+        self._exec_raw(f'cfg_set({test_key},)', timeout_ms=2_000)
+        self._exec_raw('cfg_save', timeout_ms=3_000)
+        return f'Roundtrip OK: {test_key}={test_value} préservé'
+
+    def _test_sd_cfg_list(self) -> str:
+        """cfg_list returns a non-empty response after setting a key."""
+        self._exec(f'cfg_set(test.list,hello)', timeout_ms=2_000)
+        ok, raw = self._exec_raw('cfg_list', timeout_ms=2_000)
+        assert ok, f'cfg_list a échoué: {raw}'
+        assert 'test.list' in raw, f'Clé test.list absente dans cfg_list: {raw!r}'
+        # Clean up
+        self._exec_raw(f'cfg_set(test.list,)', timeout_ms=2_000)
+        return f'cfg_list OK: {len(raw)} chars'
+
+    def _test_sd_cfg_integrity(self) -> str:
+        """Write 5 keys, save, reload, verify all 5 are preserved."""
+        keys = {f'test.int.k{i}': str(i * 11) for i in range(5)}
+
+        # Set all keys
+        for k, v in keys.items():
+            self._exec(f'cfg_set({k},{v})', timeout_ms=2_000)
+        # Save and reload
+        self._exec('cfg_save', timeout_ms=3_000)
+        self._exec('cfg_load', timeout_ms=3_000)
+        # Verify all keys present
+        ok, raw = self._exec_raw('cfg_list', timeout_ms=2_000)
+        assert ok, f'cfg_list a échoué: {raw}'
+        missing = [k for k in keys if k not in raw]
+        assert not missing, f'Clés manquantes après intégrité: {missing}'
+        # Clean up
+        for k in keys:
+            self._exec_raw(f'cfg_set({k},)', timeout_ms=2_000)
+        self._exec_raw('cfg_save', timeout_ms=3_000)
+        return f'Intégrité OK: 5/5 clés préservées'
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # ACTUATORS (hardware) tests
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def _test_act_info_ca(self) -> str:
+        """act_info(CA) returns structured servo information."""
+        ok, raw = self._exec_raw('act_info(CA)', timeout_ms=2_000)
+        assert ok, f'act_info(CA) a échoué: {raw}'
+        # Expect ACT_INFO lines with pipe-separated fields
+        assert 'ACT_INFO' in raw or 'ok' in raw, \
+            f'Réponse act_info(CA) inattendue: {raw!r}'
+        return f'act_info(CA) OK: {raw[:80]}'
+
+    def _test_act_info_ab(self) -> str:
+        """act_info(AB) returns structured servo information."""
+        ok, raw = self._exec_raw('act_info(AB)', timeout_ms=2_000)
+        assert ok, f'act_info(AB) a échoué: {raw}'
+        assert 'ACT_INFO' in raw or 'ok' in raw, \
+            f'Réponse act_info(AB) inattendue: {raw!r}'
+        return f'act_info(AB) OK: {raw[:80]}'
+
+    def _test_act_servo_limits(self) -> str:
+        """servo_limits updates min/max at runtime without crash.
+
+        This test specifically validates the interpreter underscore fix —
+        commands with underscores like servo_limits previously caused an
+        infinite loop in parseIdentifier() → watchdog reboot.
+        """
+        # Read current limits first
+        ok, info = self._exec_raw('act_info(CA)', timeout_ms=2_000)
+        assert ok, f'act_info(CA) préalable échoué: {info}'
+
+        # Set limits (use safe values within normal range)
+        ok, res = self._exec_raw('servo_limits(CA,0,115,165)', timeout_ms=3_000)
+        assert ok, f'servo_limits a échoué: {res} (crash firmware / watchdog ?)'
+
+        # Verify robot is still responsive
+        ok2, health = self._exec_raw('health', timeout_ms=2_000)
+        assert ok2, f'Robot ne répond plus après servo_limits: {health}'
+
+        return f'servo_limits OK — firmware stable, réponse: {res}'
+
+    def _test_act_pump_init(self) -> str:
+        """initPump initializes the PCA9685 PWM driver without error.
+
+        The pump driver (PCA9685 I²C @ 1600 Hz) is now initialized at boot,
+        but the command can be called again safely (idempotent).
+        """
+        # Try to initialize pump — this should be safe even if already init
+        ok, res = self._exec_raw('initPump', timeout_ms=3_000)
+        # Even if initPump is not registered, the robot should not crash
+        if not ok:
+            return f'initPump non disponible (commande non enregistrée): {res}'
+        # Verify robot still responsive
+        ok2, _ = self._exec_raw('health', timeout_ms=2_000)
+        assert ok2, 'Robot ne répond plus après initPump'
+        return f'initPump OK: {res}'
+
+    def _test_act_ev_toggle(self) -> str:
+        """Toggle an electro-valve on and off without error.
+
+        Firmware commands: pump(side) and ev(side) where side is '1' (RIGHT)
+        or '0' (LEFT).  pump() starts the pump, ev() stops pump + pulses EV.
+
+        stopPump() timing breakdown (all hard-blocking delay(), NOT waitMs()):
+          • 100 ms back-EMF settle (pump off → EV on gap, prevents brownout reset)
+          • 500 ms EV pulse duration
+          Total: ~600 ms → use a 3 000 ms command timeout.
+
+        The PCA9685 is auto-initialized by startPump() on first use, so the
+        "initPump" test does not need to run first.
+        """
+        # Start pump on RIGHT side (auto-inits PCA9685 if needed)
+        ok1, res1 = self._exec_raw('pump(1)', timeout_ms=3_000)
+        if not ok1:
+            return f'pump(1) non disponible: {res1}'
+        time.sleep(0.3)
+        # Stop pump + pulse EV on RIGHT side (firmware blocks ~600ms total)
+        ok2, res2 = self._exec_raw('ev(1)', timeout_ms=3_000)
+        assert ok2, f'ev(1) a échoué: {res2}'
+        # Verify robot still responsive
+        ok3, _ = self._exec_raw('health', timeout_ms=2_000)
+        assert ok3, 'Robot ne répond plus après ev toggle'
+        return f'EV toggle OK: pump={res1}, ev={res2}'

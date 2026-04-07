@@ -15,18 +15,39 @@ Path planning (A*):
   motion.use_pathfinding = False  → direct go() commands (no A*)
   motion.use_pathfinding = True   → A* + via() chaining (default when pathfinder present)
 
+Reactive replanning:
+  When a motion command fails with motion_timeout or stall (obstacle-related),
+  the service cancels the current motion, replans A* with the updated dynamic
+  occupancy grid, and re-sends the command.  This only happens when
+  use_pathfinding is True and a SafetyService is attached.
+
 Angle offset:
   theta_offset_deg (default 0 in sim, HW_THETA_OFFSET_DEG on hardware) converts
   between holOS frame (0=East) and the firmware frame (0=face A).
 """
 
 import math
+import time
 from typing import Optional, List
 
 from transport.base import Transport
 from shared.config import (
     Vec2, RobotCompass, robot_compass_offset_deg, polar_vec,
 )
+
+
+# ── Replanning constants ─────────────────────────────────────────────────────
+
+# How long to wait (seconds) after firmware pauses before attempting a replan.
+# This gives the opponent time to move away before we burn time replanning.
+REPLAN_DELAY_S   = 1.5
+
+# Maximum number of replan attempts per single go() call.
+MAX_REPLANS      = 3
+
+# Minimum distance (mm) to target before we bother replanning.  If we're
+# almost there, just wait for the obstacle to clear.
+REPLAN_MIN_DIST  = 200.0
 
 
 class MotionService:
@@ -46,7 +67,8 @@ class MotionService:
 
     def __init__(self, transport: Transport,
                  theta_offset_deg: float = 0.0,
-                 pathfinder=None):
+                 pathfinder=None,
+                 safety=None):
         self._t = transport
 
         # Angle offset between holOS frame and firmware frame (degrees / radians).
@@ -56,8 +78,14 @@ class MotionService:
         # Path planner (shared.pathfinder.Pathfinder, or None for sim/no pathfinding).
         self._pathfinder = pathfinder
 
+        # SafetyService reference for reactive replanning
+        self._safety = safety
+
         # Toggle: when False, go() sends direct commands even if a pathfinder is present.
         self.use_pathfinding: bool = pathfinder is not None
+
+        # Toggle: when True and pathfinding is on, replan around obstacles
+        self.use_replanning: bool = True
 
         # Current position (updated via telemetry)
         self._pos   = Vec2(0, 0)
@@ -144,13 +172,17 @@ class MotionService:
 
     def turn(self, angle_deg: float) -> 'MotionService':
         cmd = self._build_turn_cmd(angle_deg)
-        self._last_ok, _ = self._t.execute(cmd, timeout_ms=15000)
+        self._last_ok, resp = self._t.execute(cmd, timeout_ms=15000)
+        if not self._last_ok:
+            print(f"[Motion] turn({angle_deg:.1f}°) FAILED — {resp}")
         self._reset_pending()
         return self
 
     def align(self, rc: RobotCompass, orientation_deg: float) -> 'MotionService':
         cmd = f"align({rc.name},{orientation_deg - self._theta_offset_deg:.1f})"
-        self._last_ok, _ = self._t.execute(cmd, timeout_ms=15000)
+        self._last_ok, resp = self._t.execute(cmd, timeout_ms=15000)
+        if not self._last_ok:
+            print(f"[Motion] align({rc.name},{orientation_deg:.1f}°) FAILED — {resp}")
         self._reset_pending()
         return self
 
@@ -164,6 +196,13 @@ class MotionService:
 
     def resume(self) -> None:
         self._t.fire("resume")
+
+    def enable_apf(self, scale: float = 50000.0) -> None:
+        """Enable Artificial Potential Fields on firmware (cruise mode only)."""
+        self._t.fire(f"apf(on,{scale:.0f})")
+
+    def disable_apf(self) -> None:
+        self._t.fire("apf(off)")
 
     # ── State queries ─────────────────────────────────────────────────────────
 
@@ -190,48 +229,141 @@ class MotionService:
 
     # ── Internal helpers ──────────────────────────────────────────────────────
 
-    def _execute_go(self, target: Vec2) -> None:
-        """Build and send a go command, optionally prepending A* via points."""
-        # ── Path planning ────────────────────────────────────────────────────
+    # Max via points before the chained command exceeds firmware's CONTENT_MAX
+    # (384 bytes). Each "via(XXXX.X,XXXX.X);" is ~22 chars; 14 via = ~308 chars
+    # + go() = ~330 chars — leaves room for the uid:...|crc framing.
+    MAX_VIA_POINTS = 14
+
+    def _build_go_cmd(self, target: Vec2, extra_via: List[Vec2] = None) -> str:
+        """Build a go command string with optional A* via points."""
         path_via: List[Vec2] = []
         if self.use_pathfinding and self._pathfinder is not None:
-            path = self._pathfinder.find_path(self._pos, target)
-            # path = [start, wp1, wp2, ..., goal]; skip start (already there) and goal
-            path_via = path[1:-1]
+            try:
+                path = self._pathfinder.find_path(self._pos, target)
+                path_via = path[1:-1]
+            except Exception as e:
+                print(f"[MotionService] Pathfinding error, using direct path: {e}")
+                path_via = []
 
         parts = []
         # Caller-specified via points (strategy-level override) come first
-        for v in self._pending_via:
-            parts.append(f"via({v.x:.1f},{v.y:.1f})")
+        if extra_via:
+            for v in extra_via:
+                parts.append(f"via({v.x:.1f},{v.y:.1f})")
+
         # A* intermediate waypoints as pass-through via points
         for v in path_via:
             parts.append(f"via({v.x:.1f},{v.y:.1f})")
+
+        # Safety cap: if too many via points, simplify by keeping only a
+        # subset (evenly spaced) to stay within firmware buffer limits.
+        caller_via_count = len(extra_via) if extra_via else 0
+        max_via = self.MAX_VIA_POINTS - caller_via_count
+        if len(path_via) > max_via and max_via > 0:
+            step = len(path_via) / max_via
+            simplified = [path_via[int(i * step)] for i in range(max_via)]
+            parts = []
+            if extra_via:
+                for v in extra_via:
+                    parts.append(f"via({v.x:.1f},{v.y:.1f})")
+            for v in simplified:
+                parts.append(f"via({v.x:.1f},{v.y:.1f})")
 
         if self._pending_cancel_on_collide:
             parts.append(f"go_coc({target.x:.1f},{target.y:.1f})")
         else:
             parts.append(f"go({target.x:.1f},{target.y:.1f})")
 
-        cmd = ";".join(parts)
+        return ";".join(parts)
 
-        if self._pending_feedrate > 0:
-            self._t.fire(f"feed({self._pending_feedrate:.3f})")
-        self._last_ok, _ = self._t.execute(cmd, timeout_ms=60000)
-        if self._pending_feedrate > 0:
-            self._t.fire(f"feed({self._feedrate:.3f})")
+    def _execute_go(self, target: Vec2) -> None:
+        """Build and send a go command, with optional replanning on obstacle."""
+        # Snapshot caller via points (consumed on first send)
+        caller_via = list(self._pending_via)
+        replan_count = 0
+        can_replan = (self.use_pathfinding and self.use_replanning
+                      and self._pathfinder is not None
+                      and self._safety is not None
+                      and not self._pending_cancel_on_collide)
+
+        while True:
+            cmd = self._build_go_cmd(target, caller_via if replan_count == 0 else None)
+
+            if self._pending_feedrate > 0:
+                self._t.fire(f"feed({self._pending_feedrate:.3f})")
+
+            ok, resp = self._t.execute(cmd, timeout_ms=60000)
+
+            if self._pending_feedrate > 0 and replan_count == 0:
+                # Restore global feedrate only once (not on replans)
+                self._t.fire(f"feed({self._feedrate:.3f})")
+
+            # ── Success or non-retriable failure ─────────────────────────
+            if ok:
+                self._last_ok = True
+                if replan_count > 0:
+                    print(f"[Motion] go({target.x:.0f},{target.y:.0f}) OK after "
+                          f"{replan_count} replan(s)")
+                break
+
+            # Motion failed — check if we should try replanning
+            if not can_replan or replan_count >= MAX_REPLANS:
+                reason = f"resp={resp}"
+                if not can_replan:
+                    reason = "replanning disabled"
+                elif replan_count >= MAX_REPLANS:
+                    reason = f"max replans reached ({MAX_REPLANS})"
+                print(f"[Motion] go({target.x:.0f},{target.y:.0f}) FAILED — {reason}")
+                self._last_ok = False
+                break
+
+            # Only replan on motion_timeout or stall (obstacle-related failures)
+            if resp not in ("motion_timeout", "stall"):
+                print(f"[Motion] go({target.x:.0f},{target.y:.0f}) FAILED — {resp} "
+                      f"(not retriable)")
+                self._last_ok = False
+                break
+
+            # Distance check — don't replan if we're almost at the target
+            dist = self._pos.dist(target)
+            if dist < REPLAN_MIN_DIST:
+                print(f"[Motion] go({target.x:.0f},{target.y:.0f}) FAILED — {resp}, "
+                      f"too close to replan ({dist:.0f}mm < {REPLAN_MIN_DIST:.0f}mm)")
+                self._last_ok = False
+                break
+
+            # ── Replan attempt ───────────────────────────────────────────
+            replan_count += 1
+            print(f"[MotionService] Replan attempt {replan_count}/{MAX_REPLANS}"
+                  f" — {resp}, dist={dist:.0f}mm")
+
+            # Brief pause to let the occupancy grid update with latest LIDAR data
+            time.sleep(0.3)
+
+            # Cancel any residual firmware motion state
+            self._t.fire("cancel")
+            self._t.fire("ack_done")
+            time.sleep(0.1)
+
+            # Loop back → _build_go_cmd will re-run A* with updated occupancy
+
         self._reset_pending()
 
     def _execute_go_align(self, target: Vec2, theta_deg: float) -> None:
         cmd = f"goAlign({target.x:.1f},{target.y:.1f},{theta_deg - self._theta_offset_deg:.2f})"
         if self._pending_feedrate > 0:
             self._t.fire(f"feed({self._pending_feedrate:.3f})")
-        self._last_ok, _ = self._t.execute(cmd, timeout_ms=60000)
+        self._last_ok, resp = self._t.execute(cmd, timeout_ms=60000)
+        if not self._last_ok:
+            print(f"[Motion] goAlign({target.x:.0f},{target.y:.0f},{theta_deg:.1f}°) "
+                  f"FAILED — {resp}")
         if self._pending_feedrate > 0:
             self._t.fire(f"feed({self._feedrate:.3f})")
         self._reset_pending()
 
     def _build_turn_cmd(self, angle_deg: float) -> str:
-        return f"turn({angle_deg - self._theta_offset_deg:.2f})"
+        # turn() is relative — no theta offset needed (unlike align which is absolute)
+        return f"turn({angle_deg:.2f})"
 
     def _reset_pending(self) -> None:
         self._pending_cancel_on_collide = False

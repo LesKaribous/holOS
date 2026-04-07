@@ -60,7 +60,7 @@ FLASHMEM char colorToChar(ObjectColor c) {
 // ============================================================
 
 FLASHMEM void TwinVision::attach() {
-    Console::info("Vision") << "TwinVision attache" << Console::endl;
+    Console::info("Vision") << "TwinVision attached" << Console::endl;
     VISION_SERIAL.begin(VISION_BAUDRATE);
     while (m_stream.available()) m_stream.read(); // vider le buffer
     ping();

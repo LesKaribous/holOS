@@ -12,12 +12,12 @@ FLASHMEM void Terminal::attach(){
 FLASHMEM void Terminal::run(){
     if(!enabled()) return;
 
-    // CONSOLE_SERIAL and BRIDGE_SERIAL are both Serial (USB-CDC).
-    // JetsonBridge owns the port exclusively for ping/pong + framed commands.
-    // Terminal must never read from it — stealing bytes would corrupt the bridge
-    // handshake and trigger a firmware crash.
+    // JetsonBridge owns the bridge serial port (auto-detected: USB-CDC or XBee).
+    // When bridge is on USB-CDC, it shares Serial with CONSOLE_SERIAL.
+    // Terminal must never read from Serial — stealing bytes would corrupt the
+    // bridge handshake and trigger a firmware crash.
     // Terminal input is handled by JetsonBridge::handleRequest() via the 'cmd'
-    // command over the same USB channel.
+    // command over the bridge channel.
     (void)this;  // suppress unused-warning if optimised out
     return;
 }   

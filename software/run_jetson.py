@@ -1,14 +1,14 @@
 """
 run_jetson.py — Jetson entry point (real hardware).
 
-Connects to Teensy 4.1 via XBee (serial port), then runs the Brain.
-The Brain manages the strategy, services, and telemetry.
+Connects to Teensy 4.1 via serial port (XBee or USB-CDC, auto-detected by
+firmware at 57600 baud), then runs the Brain.
 
 Usage on Jetson:
     python run_jetson.py --port /dev/ttyUSB0
-    python run_jetson.py --port /dev/ttyTHS1 --baud 31250
+    python run_jetson.py --port /dev/ttyTHS1
 
-The XBee serial port depends on how the XBee module is wired:
+The serial port depends on how the XBee module is wired:
   - USB XBee dongle:   /dev/ttyUSB0
   - UART header:       /dev/ttyTHS1  (Jetson Nano) or /dev/ttyTHS0 (Orin)
 """
@@ -30,20 +30,18 @@ from brain import Brain
 def main():
     parser = argparse.ArgumentParser(description='holOS Jetson Brain')
     parser.add_argument('--port',  default='/dev/ttyUSB0',
-                        help='Serial port for XBee (default: /dev/ttyUSB0)')
-    parser.add_argument('--baud',  type=int, default=31250,
-                        help='Baud rate (default: 31250)')
+                        help='Serial port (default: /dev/ttyUSB0)')
     parser.add_argument('--auto-start', action='store_true',
                         help='Auto-start match when connected')
     args = parser.parse_args()
 
-    transport = XBeeTransport(port=args.port, baudrate=args.baud)
+    transport = XBeeTransport(port=args.port)
     brain     = Brain(transport)
 
     # ── Connect ───────────────────────────────────────────────────────────────
-    print(f"[Jetson] Connecting to Teensy via XBee on {args.port} @ {args.baud}bps…")
+    print(f"[Jetson] Connecting to Teensy on {args.port} @ 57600 bps…")
     if not brain.start():
-        print("[Jetson] Connection failed. Check XBee wiring and baud rate.")
+        print("[Jetson] Connection failed. Check wiring and ensure Teensy is powered.")
         sys.exit(1)
 
     print("[Jetson] Connected ✓")

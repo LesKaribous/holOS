@@ -1,13 +1,15 @@
 """
-transport/xbee.py - Real XBee serial transport for Jetson hardware.
+transport/xbee.py - Serial transport for holOS (USB-CDC or XBee radio).
 
-Connects to the Teensy 4.1 via XBee modules on a serial port.
-Implements the holOS intercom protocol (CRC8-SMBUS framed requests).
+Connects to the Teensy 4.1 on any serial port.  The firmware auto-detects
+which physical link is active (USB-CDC Serial vs XBee Serial3).
+After ping/pong handshake the firmware reports 'pong:usb' or 'pong:xbee'
+so the Python side knows which bridge is in use.
 
 Usage:
-    transport = XBeeTransport(port="/dev/ttyUSB0", baudrate=31250)
+    transport = XBeeTransport(port="COM6")
     transport.connect()
-    ok, resp = transport.execute("go(500,300)", timeout_ms=30000)
+    print(transport.bridge_type)  # 'usb' or 'xbee'
 """
 
 import threading
@@ -17,7 +19,7 @@ from typing import Callable, Dict, List, Optional, Tuple
 
 from .base import Transport
 from shared.protocol import encode_request, encode_reply, parse_frame, encode_telemetry
-from shared.config import HEARTBEAT_INTERVAL_S, JETSON_TIMEOUT_S
+from shared.config import HEARTBEAT_INTERVAL_S, JETSON_TIMEOUT_S, BRIDGE_BAUDRATE
 
 
 class XBeeTransport(Transport):
@@ -31,17 +33,33 @@ class XBeeTransport(Transport):
     Telemetry callbacks are dispatched from the reader thread.
     """
 
-    TRANSPORT_TYPE = 'xbee'
+    TRANSPORT_TYPE = 'serial'
 
     @property
     def transport_type(self) -> str:
         return self.TRANSPORT_TYPE
 
-    def __init__(self, port: str, baudrate: int = 31250):
+    @property
+    def bridge_type(self) -> Optional[str]:
+        """'usb' or 'xbee' — set after connect() by firmware pong response."""
+        return self._bridge_type
+
+    @property
+    def heartbeat_ok(self) -> bool:
+        """True if last heartbeat succeeded. LED-style indicator for UI."""
+        return self._heartbeat_ok
+
+    def __init__(self, port: str, baudrate: int = BRIDGE_BAUDRATE):
         self._port     = port
         self._baudrate = baudrate
         self._serial: Optional[serial.Serial] = None
         self._connected = False
+
+        # Auto-identified bridge type: 'usb', 'xbee', or None (unknown)
+        self._bridge_type: Optional[str] = None
+
+        # Heartbeat status (True = last heartbeat succeeded, observable by UI)
+        self._heartbeat_ok: bool = False
 
         # Request tracking
         self._lock    = threading.Lock()
@@ -84,22 +102,18 @@ class XBeeTransport(Transport):
             self._reader_thread.start()
 
             # Wait for connection confirmation.
-            # XBee/Jetson mode (31250 baud): raw "ping\n" → firmware replies "pong\n"
-            # USB_DIRECT mode (115200 baud): firmware only understands CRC-framed
-            #   requests, so send a framed hb — any valid reply confirms connectivity.
-            _usb_direct = (self._baudrate == 115200)
+            # Firmware auto-detects which port (USB-CDC or XBee) receives the
+            # first valid frame.  We always send raw "ping\n" — firmware replies
+            # "pong:usb\n" or "pong:xbee\n" to identify the active bridge.
             deadline = time.time() + 3.0
             while not self._connected and time.time() < deadline:
-                if _usb_direct:
-                    self._serial.write(encode_request(0, 'hb').encode('ascii'))
-                else:
-                    self._serial.write(b"ping\n")
+                self._serial.write(b"ping\n")
                 time.sleep(0.2)
 
             if self._connected:
                 self._start_heartbeat()
-                if self._on_connect:
-                    self._on_connect()
+                # NOTE: on_connect callback is fired from _process_line()
+                # when pong arrives — do NOT call it here (would double-fire).
                 return True
 
             # No pong received - clean up fully before returning failure
@@ -121,19 +135,34 @@ class XBeeTransport(Transport):
         """Stop reader/heartbeat threads and close the serial port unconditionally."""
         self._running    = False
         self._connected  = False
+        self._heartbeat_ok = False
+        self._bridge_type  = None
         # Release any pending execute() calls so they don't hang
         with self._lock:
             for evt in self._pending.values():
                 evt.set()
             self._pending.clear()
+            self._replies.clear()
         self._motion_done_evt.set()   # unblock any waiting motion call
+        self._waiting_motion = False
         if self._serial is not None:
             try:
                 if self._serial.is_open:
+                    self._serial.flush()
                     self._serial.close()
             except Exception:
                 pass
             self._serial = None
+        # Wait for other threads to exit (ensures port is released).
+        # Skip joining the current thread — _cleanup() can be called from the
+        # reader thread itself when the serial port drops unexpectedly.
+        cur = threading.current_thread()
+        if self._reader_thread is not None and self._reader_thread.is_alive() and self._reader_thread is not cur:
+            self._reader_thread.join(timeout=2.0)
+            self._reader_thread = None
+        if self._hb_thread is not None and self._hb_thread.is_alive() and self._hb_thread is not cur:
+            self._hb_thread.join(timeout=2.0)
+            self._hb_thread = None
 
     @property
     def is_connected(self) -> bool:
@@ -145,6 +174,11 @@ class XBeeTransport(Transport):
         """
         Send a command, wait for Teensy acknowledgment.
         For motion commands (go/turn/align/goPolar), also waits for motion completion.
+
+        IMPORTANT — _waiting_motion is reset on EVERY exit path so the heartbeat
+        is never permanently suppressed. Without this, an ACK timeout would leave
+        the system in a state where heartbeat is disabled forever, eventually
+        triggering a firmware watchdog disconnect.
         """
         is_motion_cmd = _is_motion_command(cmd)
 
@@ -168,9 +202,19 @@ class XBeeTransport(Transport):
             self._pending.pop(uid, None)
 
         if not ok:
+            # ACK timeout — reset motion state so heartbeat resumes.
+            # Without this, _waiting_motion stays True and heartbeat is
+            # suppressed forever, causing a firmware watchdog disconnect.
+            if is_motion_cmd:
+                self._waiting_motion = False
             return (False, "timeout")
 
-        if response.startswith("err"):
+        # Error responses use the format "err:reason" (with colon).
+        # Do NOT match bare "err" prefix — it would false-positive on
+        # legitimate data like "error=44;key=val" from cfg_list.
+        if response.startswith("err:"):
+            if is_motion_cmd:
+                self._waiting_motion = False
             return (False, response)
 
         # For motion commands, additionally wait for motion DONE telemetry.
@@ -181,7 +225,13 @@ class XBeeTransport(Transport):
             finished = self._motion_done_evt.wait(timeout=motion_timeout)
             self._waiting_motion = False
             if not finished:
+                # Motion DONE never arrived — send cancel so the robot stops
+                # moving, and ack_done to clear any pending DONE retransmit.
+                self.fire("cancel")
+                self.fire("ack_done")
                 return (False, "motion_timeout")
+            # Acknowledge DONE so the firmware stops retransmitting it.
+            self.fire("ack_done")
             return (self._motion_done_ok, "ok" if self._motion_done_ok else "stall")
 
         return (True, response)
@@ -257,7 +307,9 @@ class XBeeTransport(Transport):
             return
 
         if kind == 'pong':
-            print(f"[Transport] Received pong")
+            bridge = data  # 'usb', 'xbee', or None (legacy firmware)
+            self._bridge_type = bridge
+            print(f"[Transport] Received pong — bridge={bridge or 'unknown'}")
             if not self._connected:
                 self._connected = True
                 if self._on_connect:
@@ -267,11 +319,6 @@ class XBeeTransport(Transport):
         if kind == 'reply':
             uid = id_or_type
             #print(f"[Transport] Received reply uid={uid} data={data}")
-            if not self._connected:
-                # USB_DIRECT handshake: receiving any valid reply means the
-                # firmware is alive and the framed protocol is working.
-                self._connected = True
-                return
             with self._lock:
                 self._replies[uid] = data
                 if uid in self._pending:
@@ -335,17 +382,13 @@ class XBeeTransport(Transport):
         while self._running and self._connected:
             try:
                 # Skip heartbeat while a motion command is in progress —
-                # the Teensy is busy and can't reply within 1 s anyway, and
-                # a concurrent write would risk interleaving bytes even with
-                # the write lock (execute() holds the lock for the full write).
+                # the Teensy is busy and we don't want the heartbeat timeout
+                # to trigger a false disconnection while waiting for DONE.
                 if not self._waiting_motion:
                     ok, _ = self.execute("hb", timeout_ms=2000)
+                    self._heartbeat_ok = ok
                     if not ok and self._connected:
-                        print("[Transport] Heartbeat failed - connection lost")
-                        # Call disconnect() — not just _connected=False — so that
-                        # _cleanup() closes the serial port before on_disconnect fires.
-                        # Without this, the port stays open and reconnect attempts fail
-                        # with "device or resource busy".
+                        print("[Transport] Heartbeat failed — connection lost")
                         self.disconnect()
                         return
             except Exception:
@@ -359,4 +402,4 @@ _MOTION_CMDS = ('go(', 'go_coc(', 'goPolar(', 'turn(', 'align(', 'goAlign(', 'mo
 
 def _is_motion_command(cmd: str) -> bool:
     # A chained command like "via(x,y);go(x,y)" must also be treated as motion.
-    return any(part.strip().startswith(c) for part in cmd.split(';') for c in _MOTION_CMDS)
+    return any(part.strip().startswith(c) for part in cmd.split(';') for c in _MOTION_CMDS) 

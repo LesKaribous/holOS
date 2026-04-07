@@ -50,7 +50,7 @@ static bool  s_abort      = false;
 // ── Motion-command detection ──────────────────────────────────────────────────
 
 static const char* MOTION_PREFIXES[] = {
-    "go(", "goPolar(", "turn(", "align(", "goAlign(", "move(", nullptr
+    "go(", "go_coc(", "goPolar(", "turn(", "align(", "goAlign(", "move(", nullptr
 };
 
 static bool isMotionCmd(const char* line) {

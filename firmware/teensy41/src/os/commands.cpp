@@ -1,6 +1,7 @@
 #include "commands.h"
 #include "config/env.h"
 #include "config/calibration.h"
+#include "config/runtime_config.h"
 #include "services/sd/sd_card.h"
 #include "services/localisation/localisation.h"
 #include "services/motion/motion.h"
@@ -20,7 +21,10 @@ FLASHMEM void registerCommands() {
     CommandHandler::registerCommand("wait(duration)", "Wait a bit for duration", command_wait);
     CommandHandler::registerCommand("lidarMode(mode)", "Change neopixel display mode on lidar", command_lidarMode);
     CommandHandler::registerCommand("go(x,y)", "Move to a specific position", command_go);
+    CommandHandler::registerCommand("go_coc(x,y)", "Move with cancel on collide/stall", command_go_coc);
+    CommandHandler::registerCommand("via(x,y)", "Add pass-through waypoint (for chained via;go)", command_via);
     CommandHandler::registerCommand("goPolar(angle,dist)", "Move to a relative polar position", command_goPolar);
+    CommandHandler::registerCommand("goAlign(x,y,angle)", "Move to position and align to angle (degrees)", command_goAlign);
     CommandHandler::registerCommand("move(x,y,angle)", "Move to a specific position", command_move);
     CommandHandler::registerCommand("turn(angle)", "Turn to a specific angle", command_turn);
     CommandHandler::registerCommand("rawTurn(angle)", "Turn to a specific angle without optimization", command_rawTurn);
@@ -98,6 +102,16 @@ FLASHMEM void registerCommands() {
     CommandHandler::registerCommand("loglevel(level)",           "Set global log level (VERBOSE/INFO/…)",     command_loglevel);
     CommandHandler::registerCommand("tel(channel,0|1)",          "Enable/disable a telemetry channel",        command_tel);
     CommandHandler::registerCommand("logstatus",                 "Print log level + source mask + tel state", command_logstatus);
+
+    // Runtime config (SD-backed key=value store)
+    CommandHandler::registerCommand("cfg_list",                  "Print all runtime config entries",          command_cfg_list);
+    CommandHandler::registerCommand("cfg_set(key,value)",        "Set a config value at runtime",             command_cfg_set);
+    CommandHandler::registerCommand("cfg_save",                  "Save runtime config to SD card",            command_cfg_save);
+    CommandHandler::registerCommand("cfg_load",                  "Reload runtime config from SD card",        command_cfg_load);
+
+    // Actuator info (structured, for holOS UI)
+    CommandHandler::registerCommand("act_info(side)",            "Print servo info (id,name,min,max,pos)",    command_act_info);
+    CommandHandler::registerCommand("servo_limits(side,id,min,max)", "Set servo min/max limits at runtime",   command_servo_limits);
 }
 
 FLASHMEM void command_stats(const args_t& args){
@@ -246,6 +260,32 @@ FLASHMEM void command_probe(const args_t &args){
 
     probeBorder(tc, rc, 100);
 
+}
+
+// Motion — pass-through waypoint (used in chained via(x,y);go(x,y) commands)
+FLASHMEM void command_via(const args_t& args){
+    if(args.size() != 2) return;
+    float x = args[0].toFloat();
+    float y = args[1].toFloat();
+    motion.via(x, y);
+}
+
+// Motion — go with cancel-on-stall (sent by Python as go_coc)
+FLASHMEM void command_go_coc(const args_t& args){
+    if(args.size() != 2) return;
+    float x = args[0].toFloat();
+    float y = args[1].toFloat();
+    async motion.cancelOnStall().go(x, y);
+}
+
+// Motion — move to (x,y) and align to angle (degrees, firmware frame)
+// Python pre-computes the final angle from RobotCompass + orientation.
+FLASHMEM void command_goAlign(const args_t& args){
+    if(args.size() != 3) return;
+    float x     = args[0].toFloat();
+    float y     = args[1].toFloat();
+    float angle = args[2].toFloat();
+    async motion.move(Vec3(x, y, angle));
 }
 
 //Motion
@@ -989,4 +1029,97 @@ FLASHMEM void command_logstatus(const args_t& args) {
     // Telemetry state — delegated to JetsonBridge
     Console::println("  Telemetry: (use logstatus after jetson attach)");
     Console::line();
+}
+
+// ── Runtime config commands ──────────────────────────────────────────────────
+
+FLASHMEM void command_cfg_list(const args_t& args) {
+    RuntimeConfig::printAll();
+}
+
+FLASHMEM void command_cfg_set(const args_t& args) {
+    if (args.size() != 2) {
+        Console::error("Config") << "Usage: cfg_set(key, value)" << Console::endl;
+        return;
+    }
+    const char* key = args[0].c_str();
+    const char* val = args[1].c_str();
+    if (RuntimeConfig::set(key, val))
+        Console::success("Config") << key << " = " << val << Console::endl;
+    else
+        Console::error("Config") << "Failed to set " << key << Console::endl;
+}
+
+FLASHMEM void command_cfg_save(const args_t& args) {
+    RuntimeConfig::save();
+}
+
+FLASHMEM void command_cfg_load(const args_t& args) {
+    RuntimeConfig::load();
+}
+
+// ── Actuator info (structured for holOS UI) ──────────────────────────────────
+
+FLASHMEM void command_act_info(const args_t& args) {
+    if (args.size() != 1) {
+        Console::error("Interpreter") << "Usage: act_info(AB|CA)" << Console::endl;
+        return;
+    }
+    const String& side = args[0];
+    if (!validCompassString(side)) return;
+    RobotCompass rc = compassFromString(side);
+    ActuatorGroup& group = actuators.getActuatorGroup(rc);
+
+    // Output structured data: one line per servo, pipe-separated for easy parsing.
+    // Format: ACT_INFO:<group>|<id>|<min>|<max>|<default>|<position>
+    const int servoIds[] = {0, 1, 2, 3, 4};
+    for (int id : servoIds) {
+        if (group.hasServo(id)) {
+            SmartServo& s = group.getServo(id);
+            Console::info("ACT_INFO") << side << "|" << id
+                << "|" << s.getMinPos()
+                << "|" << s.getMaxPos()
+                << "|" << s.getDefaultPos()
+                << "|" << s.getPosition() << Console::endl;
+        }
+    }
+}
+
+FLASHMEM void command_servo_limits(const args_t& args) {
+    // servo_limits(CA, 0, 110, 170)
+    if (args.size() != 4) {
+        Console::error("Interpreter") << "Usage: servo_limits(side, id, min, max)" << Console::endl;
+        return;
+    }
+    const String& side = args[0];
+    if (!validCompassString(side)) return;
+    RobotCompass rc = compassFromString(side);
+    ActuatorGroup& group = actuators.getActuatorGroup(rc);
+
+    int id     = args[1].toInt();
+    int newMin = args[2].toInt();
+    int newMax = args[3].toInt();
+
+    if (!group.hasServo(id)) {
+        Console::error("Interpreter") << "Servo " << id << " not found in " << side << Console::endl;
+        return;
+    }
+    if (newMin >= newMax) {
+        Console::error("Interpreter") << "min must be < max" << Console::endl;
+        return;
+    }
+
+    SmartServo& s = group.getServo(id);
+    s.setMinPos(newMin);
+    s.setMaxPos(newMax);
+
+    // Also update runtime config so cfg_save persists the change
+    char keyMin[32], keyMax[32];
+    snprintf(keyMin, sizeof(keyMin), "servo.%s.%d.min", side.c_str(), id);
+    snprintf(keyMax, sizeof(keyMax), "servo.%s.%d.max", side.c_str(), id);
+    RuntimeConfig::setInt(keyMin, newMin);
+    RuntimeConfig::setInt(keyMax, newMax);
+
+    Console::success("Interpreter") << "Servo " << side << "." << id
+        << " limits: [" << newMin << ", " << newMax << "]" << Console::endl;
 }

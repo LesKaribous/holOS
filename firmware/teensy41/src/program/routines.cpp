@@ -2,9 +2,11 @@
 #include "os/commands.h"
 #include "config/env.h"
 #include "config/calibration.h"
+#include "config/runtime_config.h"
 #include "services/sd/sd_card.h"
 #include "services/mission/mission_controller.h"
 #include "strategy.h"
+#include "block_registry.h"
 #include "config/poi.h"
 #include "config/score.h"
 #include "os/os.h"
@@ -34,15 +36,32 @@ FLASHMEM void programAuto() {
     safety.enable();
     chrono.start();
 
-    if (jetsonBridge.isRemoteControlled()) {
-        Console::info("OS") << "Jetson connected — remote controlled mode." << Console::endl;
+    // Reset block done flags at match start so fallback runs everything
+    BlockRegistry::instance().resetAll();
+
+    // Strategy selection:
+    //   strategySwitch ON  (1) → intelligente (Jetson-based, full pathfinding)
+    //   strategySwitch OFF (0) → séquentielle (dumb T41-only, stop-on-obstacle)
+    bool useIntelligent = ihm.strategySwitch.getState();
+
+    if (useIntelligent && jetsonBridge.isRemoteControlled()) {
+        Console::info("OS") << "Intelligent strategy — Jetson remote controlled mode." << Console::endl;
         // The Jetson drives the robot. We stay in loop and let JetsonBridge
         // dispatch incoming commands. Match ends when chrono fires onMatchEnd().
         while (chrono.getTimeLeft() > 0) {
+            // Honour pause from match_stop — spin without processing commands
+            if (jetsonBridge.isMatchPaused()) {
+                os.flush();
+                continue;
+            }
             os.flush(); // process one iteration
         }
     } else {
-        Console::warn("OS") << "Jetson not connected — running embedded fallback strategy." << Console::endl;
+        if (!useIntelligent) {
+            Console::info("OS") << "Sequential strategy — running embedded match()." << Console::endl;
+        } else {
+            Console::warn("OS") << "Intelligent strategy selected but Jetson not connected — fallback to embedded match()." << Console::endl;
+        }
         match();
     }
 }
@@ -54,6 +73,18 @@ FLASHMEM void programAuto() {
 FLASHMEM void programManual() {
     static bool hadStarter      = false;
     static bool buttonWasPressed = false;
+
+    // ── Remote start from webapp (no arming required) ─────────────────────
+    // match_start bridge command sets the flag; we consume it here and
+    // trigger the same os.start() path as pulling the physical starter.
+    if (jetsonBridge.consumeRemoteStart()) {
+        Console::info("OS") << "Remote start — freezing settings, engaging motors." << Console::endl;
+        ihm.freezeSettings();
+        motion.engage();
+        ihm.setPage(IHM::Page::MATCH);
+        os.start();
+        return;
+    }
 
     // ── Broadcast team to Jetson every second ──────────────────────────────
     {
@@ -185,8 +216,13 @@ FLASHMEM void onRobotBoot() {
 
     ihm.drawBootProgress("Linking SD card...");
     SDCard::init(); ihm.addBootProgress(5);
+    // Load runtime config from SD (actuator limits, motion params, etc.)
+    RuntimeConfig::load(); ihm.addBootProgress(1);
     // Restore calibration from SD (if card present and file exists)
-    SDCard::loadCalibration(); ihm.addBootProgress(4);
+    SDCard::loadCalibration(); ihm.addBootProgress(3);
+    // Init PCA9685 pump/EV driver early so pump is ready for match start
+    ihm.drawBootProgress("Init pump driver...");
+    initPump(); ihm.addBootProgress(1);
     // Load mission fallback strategy from SD (if available)
     MissionController::load(); ihm.addBootProgress(1);
 
@@ -218,13 +254,21 @@ FLASHMEM void onRobotBoot() {
         }
     });
 
-    // Register mission fallback: execute SD strategy when Jetson disconnects
+    // Register mission fallback: when Jetson disconnects during intelligent mode,
+    // build a mission from the BlockRegistry (skipping already-done blocks) and run it.
+    // Falls back to SD mission strategy if no blocks are registered.
     jetsonBridge.registerFallback(FallbackID::CUSTOM_1, []() {
-        if (MissionController::isLoaded()) {
+        BlockRegistry& reg = BlockRegistry::instance();
+        if (reg.count() > 0) {
+            Console::info("Fallback") << "Building mission from BlockRegistry (skipping done blocks)" << Console::endl;
+            Mission fallbackMission;
+            reg.buildMission(fallbackMission);
+            fallbackMission.run();
+        } else if (MissionController::isLoaded()) {
             Console::info("Fallback") << "Executing SD mission strategy" << Console::endl;
             MissionController::execute();
         } else {
-            Console::warn("Fallback") << "No mission strategy on SD — stopping" << Console::endl;
+            Console::warn("Fallback") << "No fallback available — stopping" << Console::endl;
             motion.cancel();
             motion.disengage();
         }
@@ -243,6 +287,11 @@ FLASHMEM void onRobotBoot() {
 
     ihm.drawBootProgress("Registering Commands...");
     registerCommands(); ihm.addBootProgress(5);
+
+    // Register C++ blocks into the BlockRegistry so Jetson can discover
+    // and execute them via blocks_list / run_block bridge commands.
+    ihm.drawBootProgress("Registering C++ blocks...");
+    registerBlocks();
 
     ihm.resetButton.resetDuration();
 

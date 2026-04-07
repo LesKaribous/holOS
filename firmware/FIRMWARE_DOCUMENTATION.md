@@ -126,7 +126,7 @@ The position controller converts (x, y, theta) errors into wheel velocities via 
 
 | Parameter | Value |
 |-----------|-------|
-| Max speed | 2800 mm/s |
+| Max speed | 2800 mm/s | 
 | Max acceleration | 500 mm/s^2 |
 | Max rotation speed | 10 rad/s |
 | Max rotation accel | 30 rad/s^2 |

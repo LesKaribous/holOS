@@ -26,6 +26,9 @@ void command_test(const args_t& args); //Start match
 
 //Motion
 void command_go(const args_t& args);
+void command_go_coc(const args_t& args);
+void command_goAlign(const args_t& args);
+void command_via(const args_t& args);
 void command_goPolar(const args_t& args);
 void command_move(const args_t& args);
 void command_turn(const args_t& args);
@@ -107,3 +110,13 @@ void command_log(const args_t& args);
 void command_loglevel(const args_t& args);
 void command_tel(const args_t& args);
 void command_logstatus(const args_t& args);
+
+// Runtime config (SD-backed key=value)
+void command_cfg_list(const args_t& args);
+void command_cfg_set(const args_t& args);
+void command_cfg_save(const args_t& args);
+void command_cfg_load(const args_t& args);
+
+// Actuator info (structured for UI) & runtime limit adjustment
+void command_act_info(const args_t& args);
+void command_servo_limits(const args_t& args);

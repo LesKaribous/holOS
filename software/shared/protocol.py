@@ -13,7 +13,7 @@ Protocol (mirrors src/services/intercom/):
 
   Message fire-and-forget:
       ping\n
-      pong\n
+      pong:<bridge>\n              (bridge = 'usb' or 'xbee')
       TEL:<type>:<data>|<crc8>\n   (telemetry push, no reply needed)
 
 Telemetry types (Teensy → Jetson):
@@ -78,7 +78,7 @@ def parse_frame(line: str):
 
     Returns one of:
       ('ping',    None,    None)
-      ('pong',    None,    None)
+      ('pong',    None,    str_bridge)     — bridge type: 'usb', 'xbee', or None
       ('reply',   int_id,  str_response)   — response to a sent request
       ('request', int_id,  str_content)    — incoming request from Teensy
       ('tel',     str_type, str_data)      — telemetry push
@@ -90,8 +90,10 @@ def parse_frame(line: str):
 
     if line == 'ping':
         return ('ping', None, None)
-    if line == 'pong':
-        return ('pong', None, None)
+    if line.startswith('pong'):
+        # "pong:usb", "pong:xbee", or bare "pong" (legacy)
+        bridge = line.split(':', 1)[1] if ':' in line else None
+        return ('pong', None, bridge)
 
     # Strip CRC
     if '|' not in line:

@@ -16,8 +16,11 @@ enum class BridgeSource : uint8_t {
 
 class Request {
 public:
-    static constexpr uint8_t CONTENT_MAX = 128;  // increased from 80 to support health response
-    static constexpr uint8_t PAYLOAD_MAX = 144;  // CONTENT_MAX + 16 overhead for "uid:content|crc"
+    // Increased to 384 to accommodate pathfinding commands with multiple
+    // via() waypoints (e.g. "via(1234.5,1234.5);via(...)...;go(1234.5,1234.5)").
+    // Previous value (128) caused silent truncation and garbled commands.
+    static constexpr uint16_t CONTENT_MAX = 384;
+    static constexpr uint16_t PAYLOAD_MAX = 400;  // CONTENT_MAX + 16 overhead for "uid:content|crc"
 
     enum class Status {
         IDLE,

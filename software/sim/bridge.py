@@ -143,10 +143,15 @@ class SimBridge:
 
         # Collision cancel
         if wp.cancel_on_collide and self._robot.collided:
+            print(f"[SimBridge] Motion CANCELED — collision at "
+                  f"({self._robot.pos.x:.0f},{self._robot.pos.y:.0f})")
             self._complete_motion(success=False, locked=True)
             return
 
-        dist = self._robot.pos.dist(wp.pos)
+        # Use OTOS-measured position for completion checks (firmware does the same)
+        meas_pos   = self._robot.otos.position
+        meas_theta = self._robot.otos.theta
+        dist = meas_pos.dist(wp.pos)
 
         if wp.pass_through and dist < WAYPOINT_RADIUS:
             self._advance_waypoint(locked=True)
@@ -156,8 +161,11 @@ class SimBridge:
             pos_ok   = dist < MIN_DISTANCE
             theta_ok = True
             if wp.theta is not None:
-                theta_ok = abs(angle_diff(wp.theta, self._robot.theta)) < MIN_ANGLE
-            if pos_ok and theta_ok:
+                theta_ok = abs(angle_diff(wp.theta, meas_theta)) < MIN_ANGLE
+            # Firmware: completion requires finalVel.magSq() == 0
+            # (positionController.cpp:152)
+            vel_ok = self._robot.final_vel_sq < 1e-6
+            if pos_ok and theta_ok and vel_ok:
                 self._complete_motion(success=True, locked=True)
 
     def _advance_waypoint(self, locked: bool = False) -> None:
@@ -173,8 +181,14 @@ class SimBridge:
         self._motion_state = _MS.COMPLETED if success else _MS.CANCELED
         self._robot.target_pos   = None
         self._robot.target_theta = None
+        self._robot.is_rotating  = False
         self._robot.vel          = Vec2(0, 0)
         self._robot.vtheta       = 0.0
+        self._robot._tv          = Vec2(0, 0)
+        self._robot._tvr         = 0.0
+        self._robot._pid_vx.reset()
+        self._robot._pid_vy.reset()
+        self._robot._pid_vr.reset()
         uid = self._pending_uid
         cb  = self._pending_cb
         self._pending_uid = None
@@ -258,8 +272,9 @@ class SimBridge:
 
         # ── Telemetry snapshot ─────────────────────────────────────────────
         if cmd == "tel":
-            pos = self._robot.pos
-            data = f"x={pos.x:.1f},y={pos.y:.1f},theta={self._robot.theta:.4f}"
+            pos = self._robot.otos.position
+            t   = self._robot.otos.theta
+            data = f"x={pos.x:.1f},y={pos.y:.1f},theta={t:.4f}"
             resolve_cb(uid, True, data)
             return
 
@@ -282,7 +297,8 @@ class SimBridge:
         if cmd.startswith("goPolar("):
             parts = cmd[8:-1].split(",")
             hdg, dist = float(parts[0]), float(parts[1])
-            target = self._robot.pos + polar_vec(hdg, dist)
+            # Firmware computes target from its known position (OTOS)
+            target = self._robot.otos.position + polar_vec(hdg, dist)
             self._start_motion_xy(uid, target, resolve_cb)
             return
 
@@ -332,6 +348,8 @@ class SimBridge:
             parts = cmd[15:-1].split(",")
             self._robot.pos   = Vec2(float(parts[0]), float(parts[1]))
             self._robot.theta = math.radians(float(parts[2]))
+            # Reset OTOS to match (firmware calls otos.setPosition)
+            self._robot.otos.reset(self._robot.pos, self._robot.theta)
             resolve_cb(uid, True, "ok")
             return
 
@@ -357,6 +375,19 @@ class SimBridge:
             resolve_cb(uid, True, "ok")
             return
 
+        # ── Ack done (no-op in sim, needed by transport protocol) ─────
+        if cmd == "ack_done":
+            resolve_cb(uid, True, "ok")
+            return
+
+        # ── Actuator / config commands (no-op in sim, handled by firmware) ─
+        if cmd.startswith(("servo(", "servo_limits(", "act_info(",
+                           "cfg_", "pump(", "ev(", "grab(", "drop(",
+                           "raise(", "lower(", "elevator(", "moveElevator(",
+                           "printServo(")):
+            resolve_cb(uid, True, "ok:sim")
+            return
+
         # ── Unknown ───────────────────────────────────────────────────────
         print(f"[SimBridge] Unknown command: {cmd!r}")
         resolve_cb(uid, False, f"unknown:{cmd}")
@@ -372,19 +403,18 @@ class SimBridge:
                          cancel_on_collide: bool = False) -> None:
         path = self._pf.find_path(self._robot.pos, target)
         wps  = []
-        prev = self._robot.pos
         for i, p in enumerate(path[1:]):
             is_last = (i == len(path) - 2)
-            # Compute bearing toward this waypoint so the robot faces the
-            # direction of travel — matches real firmware behaviour.
-            bearing = math.atan2(p.y - prev.y, p.x - prev.x)
-            wps.append(_Waypoint(p, bearing, not is_last, cancel_on_collide))
-            prev = p
+            # go() does NOT set a rotation target — robot keeps current heading.
+            # Only goAlign()/turn() set theta targets.
+            wps.append(_Waypoint(p, None, not is_last, cancel_on_collide))
         self._set_motion(uid, wps, cb)
 
-    def _start_motion_turn(self, uid: int, theta: float, cb: Callable) -> None:
-        wp = _Waypoint(self._robot.pos, theta, False)
-        self._set_motion(uid, [wp], cb)
+    def _start_motion_turn(self, uid: int, angle_rad: float, cb: Callable) -> None:
+        # turn() is relative: add angle to current orientation (firmware uses OTOS theta)
+        target_theta = (self._robot.otos.theta + angle_rad) % (2 * math.pi)
+        wp = _Waypoint(self._robot.pos, target_theta, False)
+        self._set_motion(uid, [wp], cb, is_rotating=True)
 
     def _start_motion_align(self, uid: int, target: Vec2, theta: float,
                             cb: Callable) -> None:
@@ -394,9 +424,10 @@ class SimBridge:
             is_last = (i == len(path) - 2)
             t = theta if is_last else None
             wps.append(_Waypoint(p, t, not is_last))
-        self._set_motion(uid, wps, cb)
+        self._set_motion(uid, wps, cb, is_rotating=True)
 
-    def _set_motion(self, uid: int, wps: List[_Waypoint], cb: Callable) -> None:
+    def _set_motion(self, uid: int, wps: List[_Waypoint], cb: Callable,
+                    is_rotating: bool = False) -> None:
         if not wps:
             cb(uid, True, "ok")
             return
@@ -411,6 +442,7 @@ class SimBridge:
             self._current_path = [self._robot.pos] + [w.pos for w in wps]
             self._robot.target_pos   = wps[0].pos
             self._robot.target_theta = wps[0].theta
+            self._robot.is_rotating  = is_rotating  # feedrate × 0.5 for rotations
             self._motion_state = _MS.RUNNING
             self._robot.feedrate = self._feedrate
 
@@ -419,9 +451,12 @@ class SimBridge:
     def _push_telemetry(self) -> None:
         if not self._transport:
             return
-        p = self._robot.pos
+        # Send OTOS-measured position (not true position) — matches real firmware
+        # which sends localisation.getPosition() over telemetry
+        p = self._robot.otos.position
+        t = self._robot.otos.theta
         self._transport.inject_telemetry(
-            "pos", f"x={p.x:.1f},y={p.y:.1f},theta={self._robot.theta:.4f}"
+            "pos", f"x={p.x:.1f},y={p.y:.1f},theta={t:.4f}"
         )
         self._transport.inject_telemetry(
             "motion", self._motion_state
@@ -442,6 +477,10 @@ class SimBridge:
 
     def motion_state(self) -> str:
         return self._motion_state
+
+    def motion_target(self) -> Optional[Vec2]:
+        """Current waypoint target position (for UI overlay)."""
+        return self._robot.target_pos
 
     def current_path(self) -> List[Vec2]:
         return self._current_path

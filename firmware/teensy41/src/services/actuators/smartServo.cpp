@@ -4,25 +4,27 @@
 #define MAX_ITERATIONS 1000
 
 SmartServo::SmartServo() :
-    m_position(0), m_enabled(false), m_sleeping(false), m_pin(-1), m_minPos(0), m_maxPos(0), m_defaultPos(0)
-{}
+    m_position(0), m_enabled(false), m_sleeping(false), m_pin(-1)
+{
+    m_minPos = 0; m_maxPos = 0; m_defaultPos = 0;
+}
 
 SmartServo::SmartServo(int pin, int defaultPos, int minPos, int maxPos) :
-    m_position(0), m_enabled(false), m_sleeping(false), m_pin(pin), m_minPos(minPos), m_maxPos(maxPos), m_defaultPos(defaultPos)
+    m_position(0), m_enabled(false), m_sleeping(false), m_pin(pin)
 {
+    m_minPos = minPos; m_maxPos = maxPos; m_defaultPos = defaultPos;
     m_poses.reserve(MAX_POSES);
 }
 
-SmartServo::SmartServo(const SmartServo& cpy) : m_pin(cpy.m_pin), 
-    m_minPos(cpy.m_minPos),
-    m_maxPos(cpy.m_maxPos),
-    m_defaultPos(cpy.m_defaultPos),
+SmartServo::SmartServo(const SmartServo& cpy) : m_pin(cpy.m_pin),
     m_servo(cpy.m_servo),
     m_position(cpy.m_position),
     m_poses(cpy.m_poses),
     m_enabled(cpy.m_enabled),
     m_sleeping(cpy.m_sleeping)
-{}
+{
+    m_minPos = cpy.m_minPos; m_maxPos = cpy.m_maxPos; m_defaultPos = cpy.m_defaultPos;
+}
 
 
 FLASHMEM bool SmartServo::moveToDefault(int speed, bool runAsync){
@@ -30,13 +32,11 @@ FLASHMEM bool SmartServo::moveToDefault(int speed, bool runAsync){
 }
 /**/
 FLASHMEM bool SmartServo::moveTo(int target, int speed, bool runAsync){ //true for non blocking mode
-    if(!m_enabled) return;
+    if(!m_enabled) return false;
     if(m_sleeping) wakeUp(); //Wake
 
-    constrain(target, m_minPos, m_maxPos);
-    constrain(speed, 0, 100);
-
-    
+    target = constrain(target, m_minPos, m_maxPos);
+    speed  = constrain(speed, 0, 100);
 
     m_target = target;
     m_speed = speed;
@@ -166,7 +166,7 @@ FLASHMEM void SmartServo::setPose(int index, int pose){
 }
 
 FLASHMEM bool SmartServo::hasPose(int pose) const{
-    return (m_poses.find(pose) == m_poses.end());
+    return (m_poses.find(pose) != m_poses.end());
 }
 
 int SmartServo::getPose(int index) const{

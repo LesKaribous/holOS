@@ -117,7 +117,7 @@ FLASHMEM Token Interpreter::parseNumber() {
 // Parse an identifier or keyword token
 FLASHMEM Token Interpreter::parseIdentifier() {
     String value;
-    while (pos < input.length() && (isAlpha(input.charAt(pos)) || isDigit(input.charAt(pos)))) {
+    while (pos < input.length() && (isAlpha(input.charAt(pos)) || isDigit(input.charAt(pos)) || input.charAt(pos) == '_')) {
         value += input.charAt(pos++);
     }
 
@@ -364,7 +364,8 @@ FLASHMEM std::shared_ptr<Statement> Interpreter::parseStatement() {
     } else {
         // Handle error: unexpected token
         Console::error("Parser") << currentPos() << "Unexpected token: " << currentToken.toString() << HERE << Console::endl;
+        currentToken = nextToken(); // consume bad token to avoid infinite loop
     }
 
-    return nullptr; // Should never reach here
+    return nullptr;
 }

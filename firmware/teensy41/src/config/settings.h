@@ -10,15 +10,22 @@
 #define INTERCOM_SERIAL   Serial1   // UART physique T4.1↔T4.0
 #define INTERCOM_BAUDRATE 31250
 
-// ── Bridge holOS / Jetson ─────────────────────────────────────────────────────
-// BRIDGE_SERIAL est toujours le port USB-CDC (Serial @ 115200).
-// La détection USB / XBee est faite à l'exécution dans JetsonBridge :
-//   – USB Wired  : holOS envoie "ping\n" → firmware répond "pong\n" via BRIDGE_SERIAL
-//   – XBee/Jetson: les trames arrivent via Intercom (Serial1) ; BRIDGE_SERIAL n'est
-//                  pas utilisé pour les requêtes, seulement pour la télémétrie.
+// ── Bridge holOS / Jetson — auto-détection USB ↔ XBee ────────────────────────
+// Au boot, JetsonBridge écoute sur les deux ports :
+//   – Serial  (USB-CDC)  : connexion filaire PC ↔ Teensy
+//   – Serial3 (XBee 868) : connexion radio via module XBee sur T4.1
+// Le premier port à recevoir un "ping\n" ou une trame CRC valide devient le
+// transport actif. BRIDGE_SERIAL est un macro qui déréférence le pointeur
+// g_bridgeSerial → tout le code existant (telemetry, request reply, ring
+// buffer drain) fonctionne sans modification.
+//
 // Aucun #define de compilation nécessaire pour changer de mode.
-#define BRIDGE_SERIAL   Serial   // USB-CDC — COM6 / /dev/ttyACM0
-#define BRIDGE_BAUDRATE 115200
+#include <Arduino.h>
+extern Stream* g_bridgeSerial;           // Defined in jetson_bridge.cpp
+#define BRIDGE_SERIAL    (*g_bridgeSerial)
+#define BRIDGE_USB       Serial          // USB-CDC — /dev/ttyACM0 / COMx
+#define BRIDGE_XBEE      Serial3         // XBee 868 MHz radio module
+#define BRIDGE_BAUDRATE  57600
 
 // TwinVision — caméra centrale (sur Serial2)
 #define VISION_SERIAL   Serial2
@@ -90,6 +97,25 @@ namespace Settings {
 
     namespace Actuators {
         const int speed = 20;
+
+        // ── Soft-stop limits (degrees) ──────────────────────────────────────
+        // These are hardware safety bounds passed to SmartServo::constrain().
+        // All preset positions MUST be within these ranges.
+        // Adjust if mechanical design changes — this is the ONLY place to edit.
+        namespace AB {
+            constexpr int LIFT_MIN     =  80;   // lift servo min (down ~90°)
+            constexpr int LIFT_MAX     = 165;   // lift servo max (up ~155°)
+            constexpr int GRIPPER_MIN  =  20;   // gripper servo min (grab ~30°)
+            constexpr int GRIPPER_MAX  = 100;   // gripper servo max (drop ~90°)
+        }
+        namespace CA {
+            constexpr int ELEVATOR_MIN =   0;   // elevator servo min (down ~5°)
+            constexpr int ELEVATOR_MAX =  60;   // elevator servo max (up ~50°)
+            constexpr int LEFT_MIN     =  10;   // left grabber min (grab ~20°)
+            constexpr int LEFT_MAX     =  75;   // left grabber max (store ~65°)
+            constexpr int RIGHT_MIN    = 110;   // right grabber min (store ~121°)
+            constexpr int RIGHT_MAX    = 170;   // right grabber max (grab ~162°)
+        }
     }
 
     namespace Geometry {

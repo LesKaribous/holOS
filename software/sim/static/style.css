@@ -596,6 +596,34 @@ html, body { height: 100%; overflow: hidden; margin: 0;
 .file-item:hover .file-item-actions { display: flex; }
 .file-list-empty { padding: 8px 10px; font-size: 11px; color: var(--text-dim); font-style: italic; }
 
+/* C++ block badge & divider */
+.badge-cpp {
+  display: inline-block;
+  background: #5c6bc0;
+  color: #fff;
+  font-size: 8px;
+  font-weight: 700;
+  padding: 1px 4px;
+  border-radius: 3px;
+  margin-right: 4px;
+  vertical-align: middle;
+  letter-spacing: 0.3px;
+}
+.file-item.cpp-block {
+  opacity: 0.85;
+  cursor: default;
+}
+.file-item.cpp-block:hover { background: rgba(92, 107, 192, 0.08); }
+.file-list-divider {
+  padding: 6px 10px 3px;
+  font-size: 9px;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  letter-spacing: 0.8px;
+  border-top: 1px solid var(--border);
+  margin-top: 4px;
+}
+
 /* POI reference list */
 .poi-ref-list { max-height: 180px; overflow-y: auto; }
 .poi-ref-item {
@@ -1930,6 +1958,15 @@ html, body { height: 100%; overflow: hidden; margin: 0;
   min-width: 80px;
 }
 
+.v-badge {
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-weight: 600;
+}
+.v-badge-err  { background: #e74c3c33; color: #e74c3c; }
+.v-badge-warn { background: #f39c1233; color: #f39c12; }
+.v-badge-ok   { background: #27ae6033; color: #27ae60; }
+
 /* ── Processing pipeline panel ──────────────────────────────────────────────── */
 
 .vision-proc-panel {
@@ -2415,6 +2452,15 @@ html, body { height: 100%; overflow: hidden; margin: 0;
   flex: 1; height: 6px; accent-color: var(--brand);
   cursor: pointer;
 }
+.act-servo-limits {
+  display: flex; align-items: center; gap: 4px; margin-top: 2px;
+}
+.act-lim-input {
+  width: 42px; padding: 1px 3px; font-size: 10px; font-family: monospace;
+  border: 1px solid var(--border); border-radius: 3px; background: var(--bg);
+  color: var(--text); text-align: center;
+}
+.act-lim-sep { font-size: 10px; color: var(--text-dim); }
 .act-servo-poses {
   display: flex; gap: 4px; margin-top: 4px;
 }

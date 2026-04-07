@@ -383,8 +383,10 @@ FLASHMEM void Expression::consumeToken()
     else if (isalpha(ch))
     {
         // Recognize keywords and variables
+        // Include '_' and '.' so config keys like "test.hw.val" or
+        // identifiers like "cfg_set" are kept intact.
         String value;
-        while (pos < input.length() && input.charAt(pos) != ' ' && (isalpha(input.charAt(pos)) || isdigit(input.charAt(pos))))
+        while (pos < input.length() && input.charAt(pos) != ' ' && (isalpha(input.charAt(pos)) || isdigit(input.charAt(pos)) || input.charAt(pos) == '_' || input.charAt(pos) == '.'))
         {
             value += input.charAt(pos++);
         }
@@ -445,8 +447,9 @@ FLASHMEM void Expression::consumeToken()
     }
     else
     {
-        // Handle error: unexpected character
+        // Handle error: unexpected character — advance pos to avoid infinite loop
         Console::error("Expression") << "Unexpected character : " << ch << Console::endl;
+        pos++;
     }
     //Console::println(currentToken.toString());
 }

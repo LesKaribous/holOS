@@ -3,6 +3,7 @@
 #include "services/intercom/request.h"
 #include "config/settings.h"
 #include "utils/timer/timer.h"
+#include "program/block_registry.h"
 #include <functional>
 
 // ============================================================
@@ -66,6 +67,12 @@ public:
     bool isRemoteControlled() const;   ///< True while Jetson is connected
     bool jetsonConnected()    const;   ///< True if heartbeat received recently
 
+    // ── Remote match control ─────────────────────────────────────────────────
+
+    bool consumeRemoteStart();         ///< Returns true once if remote start was requested
+    bool isMatchPaused() const { return m_matchPaused; }
+    void clearMatchPaused()   { m_matchPaused = false; }
+
     // ── Telemetry ─────────────────────────────────────────────────────────────
 
     void pushTelemetry();              ///< Push pos + motion + safety + chrono
@@ -96,13 +103,18 @@ private:
     // ── Telemetry helpers ─────────────────────────────────────────────────────
 
     void   _pushFrame(const char* msg);
-    void   _readBridgeSerial();   ///< Parse incoming requests from USB-CDC bridge
+    void   _readBridgeSerial();   ///< Poll active (or both) serial ports for bridge frames
+    void   _readPort(Stream& port, char* buf, uint16_t& bufLen);  ///< Parse one serial port
 
     // ── State ─────────────────────────────────────────────────────────────────
 
     bool   m_jetsonConnected    = false;
     bool   m_inFallback         = false;
     bool   m_motionPending      = false;
+
+    // Remote match control
+    bool   m_remoteStartRequested = false;   ///< Set by match_start, consumed by programManual
+    bool   m_matchPaused          = false;   ///< Set by match_stop, cleared by match_start/resume
 
     // PR-2: Persistent DONE state — retransmitted until host acks
     char          m_lastDoneBuf[80]  = {};
@@ -123,15 +135,18 @@ private:
     // FW-006: only push TEL:mask when dirty
     bool   m_maskDirty          = true;   ///< Push mask on first telemetry cycle
 
-    // ── USB bridge source tracking ─────────────────────────────────────────────
+    // ── Bridge source tracking ──────────────────────────────────────────────────
     // Updated at runtime: set to USB when a ping or framed request arrives on
-    // BRIDGE_SERIAL. Drives _pushFrame() routing without any compile-time #define.
-    BridgeSource m_bridgeSource  = BridgeSource::INTERCOM;
+    // either BRIDGE_USB or BRIDGE_XBEE. Drives _pushFrame() routing.
+    BridgeSource m_bridgeSource   = BridgeSource::INTERCOM;
+    bool         m_bridgeDetected = false;  ///< True once auto-detection picked a port
 
-    // Static char array instead of String to avoid repeated heap allocs in the
-    // hot path — each character appended to a String can trigger malloc/free.
+    // Per-port read buffers — static char arrays to avoid heap fragmentation.
+    // _bridgeBuf is for BRIDGE_XBEE (Serial3), _wiredBuf for BRIDGE_USB (Serial).
     char     _bridgeBuf[512];
     uint16_t _bridgeBufLen = 0;
+    char     _wiredBuf[512];
+    uint16_t _wiredBufLen  = 0;
 
     // JB-1: Fixed ring buffer — zero heap allocation for queued telemetry.
     // TQUEUE_FRAME raised to 256 to accommodate TEL:occ_dyn sparse frames

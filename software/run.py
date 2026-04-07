@@ -3,18 +3,18 @@ run.py — Unified holOS entry point (simulator + hardware).
 
 Starts the holOS web UI with support for:
   - Simulator mode (VirtualTransport + SimBridge physics)
-  - USB wired mode (WiredTransport → Teensy USB-CDC)
-  - XBee radio mode (XBeeTransport → Teensy Serial3)
+  - Hardware mode (USB-CDC or XBee radio — auto-detected by firmware)
 
-The web UI is always served; connection mode can be selected from the
-browser or pre-configured with --connect.
+Both USB and XBee use 57600 baud.  The firmware auto-detects which
+physical link is active on first ping and reports back 'pong:usb' or
+'pong:xbee'.  The last COM port is saved and reused automatically.
 
 Usage:
-    python run.py                          # start in idle mode (connect via UI)
+    python run.py                          # auto-connect last port (if saved)
     python run.py --sim                    # start in simulator mode
-    python run.py --connect COM6           # auto-connect USB on startup
-    python run.py --connect /dev/ttyUSB0 --baud 115200   # auto-connect XBee
-    python run.py --port 8080 --host 0.0.0.0             # custom web server
+    python run.py --connect               # auto-connect using last saved port
+    python run.py --connect COM6           # connect to COM6
+    python run.py --port 8080              # custom web server port
 """
 
 import sys
@@ -188,16 +188,9 @@ def _active_brain():
     return brain
 
 
-def _is_hw_connected():
-    """True if hardware transport is alive and connected."""
-    return (_hw_transport is not None
-            and _hw_transport.is_connected
-            and _connection_mode in ('usb', 'xbee'))
-
-
 def _active_test_runner():
     """Return the hw TestRunner if connected, else the sim TestRunner."""
-    if _is_hw_connected() and _hw_test_runner is not None:
+    if _hw_transport is not None and _hw_transport.is_connected and _hw_test_runner is not None:
         return _hw_test_runner
     return test_runner
 
@@ -267,12 +260,15 @@ def _build_state() -> dict:
 
     # Sim data only available in 'sim' mode
     path_pts = [[p.x, p.y] for p in bridge.current_path()] if sim_on else []
+    mt = bridge.motion_target() if sim_on else None
+    motion_target_pt = [mt.x, mt.y] if mt else None
     occ_list = occupancy.to_list()  # updated by sim physics or by _on_occ hw telemetry
     objs     = game_objs.to_list()   # always include (colors set via on_set_color)
 
     return {
         'robot':     robot.to_dict(),
-        'path':      path_pts,
+        'path':          path_pts,
+        'motion_target': motion_target_pt,
         'occupancy': occ_list,
         'game_objs': objs,
         'opponent':  sim_state.get('opponent', {'enabled': False}),
@@ -303,6 +299,7 @@ def _build_state() -> dict:
         'hw_serial_port':  _hw_serial_port if hw_on else None,
         'hw_tel_mask':     dict(_hw_tel_mask),
         'hw_t40':          (_hw_tel_data.get('t40') or 'unknown') if hw_on else 'unknown',
+        'hw_heartbeat_ok': getattr(_hw_transport, 'heartbeat_ok', False) if hw_on else True,
         'jetson_ip':       _jetson_config.get('ip', ''),
     }
 
@@ -1254,29 +1251,54 @@ def on_reload_strategy():
         emit('reload', {'msg': 'strategy/match.py reloaded ✓'})
 
 
+# ── Last-used COM port persistence ────────────────────────────────────────────
+
+import pathlib as _pathlib
+
+_LAST_PORT_FILE = _pathlib.Path(__file__).parent / '.holos_lastport'
+
+
+def _save_last_port(port: str):
+    """Persist the last successfully-connected COM port."""
+    try:
+        _LAST_PORT_FILE.write_text(port.strip(), encoding='utf-8')
+    except Exception:
+        pass
+
+
+def _load_last_port() -> str:
+    """Load the last successfully-connected COM port, or ''."""
+    try:
+        return _LAST_PORT_FILE.read_text(encoding='utf-8').strip()
+    except Exception:
+        return ''
+
+
 # ── Serial connection logic (shared between SocketIO handler and --connect) ──
 
-def _do_connect(port: str, baud: int):
+def _do_connect(port: str, baud: int = 0):
     """Connect to the robot over serial. Called from a background thread.
-    Updates globals and emits SocketIO status events."""
+    Updates globals and emits SocketIO status events.
+    The firmware auto-detects whether USB-CDC or XBee is active and reports
+    the bridge type in its pong response."""
     global _hw_transport, _hw_brain, _hw_connecting, _hw_serial_port, _hw_serial_mode
     global _hw_tel_data, _connection_mode
     t = None
     try:
-        from shared.config import USB_DIRECT_BAUDRATE, XBEE_BAUDRATE
-        if baud == USB_DIRECT_BAUDRATE:
-            from transport.wired import WiredTransport
-            t = WiredTransport(port=port)
-            transport_label = f'USB Wired @ {baud} bps'
-            _hw_serial_mode = 'wired'
-        else:
-            from transport.xbee import XBeeTransport
-            t = XBeeTransport(port=port, baudrate=baud)
-            transport_label = f'XBee @ {baud} bps'
-            _hw_serial_mode = 'xbee'
+        from shared.config import BRIDGE_BAUDRATE
+        from transport.xbee import XBeeTransport
+        actual_baud = baud if baud else BRIDGE_BAUDRATE
+        t = XBeeTransport(port=port, baudrate=actual_baud)
 
         ok = t.connect()
         if ok:
+            # Auto-identified bridge type from firmware pong response
+            bridge = t.bridge_type or 'unknown'
+            _hw_serial_mode = 'wired' if bridge == 'usb' else bridge
+            transport_label = f"{'USB Wired' if bridge == 'usb' else 'XBee'} @ {actual_baud} bps"
+            # Persist last successful port for auto-connect
+            _save_last_port(port)
+
             global _hw_test_runner
             _hw_transport   = t
             _hw_serial_port = port
@@ -1371,78 +1393,54 @@ def _do_connect(port: str, baud: int):
                 })
             t.subscribe_telemetry('_console', _on_console)
 
-            # Set connection mode based on transport type
-            _connection_mode = 'usb' if _hw_serial_mode == 'wired' else 'xbee'
+            # Set connection mode based on auto-detected bridge type
+            if bridge == 'usb':
+                _connection_mode = 'usb'
+            elif bridge == 'xbee':
+                _connection_mode = 'xbee'
+            else:
+                _connection_mode = 'usb'  # fallback: assume wired if unknown
 
             # ── Unexpected disconnect handler ─────────────────────────────
-            # Do NOT clear _hw_transport — the transport object may reconnect
-            # automatically (e.g. firmware reset, USB replug detected by OS).
-            # Only clear brain/test runner; transport stays alive for reconnect.
             def _on_hw_disconnect():
-                global _hw_brain, _hw_test_runner
-                global _hw_tel_data, _connection_mode
+                global _hw_transport, _hw_brain, _hw_test_runner
+                global _hw_serial_port, _hw_tel_data, _connection_mode
+                _hw_transport   = None
                 _hw_brain       = None
                 _hw_test_runner = None
+                _hw_serial_port = None
                 _hw_tel_data    = {k: None for k in _hw_tel_data}
                 _connection_mode = 'idle'
                 socketio.emit('serial_status', {
-                    'ok': False, 'msg': '⚠ Connexion perdue — reconnexion possible…'
+                    'ok': False, 'msg': '⚠ Connexion perdue — reconnectez le robot'
                 })
+                try:
+                    socketio.emit('state', _build_state())
+                except Exception:
+                    pass
                 socketio.emit('tests_catalog_changed', {'mode': 'idle'})
                 brain.log('[HW] Connexion perdue (déconnexion inattendue)')
 
             t.on_disconnect(_on_hw_disconnect)
 
-            # ── Reconnection handler ─────────────────────────────────────
-            # Fires when transport receives a pong after having been
-            # disconnected.  Restore backend state + notify frontend.
-            _saved_mode  = 'usb' if _hw_serial_mode == 'wired' else 'xbee'
-            _saved_label = transport_label
-
-            def _on_hw_reconnect():
-                global _connection_mode, _hw_brain, _hw_test_runner, _hw_transport
-                _connection_mode = _saved_mode
-                # Rebuild brain & test runner on the still-alive transport.
-                # Use same signature as the initial _do_connect Brain creation.
-                try:
-                    if _hw_transport is not None:
-                        _hw_brain = Brain(_hw_transport,
-                                          theta_offset_deg=HW_THETA_OFFSET_DEG,
-                                          occupancy_grid=occupancy)
-                        _hw_brain.motion.use_pathfinding = sim_state['features'].get('pathfinding', True)
-                        _hw_test_runner = HardwareTestRunner(
-                            _hw_transport, prompt_fn=_web_prompt)
-                        # Brain.__init__ overwrites on_connect/on_disconnect with
-                        # its own callbacks.  Re-register ours so subsequent
-                        # disconnect/reconnect cycles keep updating the UI.
-                        _hw_transport.on_connect(_on_hw_reconnect)
-                        _hw_transport.on_disconnect(_on_hw_disconnect)
-                except Exception as e:
-                    print(f"  [holOS] Reconnect rebuild error: {e}")
-                socketio.emit('serial_status', {
-                    'ok': True,
-                    'msg': f'Reconnected — {_saved_label}',
-                    'bridge': _saved_mode,
-                    'port': _hw_serial_port,
-                })
-                socketio.emit('tests_catalog_changed', {'mode': _connection_mode})
-                brain.log(f'[HW] Reconnected — {_saved_label}')
-                print(f"  [holOS] Reconnected — {_saved_label}")
-
-            t.on_connect(_on_hw_reconnect)
-
             socketio.emit('serial_status', {
-                'ok': True, 'msg': f'Connected — {transport_label}'
+                'ok': True,
+                'msg': f'Connected — {transport_label}',
+                'bridge': bridge,
+                'port': port,
             })
+            # Push full state immediately so frontend updates connection mode
+            try:
+                socketio.emit('state', _build_state())
+            except Exception:
+                pass
             socketio.emit('tests_catalog_changed', {'mode': _connection_mode})
             brain.log(f'[HW] Connected — {transport_label}')
             print(f"  [holOS] Connected — {transport_label}")
         else:
             _hw_transport   = None
             _hw_serial_port = None
-            hint = ('Check USB cable and Teensy firmware'
-                    if baud == USB_DIRECT_BAUDRATE
-                    else 'Check XBee wiring and baud rate')
+            hint = 'Check USB cable or XBee wiring and ensure Teensy is powered'
             socketio.emit('serial_status', {
                 'ok': False,
                 'msg': f'No response from Teensy on {port} — {hint}',
@@ -1468,7 +1466,6 @@ def _do_connect(port: str, baud: int):
 def on_serial_connect(data):
     global _hw_transport, _hw_brain, _hw_connecting
     port = (data.get('port') or '').strip()
-    baud = int(data.get('baud') or 115200)
 
     if not port:
         emit('serial_status', {'ok': False, 'msg': 'No port selected'})
@@ -1490,7 +1487,7 @@ def on_serial_connect(data):
     _hw_connecting = True
     emit('serial_status', {'ok': False, 'msg': f'Connecting to {port}…', 'connecting': True})
 
-    threading.Thread(target=_do_connect, args=(port, baud),
+    threading.Thread(target=_do_connect, args=(port,),
                      daemon=True, name='serial-connect').start()
 
 
@@ -1608,9 +1605,7 @@ def api_tests_catalog():
     if _connection_mode == 'idle':
         return jsonify({})   # no tests when nothing is connected
 
-    # Use the SAME check as _active_test_runner() so catalog and runner
-    # always agree on which suite set is active.
-    is_hw = _is_hw_connected() and _hw_test_runner is not None
+    is_hw = _hw_transport is not None and _hw_transport.is_connected
     catalog = HW_SUITES if is_hw else SUITES
     return jsonify({
         sid: {
@@ -1643,25 +1638,6 @@ def on_run_tests(data):
         emit('test_error', {'msg': 'Tests already running'})
         return
 
-    # Guard: if user requests a HW test/suite but we fell back to sim runner,
-    # emit an explicit error instead of silent "Not implemented".
-    suite = data.get('suite')
-    test  = data.get('test')
-    is_hw_runner = _is_hw_connected() and _hw_test_runner is not None
-    if not is_hw_runner:
-        # Build set of all HW suite keys and test IDs
-        hw_ids = set(HW_SUITES.keys())
-        for s in HW_SUITES.values():
-            for t_entry in s.get('tests', []):
-                hw_ids.add(t_entry.get('id', ''))
-        requested = test or suite
-        if requested and requested in hw_ids:
-            emit('test_error', {
-                'msg': f'Hardware not connected — cannot run "{requested}". '
-                       f'Reconnect the robot or switch to sim tests.'
-            })
-            return
-
     def _progress(test_id: str, status: str):
         socketio.emit('test_progress', {'id': test_id, 'status': status})
 
@@ -1670,6 +1646,9 @@ def on_run_tests(data):
 
     def _done():
         socketio.emit('test_done', {})
+
+    suite = data.get('suite')
+    test  = data.get('test')
 
     if test:
         active_tr.run_one(test, _progress, _result, _done)
@@ -1804,120 +1783,6 @@ def on_hw_fire(data):
     emit('hw_ack', {'ok': True, 'cmd': cmd})
 
 
-# ── Match control (remote start/stop via bridge) ─────────────────────────────
-
-@socketio.on('match_start')
-def on_match_start():
-    """Remote match start — same effect as pulling the physical starter."""
-    t = _active_transport()
-    if t is not None and t.is_connected:
-        ok, res = t.execute('match_start', timeout_ms=3000)
-        if ok:
-            brain.log('[MATCH] Remote start → ok')
-        else:
-            brain.log(f'[MATCH] Remote start failed: {res}')
-        emit('match_state', {'running': ok})
-    else:
-        brain.log('[MATCH] No transport connected')
-        emit('match_state', {'running': False, 'error': 'not_connected'})
-
-
-@socketio.on('match_stop')
-def on_match_stop():
-    """Remote match stop — pauses program, cancels in-flight motion."""
-    t = _active_transport()
-    if t is not None and t.is_connected:
-        ok, res = t.execute('match_stop', timeout_ms=3000)
-        if ok:
-            brain.log('[MATCH] Remote stop → paused')
-        else:
-            brain.log(f'[MATCH] Remote stop failed: {res}')
-        emit('match_state', {'running': not ok, 'paused': ok})
-    else:
-        brain.log('[MATCH] No transport connected')
-
-
-@socketio.on('match_resume')
-def on_match_resume():
-    """Resume a paused match."""
-    t = _active_transport()
-    if t is not None and t.is_connected:
-        ok, res = t.execute('match_resume', timeout_ms=3000)
-        if ok:
-            brain.log('[MATCH] Resumed')
-        emit('match_state', {'running': ok, 'paused': not ok})
-
-
-# ── C++ Block discovery & execution ──────────────────────────────────────────
-
-@app.route('/api/cpp_blocks', methods=['GET'])
-def api_cpp_blocks():
-    """
-    Fetch registered C++ blocks from the Teensy via the blocks_list bridge command.
-    Returns a list of {name, priority, score, estimatedMs, done} objects.
-    """
-    t = _active_transport()
-    if t is None or not t.is_connected:
-        return jsonify([])
-
-    ok, raw = t.execute('blocks_list', timeout_ms=3000)
-    if not ok or not raw:
-        return jsonify([])
-
-    blocks = []
-    for entry in raw.split(';'):
-        entry = entry.strip()
-        if not entry or '=' not in entry:
-            continue
-        name, vals = entry.split('=', 1)
-        parts = vals.split(',')
-        if len(parts) >= 4:
-            blocks.append({
-                'name':        name,
-                'priority':    int(parts[0]),
-                'score':       int(parts[1]),
-                'estimatedMs': int(parts[2]),
-                'done':        parts[3] == '1',
-                'source':      'cpp',
-            })
-    return jsonify(blocks)
-
-
-@socketio.on('run_cpp_block')
-def on_run_cpp_block(data):
-    """Execute a registered C++ block on the Teensy by name."""
-    name = (data.get('name') or '').strip()
-    if not name:
-        emit('cpp_block_result', {'ok': False, 'error': 'no_name'})
-        return
-
-    t = _active_transport()
-    if t is None or not t.is_connected:
-        brain.log(f'[BLOCK] Cannot run {name} — not connected')
-        emit('cpp_block_result', {'ok': False, 'name': name, 'error': 'not_connected'})
-        return
-
-    brain.log(f'[BLOCK] Running C++ block: {name}')
-    ok, res = t.execute(f'run_block({name})', timeout_ms=60000)
-    success = ok and res == 'SUCCESS'
-    brain.log(f'[BLOCK] {name} → {"SUCCESS" if success else "FAILED"}')
-    emit('cpp_block_result', {'ok': success, 'name': name, 'result': res})
-
-
-@socketio.on('mark_cpp_block_done')
-def on_mark_block_done(data):
-    """Mark a C++ block as done from the Jetson side."""
-    name = (data.get('name') or '').strip()
-    if not name:
-        return
-
-    t = _active_transport()
-    if t is not None and t.is_connected:
-        ok, res = t.execute(f'block_done({name})', timeout_ms=3000)
-        if ok:
-            brain.log(f'[BLOCK] {name} marked done')
-
-
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def main():
@@ -1926,10 +1791,10 @@ def main():
                         help='Web server port (default: 5000)')
     parser.add_argument('--host', default='0.0.0.0',
                         help='Web server bind address (default: 0.0.0.0)')
-    parser.add_argument('--connect', metavar='SERIAL_PORT',
-                        help='Auto-connect to robot on startup (e.g., COM6, /dev/ttyACM0)')
-    parser.add_argument('--baud', type=int, default=115200,
-                        help='Serial baud rate for --connect (default: 115200)')
+    parser.add_argument('--connect', metavar='SERIAL_PORT', nargs='?', const='__last__',
+                        help='Auto-connect on startup. Optionally pass a COM port '
+                             '(e.g. COM6, /dev/ttyACM0). If omitted, uses the last '
+                             'successfully-connected port.')
     parser.add_argument('--sim', action='store_true',
                         help='Start directly in simulator mode')
     parser.add_argument('--auto-start', action='store_true',
@@ -1948,14 +1813,30 @@ def main():
     socketio.start_background_task(_physics_loop)
     socketio.start_background_task(_vision_push_loop)
 
-    # ── Auto-connect to hardware if --connect provided ───────────────────────
-    if args.connect:
+    # ── Auto-connect to hardware ─────────────────────────────────────────────
+    # --connect          → use last saved port
+    # --connect COM6     → use COM6
+    # (no flag)          → try last saved port silently
+    connect_port = None
+    if args.connect == '__last__':
+        connect_port = _load_last_port()
+        if not connect_port:
+            print("  [holOS] No last port saved — skipping auto-connect")
+    elif args.connect:
+        connect_port = args.connect
+    else:
+        # No --connect flag: try last port silently (non-blocking)
+        last = _load_last_port()
+        if last:
+            connect_port = last
+
+    if connect_port:
         def _auto_connect():
             global _hw_connecting
             time.sleep(1.0)  # Let Flask/SocketIO initialize
             _hw_connecting = True
-            print(f"  [holOS] Auto-connecting to {args.connect} @ {args.baud}…")
-            _do_connect(args.connect, args.baud)
+            print(f"  [holOS] Auto-connecting to {connect_port}…")
+            _do_connect(connect_port)
             # Auto-start match if requested and connected
             if args.auto_start and _hw_transport is not None and _hw_transport.is_connected:
                 time.sleep(0.5)
@@ -1963,7 +1844,7 @@ def main():
                 _active_brain().run_match()
         socketio.start_background_task(_auto_connect)
 
-    mode = 'sim' if args.sim else ('→ ' + args.connect if args.connect else 'idle')
+    mode = 'sim' if args.sim else ('→ ' + connect_port if connect_port else 'idle')
     print(f"\n  holOS")
     print("  ┌────────────────────────────────┐")
     print(f"  │  http://localhost:{args.port:<14}│")

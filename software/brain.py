@@ -53,10 +53,10 @@ class Brain:
         # Path planner built on the shared grid
         pathfinder = Pathfinder(grid)
 
-        # Services
-        self.motion    = MotionService(transport, theta_offset_deg=theta_offset_deg,
-                                       pathfinder=pathfinder)
+        # Services — safety must be created before motion (motion hooks into it)
         self.safety    = SafetyService(transport)
+        self.motion    = MotionService(transport, theta_offset_deg=theta_offset_deg,
+                                       pathfinder=pathfinder, safety=self.safety)
         self.vision    = VisionService(transport)
         self.chrono    = ChronoService(transport)
         self.occupancy = OccupancyService(transport, grid)
@@ -143,6 +143,7 @@ class Brain:
 
     def start_hot_reload(self, on_reload: Optional[Callable[[], None]] = None) -> None:
         """Watch strategy/match.py for changes and reload automatically."""
+        _brain = self  # capture Brain instance for the inner class closure
         def _watch():
             try:
                 from watchdog.observers import Observer
@@ -158,7 +159,7 @@ class Brain:
                             return
                         self._last = now
                         time.sleep(0.1)
-                        if brain.load_strategy():
+                        if _brain.load_strategy():
                             if on_reload:
                                 on_reload()
 

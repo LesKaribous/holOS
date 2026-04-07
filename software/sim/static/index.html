@@ -28,6 +28,10 @@
     <button class="btn red"   onclick="stopStrategy()">■ Stop</button>
     <button class="btn"       onclick="resetSim()"    title="Reset simulation">↺</button>
     <button class="btn"       onclick="reloadStrategy()" title="Hot-reload strategy">⟳</button>
+    <span style="border-left:1px solid var(--border);height:20px;margin:0 6px;opacity:.4"></span>
+    <button class="btn green" onclick="matchStart()"  title="Remote match start (like pulling starter)">⚑ Start</button>
+    <button class="btn red"   onclick="matchStop()"   title="Pause match & cancel motion">⏸ Pause</button>
+    <button class="btn"       onclick="matchResume()"  title="Resume paused match">▶ Resume</button>
   </div>
 
   <!-- Speed -->
@@ -492,6 +496,25 @@
             </div>
           </section>
 
+          <section class="panel" id="small-table-panel">
+            <h3>Small Table
+              <label style="font-weight:400;font-size:11px;margin-left:8px">
+                <input type="checkbox" id="st-enabled" onchange="toggleSmallTable(this.checked)"> Show
+              </label>
+              <button class="btn-tiny" onclick="toggleMapTool('draw_table')" id="tool-draw-table" title="Draw rectangle on map">✎</button>
+            </h3>
+            <div class="opp-controls">
+              <div class="opp-row">
+                <label>X <input type="number" id="st-x" value="500" step="10" onchange="updateSmallTable()"></label>
+                <label>Y <input type="number" id="st-y" value="500" step="10" onchange="updateSmallTable()"></label>
+              </div>
+              <div class="opp-row">
+                <label>W <input type="number" id="st-w" value="1200" step="10" onchange="updateSmallTable()"></label>
+                <label>H <input type="number" id="st-h" value="800"  step="10" onchange="updateSmallTable()"></label>
+              </div>
+            </div>
+          </section>
+
           <section class="panel log-panel">
             <h3>Log <button class="btn-tiny" onclick="clearLog()">✕</button></h3>
             <div id="log-output"></div>
@@ -535,7 +558,7 @@
                  style="position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;"></div>
           </div><!-- /remote-dial-outer -->
 
-          <!-- goPolar distance selector -->
+          <!-- goPolar distance + frame selector -->
           <div class="remote-dist-row">
             <span class="remote-snap-lbl">Move dist.</span>
             <select id="remote-dist-sel" class="input-sm">
@@ -544,6 +567,11 @@
               <option value="200" selected>200 mm</option>
               <option value="300">300 mm</option>
               <option value="500">500 mm</option>
+            </select>
+            <span class="remote-snap-lbl" style="margin-left:12px">Frame</span>
+            <select id="remote-frame-sel" class="input-sm" onchange="remoteFrameChanged()">
+              <option value="table" selected>Table (N/S/E/W)</option>
+              <option value="robot">Robot (A/AB/B/...)</option>
             </select>
           </div>
 
@@ -888,8 +916,37 @@
           <div class="mon-row"><span class="mon-lbl">ω</span><span class="mon-val" id="mon-omega">—</span><span class="mon-unit">°/s</span></div>
         </div>
 
+        <div class="mon-card">
+          <div class="mon-card-title">Status LEDs</div>
+          <div style="display:flex;gap:16px;align-items:center;padding:4px 0">
+            <div style="display:flex;align-items:center;gap:6px" title="Heartbeat (green=OK, red=failed, grey=sim)">
+              <span id="led-heartbeat" style="display:inline-block;width:12px;height:12px;border-radius:50%;background:#666;border:1px solid rgba(0,0,0,.2);transition:background .3s"></span>
+              <span class="mon-lbl" style="margin:0">HB</span>
+            </div>
+            <div style="display:flex;align-items:center;gap:6px" title="Safety (green=clear, red=obstacle)">
+              <span id="led-safety" style="display:inline-block;width:12px;height:12px;border-radius:50%;background:#666;border:1px solid rgba(0,0,0,.2);transition:background .3s"></span>
+              <span class="mon-lbl" style="margin:0">Safety</span>
+            </div>
+            <div style="display:flex;align-items:center;gap:6px" title="Motion (green=moving, yellow=paused, grey=idle)">
+              <span id="led-motion" style="display:inline-block;width:12px;height:12px;border-radius:50%;background:#666;border:1px solid rgba(0,0,0,.2);transition:background .3s"></span>
+              <span class="mon-lbl" style="margin:0">Motion</span>
+            </div>
+            <div style="display:flex;align-items:center;gap:6px" title="OTOS tracking (green=OK, red=lost)">
+              <span id="led-otos" style="display:inline-block;width:12px;height:12px;border-radius:50%;background:#666;border:1px solid rgba(0,0,0,.2);transition:background .3s"></span>
+              <span class="mon-lbl" style="margin:0">OTOS</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="mon-card">
+          <div class="mon-card-title">Event Log</div>
+          <div id="mon-event-log" style="font-family:monospace;font-size:11px;max-height:160px;overflow-y:auto;background:#1a1d23;color:#c8ccd4;padding:6px 8px;border-radius:4px;line-height:1.5">
+            <div style="color:#666">Waiting for events...</div>
+          </div>
+        </div>
+
         <div class="mon-card placeholder-card">
-          <div class="mon-card-title">📷 Camera 1</div>
+          <div class="mon-card-title">Camera 1</div>
           <div class="placeholder-body">Video feed — not connected</div>
         </div>
 
@@ -1198,16 +1255,23 @@
               </div>
               <!-- Video file row -->
               <div id="vsrc-video" class="vsrc-row hidden">
-                <label class="vsrc-lbl">File path</label>
+                <label class="vsrc-lbl">Video</label>
                 <input id="vsrc-video-path" class="input-sm" type="text" placeholder="/path/to/video.mp4" style="flex:1">
+                <input type="file" id="vsrc-video-file" accept="video/*,.avi,.mkv,.mp4" style="display:none"
+                       onchange="document.getElementById('vsrc-video-path').value=this.files[0]?.name||''">
+                <button class="btn-tiny" onclick="document.getElementById('vsrc-video-file').click()" title="Browse...">📂</button>
                 <button class="btn-tiny" onclick="visionApplySource()">Open</button>
               </div>
               <!-- Static image row -->
               <div id="vsrc-image" class="vsrc-row hidden">
-                <label class="vsrc-lbl">File path</label>
+                <label class="vsrc-lbl">Image</label>
                 <input id="vsrc-image-path" class="input-sm" type="text" placeholder="/path/to/image.jpg" style="flex:1">
+                <input type="file" id="vsrc-image-file" accept="image/*,.png,.jpg,.bmp" style="display:none"
+                       onchange="document.getElementById('vsrc-image-path').value=this.files[0]?.name||''">
+                <button class="btn-tiny" onclick="document.getElementById('vsrc-image-file').click()" title="Browse...">📂</button>
                 <button class="btn-tiny" onclick="visionApplySource()">Open</button>
               </div>
+              <span id="v-status-badge" class="v-badge" style="margin-left:8px;font-size:11px"></span>
             </div><!-- /vision-source-block -->
 
             <div class="vision-header-toggles">
@@ -1411,7 +1475,7 @@
             <button class="btn-tiny" id="vision-pp-btn" onclick="visionPlayPause()" title="Play/Pause">❙❙</button>
             <button class="btn-tiny" onclick="visionStep(-10)" title="-10 frames">◀◀</button>
             <button class="btn-tiny" onclick="visionStep(-1)"  title="−1 frame">◀</button>
-            <input type="range" id="vision-seek-sl" min="0" max="100" value="0" step="1"
+            <input type="range" id="vision-seek-sl" min="0" max="10000" value="0" step="1"
                    style="flex:1" oninput="visionSeek(+this.value)">
             <button class="btn-tiny" onclick="visionStep(1)"   title="+1 frame">▶</button>
             <button class="btn-tiny" onclick="visionStep(10)"  title="+10 frames">▶▶</button>

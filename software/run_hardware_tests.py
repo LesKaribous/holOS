@@ -2,27 +2,16 @@
 """
 run_hardware_tests.py — CLI entry point for the holOS hardware test suite.
 
-Connects to the Teensy 4.1 via USB-CDC or XBee and runs the test suite.
-Results are printed in real-time.
+Connects to the Teensy 4.1 on any serial port (firmware auto-detects USB-CDC
+vs XBee at 57600 baud).  Results are printed in real-time.
 
 Examples
 --------
-  # USB-CDC direct connection (115200 baud)
   python run_hardware_tests.py --port /dev/ttyACM0
-
-  # XBee radio via Jetson (31250 baud)
-  python run_hardware_tests.py --port /dev/ttyUSB0 --baudrate 31250
-
-  # Run a single suite only
+  python run_hardware_tests.py --port COM6
   python run_hardware_tests.py --port /dev/ttyACM0 --suite connection
-
-  # Available suites: connection, telemetry, motion, safety, intercom, reliability
   python run_hardware_tests.py --port /dev/ttyACM0 --suite all
-
-  # Skip interactive tests (no user input required)
   python run_hardware_tests.py --port /dev/ttyACM0 --skip-interactive
-
-  # List all available tests without running them
   python run_hardware_tests.py --list
 """
 
@@ -36,7 +25,6 @@ import os
 sys.path.insert(0, os.path.dirname(__file__))
 
 from transport.xbee   import XBeeTransport
-from transport.wired  import WiredTransport
 from tests.hardware_tests import (
     HardwareTestRunner, SUITES, ALL_TESTS, TestResult
 )
@@ -121,8 +109,6 @@ def main() -> int:
     )
     parser.add_argument('--port',  '-p', default='/dev/ttyACM0',
                         help='Serial port (default: /dev/ttyACM0)')
-    parser.add_argument('--baudrate', '-b', type=int, default=115200,
-                        help='Baud rate — 115200 for USB-CDC, 31250 for XBee (default: 115200)')
     parser.add_argument('--suite', '-s', default='all',
                         choices=list(SUITES.keys()) + ['all'],
                         help='Suite to run (default: all)')
@@ -139,13 +125,9 @@ def main() -> int:
         _list_tests()
         return 0
 
-    # ── Transport selection ────────────────────────────────────────────────
-    if args.baudrate == 115200:
-        transport = WiredTransport(port=args.port)
-        transport_name = f'USB-CDC @ {args.port} (115200)'
-    else:
-        transport = XBeeTransport(port=args.port, baudrate=args.baudrate)
-        transport_name = f'XBee @ {args.port} ({args.baudrate})'
+    # ── Transport ─────────────────────────────────────────────────────────
+    transport = XBeeTransport(port=args.port)
+    transport_name = f'{args.port} @ 57600'
 
     _header(f'holOS Hardware Test Suite — {transport_name}')
 
@@ -155,7 +137,7 @@ def main() -> int:
     if not connected:
         print(_red(f'\n  ERREUR: Impossible de se connecter sur {args.port}'))
         print('  • Vérifier que le Teensy est allumé et branché')
-        print('  • Vérifier le port (--port) et le baudrate (--baudrate)')
+        print('  • Vérifier le port (--port) et que le Teensy est alimenté')
         return 1
 
     print(_green(f'  Connecté via {transport_name}'))

@@ -12,9 +12,17 @@
 #include "services/localisation/localisation.h"
 #include "services/intercom/intercom.h"
 #include "services/intercom/comUtilities.h"
+#include "services/ihm/ihm.h"
 #include "config/settings.h"
+#include "config/runtime_config.h"
+#include "program/block_registry.h"
 
 SINGLETON_INSTANTIATE(JetsonBridge, jetsonBridge)
+
+// Runtime-switchable bridge serial port (defaults to XBee = Serial3).
+// JetsonBridge::_readPort() updates this pointer when auto-detection
+// determines which port is active (USB-CDC or XBee).
+Stream* g_bridgeSerial = &BRIDGE_XBEE;
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  Lifecycle
@@ -41,15 +49,24 @@ FLASHMEM void JetsonBridge::enable() {
     Service::enable();
     m_lastHeartbeatMs = millis();  // Give a grace period on boot
     m_bridgeSource    = BridgeSource::INTERCOM;  // Unknown until first ping
+    m_bridgeDetected  = false;
     _bridgeBufLen     = 0;
+    _wiredBufLen      = 0;
 
-    // Always start BRIDGE_SERIAL — it is USB-CDC and idempotent.
-    // Runtime mode (USB vs XBee) is determined when the first ping/frame arrives.
-    BRIDGE_SERIAL.begin(BRIDGE_BAUDRATE);
+    // Start both candidate bridge ports.
+    // Serial (USB-CDC) is always active on Teensy 4.1, begin() is idempotent.
+    // Serial3 (XBee) needs explicit begin at BRIDGE_BAUDRATE.
+    BRIDGE_USB.begin(BRIDGE_BAUDRATE);
+    BRIDGE_XBEE.begin(BRIDGE_BAUDRATE);
+
     // Drain any stale RX bytes left from a previous session
-    while (BRIDGE_SERIAL.available()) BRIDGE_SERIAL.read();
+    while (BRIDGE_USB.available())  BRIDGE_USB.read();
+    while (BRIDGE_XBEE.available()) BRIDGE_XBEE.read();
 
-    Console::info("JetsonBridge") << "Enabled — waiting for transport (USB or XBee)." << Console::endl;
+    // Default: telemetry goes to XBee until detection picks a port.
+    g_bridgeSerial = &BRIDGE_XBEE;
+
+    Console::info("JetsonBridge") << "Enabled — listening on USB + XBee for auto-detect." << Console::endl;
 }
 
 FLASHMEM void JetsonBridge::disable() {
@@ -176,10 +193,13 @@ FLASHMEM void JetsonBridge::handleRequest(Request& req) {
     // Returns compact key=val pairs for all 13 services + runtime flags.
     // Format: "mo=1,mv=0,sa=0,ob=0,ch=0,el=0,ac=1,li=1,ic=1,ic_ok=1,jt=1,jt_ok=1,vi=0,lo=1"
     if (cmd == "health") {
+        // strat: 0 = séquentielle (dumb T41-only), 1 = intelligente (Jetson-based)
+        int strat = ihm.strategySwitch.getState() ? 1 : 0;
         char buf[Request::CONTENT_MAX];
         snprintf(buf, sizeof(buf),
             "mo=%d,mv=%d,sa=%d,ob=%d,ch=%d,el=%ld,"
-            "ac=%d,li=%d,ic=%d,ic_ok=%d,jt=%d,jt_ok=%d,vi=%d,lo=%d",
+            "ac=%d,li=%d,ic=%d,ic_ok=%d,jt=%d,jt_ok=%d,vi=%d,lo=%d,"
+            "strat=%d,paused=%d",
             motion.enabled()              ? 1 : 0,
             motion.isMoving()             ? 1 : 0,
             safety.enabled()              ? 1 : 0,
@@ -193,7 +213,9 @@ FLASHMEM void JetsonBridge::handleRequest(Request& req) {
             jetsonBridge.enabled()        ? 1 : 0,
             jetsonBridge.jetsonConnected()? 1 : 0,
             vision.enabled()              ? 1 : 0,
-            localisation.enabled()        ? 1 : 0);
+            localisation.enabled()        ? 1 : 0,
+            strat,
+            m_matchPaused                 ? 1 : 0);
         req.reply(buf);
         return;
     }
@@ -275,13 +297,151 @@ FLASHMEM void JetsonBridge::handleRequest(Request& req) {
         return;
     }
 
+    // ── Runtime config (SD card) — handled directly, NOT via interpreter ──────
+    // These bypass os.execute() so that (a) the reply carries the actual data
+    // instead of a generic "ok", and (b) dotted config keys like "servo.CA.0.min"
+    // are never mangled by the expression evaluator.
+    if (cmd == "cfg_list") {
+        char buf[Request::CONTENT_MAX];
+        RuntimeConfig::serialize(buf, sizeof(buf));
+        req.reply(buf);
+        return;
+    }
+
+    if (cmd.startsWith("cfg_set(")) {
+        // Format: cfg_set(key,value)
+        int open  = cmd.indexOf('(');
+        int comma = cmd.indexOf(',');
+        int close = cmd.lastIndexOf(')');
+        if (open >= 0 && comma > open && close > comma) {
+            String key = cmd.substring(open + 1, comma);
+            String val = cmd.substring(comma + 1, close);
+            key.trim(); val.trim();
+            bool ok = RuntimeConfig::set(key.c_str(), val.c_str());
+            req.reply(ok ? "ok" : "err:store_full");
+        } else {
+            req.reply("err:bad_args");
+        }
+        return;
+    }
+
+    if (cmd == "cfg_save") {
+        bool ok = RuntimeConfig::save();
+        req.reply(ok ? "ok" : "err:save_failed");
+        return;
+    }
+
+    if (cmd == "cfg_load") {
+        RuntimeConfig::load();
+        req.reply("ok");
+        return;
+    }
+
+    // ── Match control ────────────────────────────────────────────────────────
+    // match_start: triggers the same sequence as pulling the physical starter.
+    //   Sets a flag consumed by programManual → os.start() → programAuto.
+    //   No arming required (webapp start bypasses the arm phase).
+    if (cmd == "match_start") {
+        m_remoteStartRequested = true;
+        m_matchPaused = false;
+        Console::info("JetsonBridge") << "Remote match start requested" << Console::endl;
+        req.reply("ok");
+        return;
+    }
+
+    // match_stop: pauses the current program, cancels in-flight motion.
+    //   The cancelled target is saved in motion for later replay.
+    if (cmd == "match_stop") {
+        m_matchPaused = true;
+        if (m_motionPending) {
+            _replyMotionDone(false);
+            m_motionPending = false;
+        }
+        motion.forceCancel();
+        Console::info("JetsonBridge") << "Remote match stop (paused)" << Console::endl;
+        req.reply("ok");
+        return;
+    }
+
+    // match_resume: clear pause flag so programAuto loop continues
+    if (cmd == "match_resume") {
+        m_matchPaused = false;
+        Console::info("JetsonBridge") << "Match resumed" << Console::endl;
+        req.reply("ok");
+        return;
+    }
+
+    // ── Block registry commands ──────────────────────────────────────────────
+
+    // blocks_list: returns all registered C++ blocks and their state.
+    //   Format: "name=priority,score,estimatedMs,done;..."
+    if (cmd == "blocks_list") {
+        char buf[Request::CONTENT_MAX];
+        BlockRegistry::instance().serialize(buf, sizeof(buf));
+        req.reply(buf);
+        return;
+    }
+
+    // run_block(name): execute a registered C++ block by name.
+    //   Returns "SUCCESS" or "FAILED".
+    if (cmd.startsWith("run_block(")) {
+        int open  = cmd.indexOf('(');
+        int close = cmd.lastIndexOf(')');
+        if (open >= 0 && close > open) {
+            String name = cmd.substring(open + 1, close);
+            name.trim();
+            BlockResult r = BlockRegistry::instance().execute(name.c_str());
+            req.reply(r == BlockResult::SUCCESS ? "SUCCESS" : "FAILED");
+        } else {
+            req.reply("err:bad_args");
+        }
+        return;
+    }
+
+    // block_done(name): mark a block as completed (e.g. Jetson finished it).
+    //   Used for fallback awareness — skips done blocks in embedded match().
+    if (cmd.startsWith("block_done(")) {
+        int open  = cmd.indexOf('(');
+        int close = cmd.lastIndexOf(')');
+        if (open >= 0 && close > open) {
+            String name = cmd.substring(open + 1, close);
+            name.trim();
+            bool ok = BlockRegistry::instance().markDone(name.c_str());
+            req.reply(ok ? "ok" : "err:not_found");
+        } else {
+            req.reply("err:bad_args");
+        }
+        return;
+    }
+
+    // blocks_reset: clear all done flags (e.g. before a new match)
+    if (cmd == "blocks_reset") {
+        BlockRegistry::instance().resetAll();
+        req.reply("ok");
+        return;
+    }
+
     // ── Motion commands (long-running — reply AFTER completion) ───────────────
-    if (cmd.startsWith("go(")       ||
-        cmd.startsWith("goPolar(")  ||
-        cmd.startsWith("turn(")     ||
-        cmd.startsWith("align(")    ||
-        cmd.startsWith("goAlign(")  ||
-        cmd.startsWith("move(")) {
+    // For chained commands like "via(x,y);via(x,y);go(x,y)", the LAST
+    // command in the chain determines whether this is a motion command.
+    // Via points are always intermediate; the final go/turn/align is what
+    // actually triggers motion and needs DONE tracking.
+    String lastCmd = cmd;
+    {
+        int lastSemi = cmd.lastIndexOf(';');
+        if (lastSemi >= 0) {
+            lastCmd = cmd.substring(lastSemi + 1);
+            lastCmd.trim();
+        }
+    }
+
+    if (lastCmd.startsWith("go(")       ||
+        lastCmd.startsWith("go_coc(")   ||
+        lastCmd.startsWith("goPolar(")  ||
+        lastCmd.startsWith("turn(")     ||
+        lastCmd.startsWith("align(")    ||
+        lastCmd.startsWith("goAlign(")  ||
+        lastCmd.startsWith("move(")) {
 
         // FW-004: reply fail to old pending motion before preempting
         if (m_motionPending) {
@@ -364,6 +524,14 @@ FLASHMEM bool JetsonBridge::isRemoteControlled() const {
 
 FLASHMEM bool JetsonBridge::jetsonConnected() const {
     return m_jetsonConnected;
+}
+
+FLASHMEM bool JetsonBridge::consumeRemoteStart() {
+    if (m_remoteStartRequested) {
+        m_remoteStartRequested = false;
+        return true;
+    }
+    return false;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -463,55 +631,93 @@ FLASHMEM void JetsonBridge::_pushFrame(const char* msg) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-//  _readBridgeSerial — parse incoming request frames from USB-CDC
+//  _readBridgeSerial — auto-detect & parse bridge frames from USB-CDC or XBee
+//
+//  Before detection: polls BOTH Serial (USB-CDC) and Serial3 (XBee).
+//  After detection:  polls only the active port (the one that won).
 //
 //  Protocol (same as Intercom): "{id}:{content}|{crc}\n"
 //  Replies go back via Request::reply() → BRIDGE_SERIAL (see request.cpp).
-//
-//  Uses a static char array (_bridgeBuf / _bridgeBufLen) instead of a String
-//  to avoid heap fragmentation: the buffer is reused every line without any
-//  malloc/free cycle.  Only one unavoidable String is created per valid frame
-//  (for the content field of the Request object).
 // ─────────────────────────────────────────────────────────────────────────────
 FLASHMEM void JetsonBridge::_readBridgeSerial() {
-    while (BRIDGE_SERIAL.available()) {
-        char c = (char)BRIDGE_SERIAL.read();
+    if (!m_bridgeDetected) {
+        // Discovery phase: poll both ports
+        _readPort(BRIDGE_USB,  _wiredBuf,  _wiredBufLen);
+        _readPort(BRIDGE_XBEE, _bridgeBuf, _bridgeBufLen);
+    } else {
+        // Active phase: poll only the detected port
+        if (g_bridgeSerial == (Stream*)&BRIDGE_USB) {
+            _readPort(BRIDGE_USB, _wiredBuf, _wiredBufLen);
+        } else {
+            _readPort(BRIDGE_XBEE, _bridgeBuf, _bridgeBufLen);
+        }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  _readPort — parse one serial port for ping/pong handshake or CRC frames
+//
+//  Uses a caller-provided static char buffer to avoid heap fragmentation.
+//  On first valid ping or CRC frame, sets g_bridgeSerial and m_bridgeDetected
+//  so subsequent calls only poll the winning port.
+// ─────────────────────────────────────────────────────────────────────────────
+FLASHMEM void JetsonBridge::_readPort(Stream& port, char* buf, uint16_t& bufLen) {
+    while (port.available()) {
+        char c = (char)port.read();
 
         if (c == '\n' || c == '\r') {
-            if (_bridgeBufLen == 0) continue;  // blank line
+            if (bufLen == 0) continue;  // blank line
 
-            _bridgeBuf[_bridgeBufLen] = '\0';
+            buf[bufLen] = '\0';
 
             // ── Connection handshake ─────────────────────────────────────────
-            if (strcmp(_bridgeBuf, "ping") == 0) {
-                m_bridgeSource = BridgeSource::USB;
-                BRIDGE_SERIAL.print("pong\n");
-                _bridgeBufLen = 0;
+            if (strcmp(buf, "ping") == 0) {
+                g_bridgeSerial  = &port;
+                m_bridgeSource  = BridgeSource::USB;
+                m_bridgeDetected = true;
+                bool isUsb = (&port == (Stream*)&BRIDGE_USB);
+                port.print(isUsb ? "pong:usb\n" : "pong:xbee\n");
+                Console::info("JetsonBridge")
+                    << "Bridge detected on "
+                    << (isUsb ? "USB-CDC" : "XBee")
+                    << Console::endl;
+                bufLen = 0;
                 continue;
             }
-            if (strcmp(_bridgeBuf, "pong") == 0) {
-                // Stray echo — ignore
-                _bridgeBufLen = 0;
+            if (strncmp(buf, "pong", 4) == 0) {
+                // Stray echo — ignore (matches "pong", "pong:usb", "pong:xbee")
+                bufLen = 0;
                 continue;
             }
 
             // ── Framed protocol: "{id}:{content}|{crc}" ─────────────────────
-            char* sep    = strchr (_bridgeBuf, ':');
-            char* crcSep = strrchr(_bridgeBuf, '|');
+            char* sep    = strchr (buf, ':');
+            char* crcSep = strrchr(buf, '|');
 
             if (sep && crcSep && crcSep > sep) {
                 int crcVal = atoi(crcSep + 1);
 
-                // CRC covers all bytes before '|' (i.e., "{id}:{content}")
+                // CRC covers all bytes before '|'
                 uint8_t computed = CRC8.smbus(
-                    (uint8_t*)_bridgeBuf,
-                    (size_t)(crcSep - _bridgeBuf));
+                    (uint8_t*)buf,
+                    (size_t)(crcSep - buf));
 
                 if (computed == (uint8_t)crcVal) {
+                    // Lock in this port as the active bridge
+                    if (!m_bridgeDetected) {
+                        g_bridgeSerial   = &port;
+                        m_bridgeDetected = true;
+                        Console::info("JetsonBridge")
+                            << "Bridge detected on "
+                            << ((&port == (Stream*)&BRIDGE_USB) ? "USB-CDC" : "XBee")
+                            << " (framed)"
+                            << Console::endl;
+                    }
+
                     // Split in-place to extract id and content
                     *sep    = '\0';
                     *crcSep = '\0';
-                    int    id      = atoi(_bridgeBuf);
+                    int    id      = atoi(buf);
                     String content = String(sep + 1);   // single unavoidable alloc
                     *sep    = ':';   // restore (good practice)
                     *crcSep = '|';
@@ -523,14 +729,18 @@ FLASHMEM void JetsonBridge::_readBridgeSerial() {
                     Console::warn("JetsonBridge") << "Bad CRC on bridge line" << Console::endl;
                 }
             } else {
-                Console::warn("JetsonBridge") << "Unparseable bridge frame" << Console::endl;
+                // Not a valid frame — ignore silently during discovery,
+                // warn only when bridge is active (likely garbled data).
+                if (m_bridgeDetected) {
+                    Console::warn("JetsonBridge") << "Unparseable bridge frame" << Console::endl;
+                }
             }
 
-            _bridgeBufLen = 0;
+            bufLen = 0;
 
         } else if (c != '\r') {
             // Append character — hard cap at 511 to leave room for null terminator
-            if (_bridgeBufLen < 511) _bridgeBuf[_bridgeBufLen++] = c;
+            if (bufLen < 511) buf[bufLen++] = c;
         }
     }
 }

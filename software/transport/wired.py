@@ -1,36 +1,25 @@
 """
-transport/wired.py — USB-CDC wired transport for Teensy 4.1 (USB_DIRECT firmware).
+transport/wired.py — USB-CDC wired transport (thin alias for XBeeTransport).
 
-Connects to the Teensy via USB-CDC (COM port / /dev/ttyACM0) when the firmware
-is compiled with #define USB_DIRECT in settings.h.
-
-Protocol is identical to XBeeTransport — framed CRC8 requests and telemetry.
-The only difference is the default baudrate (115200) and transport identity.
+Since firmware auto-detects the active bridge (USB-CDC vs XBee) and both use
+the same baudrate (57600), this is a convenience alias that sets TRANSPORT_TYPE
+to 'usb' for logging / display purposes.  Protocol is identical.
 
 Usage:
     transport = WiredTransport(port="COM6")
     transport.connect()
-    ok, resp = transport.execute("go(500,300)", timeout_ms=30000)
 """
 
 from .xbee import XBeeTransport
-from shared.config import USB_DIRECT_BAUDRATE
+from shared.config import BRIDGE_BAUDRATE
 
 
 class WiredTransport(XBeeTransport):
-    """
-    USB-CDC wired transport for Teensy 4.1 running USB_DIRECT firmware.
-
-    Inherits the full XBeeTransport protocol (ping/pong handshake, framed
-    CRC8 requests, telemetry subscriptions, heartbeat).
-
-    Use this class when the robot is physically connected via USB cable.
-    Use XBeeTransport when the robot communicates via XBee radio through a Jetson.
-    """
+    """USB-CDC wired transport — alias for XBeeTransport with 'usb' label."""
 
     TRANSPORT_TYPE = 'usb'
 
-    def __init__(self, port: str, baudrate: int = USB_DIRECT_BAUDRATE):
+    def __init__(self, port: str, baudrate: int = BRIDGE_BAUDRATE):
         super().__init__(port=port, baudrate=baudrate)
 
     @property

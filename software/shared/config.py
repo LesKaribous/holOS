@@ -26,9 +26,9 @@ WHEEL_RADIUS     = 30.0     # mm
 # so no data conversion is needed.  Keep at 0.0.
 HW_THETA_OFFSET_DEG = 0.0
 
-# ── Motion parameters ─────────────────────────────────────────────────────────
-MAX_SPEED        = 1800.0   # mm/s
-MAX_ACCEL        = 2000.0   # mm/s²
+# ── Motion parameters (mirror firmware settings.h::Motion) ────────────────────
+MAX_SPEED        = 2800.0   # mm/s  (firmware: 2800)
+MAX_ACCEL        = 500.0    # mm/s² (firmware: 500 — trapezoidal ramp)
 MAX_ROT_SPEED    = 10.0     # rad/s
 MAX_ROT_ACCEL    = 30.0     # rad/s²
 MIN_DISTANCE     = 20.0     # mm   (position tolerance)
@@ -47,11 +47,10 @@ SAFETY_CHECK_S      = 0.10   # s
 SAFETY_RESUME_S     = 1.00   # s after last detection before resume
 OBS_RADIUS          = 150.0  # mm  radius used when placing dynamic obstacles
 
-# ── Transport baudrates (mirror firmware settings.h) ─────────────────────────
-# USB_DIRECT mode  → WiredTransport @ USB_DIRECT_BAUDRATE (Teensy USB-CDC, BRIDGE_SERIAL = Serial)
-# XBee / Jetson    → XBeeTransport  @ XBEE_BAUDRATE       (INTERCOM_SERIAL = Serial1)
-USB_DIRECT_BAUDRATE   = 115200
-XBEE_BAUDRATE         = 31250
+# ── Transport baudrate (mirror firmware settings.h BRIDGE_BAUDRATE) ──────────
+# Both USB-CDC and XBee use the same baudrate.  The firmware auto-detects
+# which physical port is active (Serial vs Serial3).
+BRIDGE_BAUDRATE       = 57600
 HEARTBEAT_INTERVAL_S  = 0.5   # s between heartbeats
 JETSON_TIMEOUT_S      = 2.0   # s before Teensy considers Jetson lost
 CMD_TIMEOUT_MS        = 30000 # ms — max time to wait for a motion command to complete
