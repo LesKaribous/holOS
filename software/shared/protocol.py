@@ -107,12 +107,27 @@ def parse_frame(line: str):
     if crc8(data_part) != expected_crc:
         return (None, None, None)
 
-    # Telemetry push
-    if data_part.startswith('TEL:'):
-        rest = data_part[4:]
-        colon = rest.index(':')
-        ttype = rest[:colon]
-        tdata = rest[colon + 1:]
+    # Telemetry push — compact format: "T:<type> <data...>"
+    #                  legacy format:  "TEL:<type>:<data...>"
+    if data_part.startswith('T:'):
+        rest = data_part[2:]
+        # Compact: "T:p 1234 678 1571" → type="p", data="1234 678 1571"
+        # Legacy:  "TEL:pos:x=1.0,y=2.0" → strip extra "EL:", type="pos", data="x=1.0,y=2.0"
+        if rest.startswith('EL:'):
+            # Legacy "TEL:" prefix — strip "EL:" and split on ':'
+            rest = rest[3:]
+            colon = rest.index(':')
+            ttype = rest[:colon]
+            tdata = rest[colon + 1:]
+        else:
+            # Compact "T:" prefix — split on first space
+            sp = rest.find(' ')
+            if sp >= 0:
+                ttype = rest[:sp]
+                tdata = rest[sp + 1:]
+            else:
+                ttype = rest
+                tdata = ''
         return ('tel', ttype, tdata)
 
     # Reply from Teensy to one of our requests

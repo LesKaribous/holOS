@@ -1311,19 +1311,41 @@ def _do_connect(port: str, baud: int):
             # Hardware test runner — uses real transport, web-safe prompt
             _hw_test_runner = HardwareTestRunner(t, prompt_fn=_web_prompt)
 
-            # ── TEL:pos → update robot position (used for map display) ────
+            # ── T:p → compact position: "x_mm y_mm theta_mrad" ─────────
             def _on_pos(data_str):
                 try:
-                    parts = dict(kv.split('=') for kv in data_str.split(','))
-                    robot.pos   = Vec2(float(parts['x']), float(parts['y']))
-                    robot.theta = float(parts['theta'])
+                    parts = data_str.split()
+                    if len(parts) >= 3:
+                        robot.pos   = Vec2(float(parts[0]), float(parts[1]))
+                        robot.theta = float(parts[2]) / 1000.0  # mrad → rad
+                    else:
+                        # Legacy format fallback
+                        kv = dict(k.split('=') for k in data_str.split(','))
+                        robot.pos   = Vec2(float(kv['x']), float(kv['y']))
+                        robot.theta = float(kv['theta'])
                 except Exception as e:
                     print(f"[TELEMETRY] pos parsing error: {e}")
-            t.subscribe_telemetry('pos', _on_pos)
+            t.subscribe_telemetry('p', _on_pos)
+            t.subscribe_telemetry('pos', _on_pos)  # legacy compat
 
-            # ── TEL:motion → live motion state override ───────────────────
+            # ── T:m → compact motion: "R tx ty dist feed%" or "I feed%" ──
             def _on_motion(data_str):
-                _hw_tel_data['motion'] = data_str
+                # Translate compact format to legacy-compatible string for
+                # _build_state() parser.
+                parts = data_str.split()
+                if parts and parts[0] in ('R', 'I'):
+                    # Compact format
+                    if parts[0] == 'R' and len(parts) >= 5:
+                        _hw_tel_data['motion'] = (
+                            f"RUNNING,tx={parts[1]}.0,ty={parts[2]}.0,"
+                            f"dist={parts[3]}.0,feed={int(parts[4])/100:.2f}")
+                    elif parts[0] == 'I' and len(parts) >= 2:
+                        _hw_tel_data['motion'] = f"IDLE,feed={int(parts[1])/100:.2f}"
+                    else:
+                        _hw_tel_data['motion'] = data_str
+                else:
+                    # Legacy or DONE frame — pass through
+                    _hw_tel_data['motion'] = data_str
                 if data_str.startswith('DONE:') and t.is_connected:
                     socketio.emit('motion_done', {
                         'ok':  data_str.startswith('DONE:ok'),
@@ -1337,17 +1359,20 @@ def _do_connect(port: str, baud: int):
                                 pass
                         threading.Thread(target=_auto_ack, daemon=True,
                                          name='auto-ack-done').start()
-            t.subscribe_telemetry('motion', _on_motion)
+            t.subscribe_telemetry('m', _on_motion)
+            t.subscribe_telemetry('motion', _on_motion)  # legacy compat
 
-            # ── TEL:safety → live safety override ────────────────────────
+            # ── T:s → safety: "0" or "1" (same format) ──────────────────
             def _on_safety(data_str):
-                _hw_tel_data['safety'] = data_str
-            t.subscribe_telemetry('safety', _on_safety)
+                _hw_tel_data['safety'] = data_str.strip()
+            t.subscribe_telemetry('s', _on_safety)
+            t.subscribe_telemetry('safety', _on_safety)  # legacy compat
 
-            # ── TEL:chrono → live chrono override ────────────────────────
+            # ── T:c → chrono: elapsed ms (same format) ───────────────────
             def _on_chrono(data_str):
-                _hw_tel_data['chrono'] = data_str
-            t.subscribe_telemetry('chrono', _on_chrono)
+                _hw_tel_data['chrono'] = data_str.strip()
+            t.subscribe_telemetry('c', _on_chrono)
+            t.subscribe_telemetry('chrono', _on_chrono)  # legacy compat
 
             # ── TEL:t40 → T4.0 intercom health ───────────────────────────
             def _on_t40(data_str):
@@ -1369,16 +1394,26 @@ def _do_connect(port: str, baud: int):
                     occupancy.set_dynamic_cells(cells)
                 except Exception as e:
                     print(f"[TELEMETRY] occ_dyn decode error: {e}")
-            t.subscribe_telemetry('occ_dyn', _on_occ_dyn)
+            t.subscribe_telemetry('od', _on_occ_dyn)        # compact
+            t.subscribe_telemetry('occ_dyn', _on_occ_dyn)  # legacy
 
-            # ── TEL:mask → update channel enable/disable state ────────────
+            # ── T:mask → compact "11110" or legacy "pos=1,motion=1,..." ──
             def _on_mask(data_str):
                 global _hw_tel_mask
                 try:
-                    for kv in data_str.split(','):
-                        k, v = kv.split('=')
-                        if k in _hw_tel_mask:
-                            _hw_tel_mask[k] = (v.strip() == '1')
+                    data_str = data_str.strip()
+                    if '=' in data_str:
+                        # Legacy format
+                        for kv in data_str.split(','):
+                            k, v = kv.split('=')
+                            if k in _hw_tel_mask:
+                                _hw_tel_mask[k] = (v.strip() == '1')
+                    else:
+                        # Compact: "11110" → pos,motion,safety,chrono,occ
+                        keys = ['pos', 'motion', 'safety', 'chrono', 'occ']
+                        for i, k in enumerate(keys):
+                            if i < len(data_str):
+                                _hw_tel_mask[k] = (data_str[i] == '1')
                 except Exception:
                     pass
             t.subscribe_telemetry('mask', _on_mask)

@@ -42,7 +42,17 @@ FLASHMEM void JetsonBridge::attach() {
         motion.cancel();
     });
 
-    Console::info("JetsonBridge") << "Attached." << Console::endl;
+    // ── Load telemetry rates from SD config (/config.cfg) ──────────────────
+    m_telPosMs    = (unsigned long)RuntimeConfig::getInt("tel.pos_ms",    (int)m_telPosMs);
+    m_telMotionMs = (unsigned long)RuntimeConfig::getInt("tel.motion_ms", (int)m_telMotionMs);
+    m_telSafetyMs = (unsigned long)RuntimeConfig::getInt("tel.safety_ms", (int)m_telSafetyMs);
+    m_telChronoMs = (unsigned long)RuntimeConfig::getInt("tel.chrono_ms", (int)m_telChronoMs);
+    m_telOccMs    = (unsigned long)RuntimeConfig::getInt("tel.occ_ms",    (int)m_telOccMs);
+
+    Console::info("JetsonBridge") << "Attached. Tel rates (ms): pos="
+        << (int)m_telPosMs << " mot=" << (int)m_telMotionMs
+        << " saf=" << (int)m_telSafetyMs << " chr=" << (int)m_telChronoMs
+        << " occ=" << (int)m_telOccMs << Console::endl;
 }
 
 FLASHMEM void JetsonBridge::enable() {
@@ -105,16 +115,73 @@ FLASHMEM void JetsonBridge::run() {
         --_tqCount;
     }
 
-    // Push telemetry at fixed rate
-    if (millis() - m_lastTelPushMs > TEL_PERIOD_MS) {
-        pushTelemetry();
-        m_lastTelPushMs = millis();
+    // ── Per-channel telemetry push ──────────────────────────────────────────
+    unsigned long now = millis();
+    char _tb[80];  // compact telemetry buffer
+
+    if (m_telPos && now - m_lastTelPushMs >= m_telPosMs) {
+        Vec3 p = motion.estimatedPosition();
+        snprintf(_tb, sizeof(_tb), "T:p %d %d %d",
+                 (int)p.x, (int)p.y, (int)(p.c * 1000));
+        _pushFrame(_tb);
+        m_lastTelPushMs = now;
     }
 
-    // Push occupancy map at lower rate
-    if (millis() - m_lastOccPushMs > OCC_PERIOD_MS) {
+    if (m_telMotion && now - m_lastTelPushMs >= m_telMotionMs) {
+        // Reuse m_lastTelPushMs for motion too (same fast channel)
+    }
+    // Motion: pushed alongside pos for simplicity — separate timer not needed
+    // since both share the fast rate.  Only push if state changed or moving.
+    {
+        static unsigned long _lastMotionMs = 0;
+        if (m_telMotion && now - _lastMotionMs >= m_telMotionMs) {
+            if (motion.isMoving()) {
+                Vec3 t = motion.getAbsTarget();
+                snprintf(_tb, sizeof(_tb), "T:m R %d %d %d %d",
+                         (int)t.x, (int)t.y,
+                         (int)motion.getTargetDistance(),
+                         (int)(motion.getFeedrate() * 100));
+            } else {
+                snprintf(_tb, sizeof(_tb), "T:m I %d",
+                         (int)(motion.getFeedrate() * 100));
+            }
+            _pushFrame(_tb);
+            _lastMotionMs = now;
+        }
+    }
+
+    // Safety: at configured rate + on-change
+    {
+        bool safetyNow = safety.obstacleDetected();
+        bool changed   = (safetyNow != m_lastSafetyState);
+        if (m_telSafety && (changed || now - m_lastSafetyPushMs >= m_telSafetyMs)) {
+            snprintf(_tb, sizeof(_tb), "T:s %d", safetyNow ? 1 : 0);
+            _pushFrame(_tb);
+            m_lastSafetyState   = safetyNow;
+            m_lastSafetyPushMs  = now;
+        }
+    }
+
+    // Chrono: slow rate (1 Hz default)
+    if (m_telChrono && now - m_lastChronoPushMs >= m_telChronoMs) {
+        snprintf(_tb, sizeof(_tb), "T:c %lu", (unsigned long)chrono.getElapsedTime());
+        _pushFrame(_tb);
+        m_lastChronoPushMs = now;
+    }
+
+    // Occupancy map: own rate
+    if (now - m_lastOccPushMs >= m_telOccMs) {
         pushOccupancy();
-        m_lastOccPushMs = millis();
+        m_lastOccPushMs = now;
+    }
+
+    // FW-006: only push mask when dirty
+    if (m_maskDirty) {
+        snprintf(_tb, sizeof(_tb), "T:mask %d%d%d%d%d",
+                 m_telPos?1:0, m_telMotion?1:0, m_telSafety?1:0,
+                 m_telChrono?1:0, m_telOcc?1:0);
+        _pushFrame(_tb);
+        m_maskDirty = false;
     }
 
     // If a motion command is pending, check if motion is done
@@ -486,7 +553,7 @@ FLASHMEM void JetsonBridge::_replyMotionDone(bool success) {
 
     // PR-2: build into persistent buffer for retransmit until ack_done
     snprintf(m_lastDoneBuf, sizeof(m_lastDoneBuf),
-        "TEL:motion:DONE:%s,dur=%lu,dist=%.1f,stall=%d",
+        "T:m DONE:%s,dur=%lu,dist=%.0f,stall=%d",
         success ? "ok" : "fail",
         (unsigned long)stats.durationMs,
         stats.traveledMm,
@@ -552,45 +619,10 @@ FLASHMEM bool JetsonBridge::consumeRemoteStart() {
 //  Telemetry
 // ─────────────────────────────────────────────────────────────────────────────
 
+// pushTelemetry() — now inlined in run() with per-channel rates.
+// Kept as stub for external callers (e.g. forced push after config change).
 FLASHMEM void JetsonBridge::pushTelemetry() {
-    char buf[128];
-
-    if (m_telPos) {
-        Vec3 pos = motion.estimatedPosition();
-        snprintf(buf, sizeof(buf), "TEL:pos:x=%.1f,y=%.1f,theta=%.4f",
-            pos.x, pos.y, pos.c);
-        _pushFrame(buf);
-    }
-
-    if (m_telMotion) {
-        if (motion.isMoving()) {
-            Vec3 tgt = motion.getAbsTarget();
-            snprintf(buf, sizeof(buf), "TEL:motion:RUNNING,tx=%.1f,ty=%.1f,dist=%.1f,feed=%.2f",
-                tgt.x, tgt.y, motion.getTargetDistance(), motion.getFeedrate());
-        } else {
-            snprintf(buf, sizeof(buf), "TEL:motion:IDLE,feed=%.2f", motion.getFeedrate());
-        }
-        _pushFrame(buf);
-    }
-
-    if (m_telSafety) {
-        snprintf(buf, sizeof(buf), "TEL:safety:%d", safety.obstacleDetected() ? 1 : 0);
-        _pushFrame(buf);
-    }
-
-    if (m_telChrono) {
-        snprintf(buf, sizeof(buf), "TEL:chrono:%lu", (unsigned long)chrono.getElapsedTime());
-        _pushFrame(buf);
-    }
-
-    // FW-006: only push mask when dirty
-    if (m_maskDirty) {
-        snprintf(buf, sizeof(buf), "TEL:mask:pos=%d,motion=%d,safety=%d,chrono=%d,occ=%d",
-            m_telPos ? 1 : 0, m_telMotion ? 1 : 0,
-            m_telSafety ? 1 : 0, m_telChrono ? 1 : 0, m_telOcc ? 1 : 0);
-        _pushFrame(buf);
-        m_maskDirty = false;
-    }
+    // No-op — telemetry is pushed per-channel in run().
 }
 
 FLASHMEM void JetsonBridge::pushOccupancy() {
@@ -600,7 +632,7 @@ FLASHMEM void JetsonBridge::pushOccupancy() {
     char buf[TQUEUE_FRAME];
     int  pos = 0;
     bool first = true;
-    pos += snprintf(buf + pos, sizeof(buf) - pos, "TEL:occ_dyn:");
+    pos += snprintf(buf + pos, sizeof(buf) - pos, "T:od ");
     for (int gx = 0; gx < GRID_WIDTH && pos < (int)sizeof(buf) - 8; ++gx) {
         for (int gy = 0; gy < GRID_HEIGHT && pos < (int)sizeof(buf) - 8; ++gy) {
             if (occupancy.isCellOccupied(gx, gy)) {
