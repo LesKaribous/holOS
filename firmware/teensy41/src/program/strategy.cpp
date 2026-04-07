@@ -21,6 +21,18 @@ namespace Timing {
     constexpr uint32_t COLLECT_STOCK_B = 6000;
 }
 
+// ── Stack diagnostic ─────────────────────────────────────────────────────────
+// Reports approximate free stack by reading the SP register.
+// Teensy 4.1 DTCM stack starts at _estack (top) and grows down.
+// A hard fault typically occurs below ~2 KB free.
+static uint32_t freeStack() {
+    uint32_t sp;
+    asm volatile("mov %0, sp" : "=r"(sp));
+    // _estack is at 0x20070000 on Teensy 4.1 (DTCM 512 KB)
+    // Return distance from sp to the end of .bss / heap — approximate.
+    return sp;  // raw SP; compare across calls to see consumption
+}
+
 // Offset commun factored
 static void collectStock(Vec2 target, TableCompass tc, RobotCompass rc) {
     constexpr float    APPROACH_OFFSET = 300.0f;
@@ -30,17 +42,30 @@ static void collectStock(Vec2 target, TableCompass tc, RobotCompass rc) {
     Vec2 approach = target - PolarVec(getCompassOrientation(tc) * DEG_TO_RAD, APPROACH_OFFSET).toVec2();
     Vec2 grab     = target - PolarVec(getCompassOrientation(tc) * DEG_TO_RAD, GRAB_OFFSET).toVec2();
 
+    Console::info("Strategy") << "[collectStock] approach  SP=" << freeStack() << Console::endl;
     async motion.goAlign(approach, rc, getCompassOrientation(tc));
+
+    Console::info("Strategy") << "[collectStock] grab      SP=" << freeStack() << Console::endl;
     async motion.goAlign(grab,     rc, getCompassOrientation(tc));
 
+    Console::info("Strategy") << "[collectStock] elevator↓ SP=" << freeStack() << Console::endl;
     actuators.moveElevator(rc, ElevatorPose::DOWN);
+
+    Console::info("Strategy") << "[collectStock] waitMs(1) SP=" << freeStack() << Console::endl;
     waitMs(GRAB_DELAY_MS);
+
+    Console::info("Strategy") << "[collectStock] grab()    SP=" << freeStack() << Console::endl;
     actuators.grab(rc);
+
+    Console::info("Strategy") << "[collectStock] waitMs(2) SP=" << freeStack() << Console::endl;
     waitMs(GRAB_DELAY_MS);
+
+    Console::info("Strategy") << "[collectStock] elevator↑ SP=" << freeStack() << Console::endl;
     actuators.moveElevator(rc, ElevatorPose::STORE);
 
     safety.enable();
     motion.setFeedrate(1.0f);
+    Console::info("Strategy") << "[collectStock] done      SP=" << freeStack() << Console::endl;
 }
 
 
@@ -61,15 +86,24 @@ static bool isColorUseful(ObjectColor color) {
 }
 
 static BlockResult blockCollectA() {
+    Console::info("Strategy") << "[blockCollectA] START  SP=" << freeStack() << Console::endl;
+
     // Interroger la couleur avant de se déplacer (sync, 400ms max)
     //ObjectColor color = vision.queryColorSync(POI::testA, 400);
     //Console::info("Strategy") << "Zone A: " << colorName(color) << Console::endl;
     //if (!isColorUseful(color)) return BlockResult::FAILED;
 
+    Console::info("Strategy") << "[blockCollectA] goAlign SP=" << freeStack() << Console::endl;
     async motion.goAlign(POI::stockYellow_01, RobotCompass::AB, getCompassOrientation(TableCompass::SOUTH));
-    if (!motion.wasSuccessful()) return BlockResult::FAILED;
+    if (!motion.wasSuccessful()) {
+        Console::warn("Strategy") << "[blockCollectA] goAlign FAILED" << Console::endl;
+        return BlockResult::FAILED;
+    }
 
+    Console::info("Strategy") << "[blockCollectA] → collectStock  SP=" << freeStack() << Console::endl;
     collectStock(POI::stockYellow_01, TableCompass::WEST, RobotCompass::AB);
+
+    Console::info("Strategy") << "[blockCollectA] END  SP=" << freeStack() << Console::endl;
     return motion.wasSuccessful() ? BlockResult::SUCCESS : BlockResult::FAILED;
 }
 
@@ -119,8 +153,14 @@ FLASHMEM void registerBlocks() {
 // ============================================================
 
 FLASHMEM void match() {
+    Console::info("Strategy") << "match() entry  SP=" << freeStack() << Console::endl;
+
     motion.setFeedrate(1.0f);
     motion.enableCruiseMode();
+
+    // Ensure PCA9685 pump driver is initialized even if recalage() was
+    // skipped (defensive — initPump is idempotent).
+    initPump();
 
     // IMPORTANT: Mission is static to avoid ~700 bytes on the stack.
     // match() is only called once per boot cycle (programAuto), so

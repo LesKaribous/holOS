@@ -195,12 +195,13 @@ FLASHMEM void programManual() {
 FLASHMEM void onRobotBoot() {
 
     // ── Print CrashReport if the Teensy rebooted after a hard fault ────────
+    // CrashReport is a Teensy 4.x built-in: stores fault info in NVRAM,
+    // available on the next boot.  Output to raw Serial (USB monitor).
     if (CrashReport) {
         Serial.begin(115200);
         Serial.println("======== CRASH REPORT ========");
         Serial.print(CrashReport);
         Serial.println("==============================");
-        // Give time for the report to be read over serial
         delay(2000);
     }
 

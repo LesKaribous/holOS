@@ -61,6 +61,13 @@ FLASHMEM void Mission::run() {
             << " | restant " << (rem == UINT32_MAX ? 9999 : (int)(rem / 1000)) << "s"
             << Console::endl;
 
+        // --- Stack check before block execution ---
+        {
+            uint32_t sp;
+            asm volatile("mov %0, sp" : "=r"(sp));
+            Console::info("Mission") << "  pre-exec SP=" << sp << Console::endl;
+        }
+
         // --- Execution du bloc ---
         if (!b->action) {
             Console::error("Mission") << "Block " << b->name << " has null action!" << Console::endl;
