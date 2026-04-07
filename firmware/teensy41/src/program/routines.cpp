@@ -194,6 +194,16 @@ FLASHMEM void programManual() {
 
 FLASHMEM void onRobotBoot() {
 
+    // ── Print CrashReport if the Teensy rebooted after a hard fault ────────
+    if (CrashReport) {
+        Serial.begin(115200);
+        Serial.println("======== CRASH REPORT ========");
+        Serial.print(CrashReport);
+        Serial.println("==============================");
+        // Give time for the report to be read over serial
+        delay(2000);
+    }
+
     os.attachService(&ihm);
     ihm.drawBootProgress("Linking ihm...");
     ihm.addBootProgress(10);
@@ -261,7 +271,8 @@ FLASHMEM void onRobotBoot() {
         BlockRegistry& reg = BlockRegistry::instance();
         if (reg.count() > 0) {
             Console::info("Fallback") << "Building mission from BlockRegistry (skipping done blocks)" << Console::endl;
-            Mission fallbackMission;
+            static Mission fallbackMission;
+            fallbackMission = Mission();   // reinit
             reg.buildMission(fallbackMission);
             fallbackMission.run();
         } else if (MissionController::isLoaded()) {

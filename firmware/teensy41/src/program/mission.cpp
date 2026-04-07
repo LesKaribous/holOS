@@ -11,7 +11,8 @@ FLASHMEM Mission& Mission::add(Block block) {
         Console::error("Mission") << "Max blocs atteint (" << MAX_BLOCKS << ")" << Console::endl;
         return *this;
     }
-    block.done          = false;
+    // Preserve block.done if caller set it (e.g. buildMission for fallback).
+    // Only reset stats — done tracking is the caller's responsibility.
     block.stats         = BlockStats{};
     m_blocks[m_count++] = block;
     return *this;
@@ -61,6 +62,13 @@ FLASHMEM void Mission::run() {
             << Console::endl;
 
         // --- Execution du bloc ---
+        if (!b->action) {
+            Console::error("Mission") << "Block " << b->name << " has null action!" << Console::endl;
+            b->done = true;
+            b->stats.attempted = true;
+            b->stats.result = BlockResult::FAILED;
+            continue;
+        }
         BlockResult result  = b->action();
         uint32_t    elapsed = millis() - start;
 
