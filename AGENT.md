@@ -51,7 +51,7 @@ holOS/
 ## Hardware Topology
 
 ```
-                  XBee 868 MHz or USB-CDC (115200 baud)
+                  XBee 868 MHz or USB-CDC (57600 baud default)
  Jetson / PC  <─────────────────────────────────>  Teensy 4.1  (Main Controller)
  (holOS)           framed protocol, CRC8-SMBUS          │
                                                          │ UART 31250 baud (Intercom)
@@ -61,7 +61,7 @@ holOS/
                                                     NeoPixel ring, OLED display
 ```
 
-The Teensy 4.1 is always the authority for motion, safety, and actuation. The Jetson sends high-level commands and reads telemetry. If the Jetson disconnects, the Teensy executes a fallback strategy autonomously.
+The Teensy 4.1 is always the authority for motion, safety, and actuation. The Jetson sends high-level commands and reads telemetry. Two strategy modes exist: **Remote** (strat=1, Jetson runs match.py) and **Internal** (strat=0, Teensy runs C++ blocks autonomously). In Remote mode, if the Jetson disconnects, the Teensy executes a fallback strategy.
 
 ---
 
@@ -149,12 +149,17 @@ To add a new service:
 ### OS State Machine
 
 ```
-BOOT → MANUAL_PROGRAM → AUTO_PROGRAM → STOPPED
+BOOT → MANUAL_PROGRAM ↔ MANUAL → AUTO_PROGRAM → AUTO → STOPPED
 ```
 
+- **BOOT**: hardware init, service registration, calibration load
+- **MANUAL_PROGRAM**: pre-match setup (runs `programManual()`)
 - **MANUAL**: preparation phase — team selection, recalage, terminal commands, IHM interaction
-- **AUTO**: match — if Jetson connected, enters command-wait loop; otherwise runs `match()` fallback
-- Transition: starter inserted (arms) then removed (starts); or `os.start()` command
+- **AUTO_PROGRAM**: transition to match (runs `programAuto()`, arms robot via `robotArmed()`)
+- **AUTO**: match running — if strat=1 (Remote), Jetson sends commands; if strat=0 (Internal), C++ BlockRegistry runs
+- **STOPPED**: match ended — `onMatchEnd()` disables services, only `ihm.run()` stays active. Serial becomes unresponsive (no `updateServices()` in stop routine)
+- Transition to AUTO: starter inserted (arms) → removed (starts); or `match_start` command from webapp; or `start` terminal command
+- `onMatchEnd()` has a double-call guard (static bool). Calls `motion.disengage()` BEFORE `motion.disable()` (order matters due to `SERVICE_METHOD_HEADER`)
 
 ### Timing Cycles
 
@@ -177,7 +182,13 @@ FLASHMEM void command_mycommand(Request& req) {
 }
 ```
 
-Commands can be invoked from the USB serial terminal, from the Jetson over XBee, or from the holOS web UI. Commands registered for mission control: `mission_sd_open`, `mission_sd_line(text)`, `mission_sd_close`, `mission_run`, `mission_abort`.
+Commands can be invoked from the USB serial terminal, from the Jetson over XBee, or from the holOS web UI. Notable command groups:
+- Motion: `go`, `goPolar`, `turn`, `align`, `goAlign`, `go_coc` (cancel-on-stall), `via`, `cancel`, `pause`, `resume`, `feed`
+- Match control: `start`, `stop`, `match_start`, `match_stop`, `match_resume`
+- Block registry: `blocks_list`, `run_block(name)`, `block_done(name)`
+- Mission SD: `mission_sd_open`, `mission_sd_line(text)`, `mission_sd_close`, `mission_run`, `mission_abort`
+- RuntimeConfig: `cfg_list`, `cfg_set(key,value)`, `cfg_save`
+- Bridge: `hb`, `health`, `tel`, `occ`, `fb(id)`
 
 ### JetsonBridge & Fallbacks
 
@@ -191,7 +202,9 @@ Fallback IDs (enum `FallbackID`):
 | 3     | `CUSTOM_1`       | SD mission strategy      |
 | 4     | `CUSTOM_2`       | (free)                   |
 
-The heartbeat timeout (2 s without `hb` command) triggers `CUSTOM_1`, which runs the SD mission strategy if one is loaded, otherwise stops the robot. Register fallbacks in `onRobotBoot()` after `jetsonBridge.enable()`.
+The heartbeat timeout (5 s without `hb` command) triggers `CUSTOM_1`, which runs the SD mission strategy if one is loaded, otherwise stops the robot. **The fallback only fires in Remote mode** (`os.getState() == AUTO && ihm.strategySwitch.getState() == true`). In Internal mode (strat=0), the C++ already handles the match. Register fallbacks in `onRobotBoot()` after `jetsonBridge.enable()`.
+
+Python heartbeat tolerance: the transport now tolerates **3 consecutive heartbeat failures** before disconnecting (was 1). This avoids spurious disconnections during busy serial (heavy Console output during strategy execution).
 
 ### MissionController (SD Fallback)
 
@@ -254,8 +267,8 @@ All communication goes through an abstract `Transport` base class (`transport/ba
 
 | Class            | File             | Usage                              |
 |------------------|------------------|------------------------------------|
-| `XBeeTransport`  | `xbee.py`        | XBee radio (Jetson, 31250 baud)    |
-| `WiredTransport` | `wired.py`       | USB-CDC direct (holOS wired mode)  |
+| `XBeeTransport`  | `xbee.py`        | XBee radio (57600 baud default)    |
+| `WiredTransport` | `wired.py`       | USB-CDC direct (thin alias for XBeeTransport) |
 | `VirtualTransport` | `virtual.py`   | Simulator (in-process SimBridge)   |
 
 **Thread-safety constraints on transport:**
@@ -279,15 +292,20 @@ Heartbeat:        hb / pong\n
 
 CRC: **CRC8-SMBUS** (polynomial 0x07, init 0x00) — Python: `crcmod`, C++: `FastCRC`.
 
-Telemetry channels:
+Telemetry channels (compact format, configurable rates via RuntimeConfig):
 
-| Type     | Rate  | Format                                      |
-|----------|-------|---------------------------------------------|
-| `pos`    | 10 Hz | `x=<mm>,y=<mm>,theta=<rad>`                 |
-| `motion` | event | `IDLE` / `RUNNING` / `DONE:ok` / `DONE:fail` |
-| `safety` | 10 Hz | `0` or `1`                                  |
-| `chrono` | 10 Hz | `<elapsed_ms>`                              |
-| `occ`    | 2 Hz  | compressed hex occupancy map                |
+| Channel  | Alias  | Rate (default) | Compact format                              |
+|----------|--------|----------------|---------------------------------------------|
+| `T:p`    | `pos`  | 10 Hz (100ms)  | `x_mm y_mm theta_mrad` (space-separated ints) |
+| `T:m`    | `motion`| 10 Hz + event | `R tx ty dist feed%` (running) / `I feed%` (idle) / `DONE:ok\|fail` |
+| `T:s`    | `safety`| 2 Hz + change | `0` or `1`                                  |
+| `T:c`    | `chrono`| 1 Hz (1000ms) | `<elapsed_ms>`                              |
+| `T:od`   | `occ`  | 2 Hz (500ms)   | compressed hex occupancy map                |
+| `T:mask` | `mask` | on-change      | `11110` (flags: pos,motion,safety,chrono,occ) |
+
+Rates configurable on SD: `tel.pos_ms=100`, `tel.motion_ms=100`, etc. Legacy `TEL:` prefix is still parsed by Python for backwards compatibility.
+
+Python subscribes to both compact and legacy names: `t.subscribe_telemetry('p', _on_pos)` + `t.subscribe_telemetry('pos', _on_pos)`.
 
 ### Strategy System
 
@@ -350,7 +368,7 @@ Key API endpoints (Flask, `run.py`):
 | PUT    | `/api/macros`                    | Save macros.json                     |
 | POST   | `/api/execute`                   | Execute a command on robot           |
 
-SocketIO events: `telemetry`, `motion_done`, `connected`, `disconnected`.
+SocketIO events: `state` (full robot state at 10Hz), `motion_done`, `serial_status`, `match_state`, `cpp_block_result`, `test_progress`, `test_result`, `test_done`, `reload`.
 
 ---
 
@@ -369,15 +387,17 @@ The match runs for exactly 100 s (`Settings::Match::DURATION = 100000 ms`). Any 
 
 ### Fallback Chain
 
-When the Jetson disconnects mid-match, the firmware must react within the heartbeat timeout (default 5 s, `m_heartbeatTimeoutMs`). The chain is:
+When the Jetson disconnects mid-match **in Remote mode (strat=1)**, the firmware must react within the heartbeat timeout (default 5 s, `m_heartbeatTimeoutMs`). The chain is:
 
 ```
-Jetson silent > 5s
+Jetson silent > 5s  AND  os.getState() == AUTO  AND  strat=1 (Remote)
     → JetsonBridge::_checkWatchdog() fires
     → triggerFallback(FallbackID::CUSTOM_1)
         → if SD strategy loaded: MissionController::execute()  (blocking, motor-safe)
         → else: motion.cancel() + disengage  (safe stop)
 ```
+
+**In Internal mode (strat=0), the fallback watchdog is disabled** — the C++ already runs the match autonomously.
 
 Fallback IDs are registered in `onRobotBoot()` and cannot be changed at runtime. If you need a new autonomous behavior on disconnect, use `CUSTOM_2` (currently free) or modify the `CUSTOM_1` lambda.
 
@@ -400,11 +420,33 @@ Safety is intentionally **never delegated to the Jetson** — it runs locally on
 - After a `DONE:` event, the firmware retransmits every 2 s until `ack_done` is received. Always call or auto-ack after motion completes (this is handled by the transport layer for `execute()` flows and by auto-ack in `_on_motion` for `fire()` flows).
 - The `MissionController` polls `motion.hasFinished()` with a 30 s timeout. If a motion stall is not caught before this timeout, the next command executes anyway — design macros with stall guards.
 
-### SD Card
+### StallDetector
+
+The motion system includes a stall detector (`stallDetector.h/.cpp`) that checks if the robot has made progress on a sliding window. It can be controlled per-move:
+
+```cpp
+async motion.noStall().go(x, y);        // disable for this move
+async motion.withStall(false).go(x, y); // same
+```
+
+Default thresholds are in `Settings::Motion::Stall`. Calibrate by calling `motion.printDiagReport()` after a move — the `stallMinTransMm` field shows the minimum displacement observed, set `TRANS_DISP_MM` slightly below that value.
+
+To disable globally: set `stallEnabled = false` in `MoveOptions` struct (motion.h).
+
+### SD Card & RuntimeConfig
 
 The SD card (Teensy 4.1 built-in) is used for:
 - Calibration save/load (`/calibration.json`)
 - Mission fallback strategy (`/mission_fallback.cfg`)
+- Runtime configuration (`/config.cfg`) — key=value pairs loaded at boot
+
+RuntimeConfig (`runtime_config.h/.cpp`) provides a lightweight key=value store:
+- `RuntimeConfig::load()` — reads `/config.cfg` at boot
+- `RuntimeConfig::getInt("tel.pos_ms", 100)` — typed getters with defaults
+- `RuntimeConfig::set("key", "value")` + `RuntimeConfig::save()` — modify + persist
+- Terminal: `cfg_list`, `cfg_set(key,value)`, `cfg_save`
+
+Currently used for: telemetry rates (`tel.pos_ms`, `tel.motion_ms`, etc.), actuator servo limits.
 
 SD access is SPI-based and can take 5–50 ms per operation. **Never call SD functions from ISR context or from within the stepper/PID cycles.** All SD access happens in the main OS loop (boot, command handlers, `MissionController::sdClose()`).
 

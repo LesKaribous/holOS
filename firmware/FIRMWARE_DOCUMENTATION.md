@@ -4,7 +4,7 @@
 
 The holOS firmware runs on two Teensy microcontrollers working in tandem inside a holonomic robot platform designed for the Coupe de France de Robotique. The Teensy 4.1 serves as the main controller (motion, strategy, actuators, remote control) while the Teensy 4.0 handles perception (LIDAR, obstacle mapping, visual feedback).
 
-Both boards communicate via a hardwired UART intercom link at 31250 baud. The T4.1 can also be controlled remotely by a Jetson (via XBee radio at 31250 baud) or by a PC (via USB-CDC at 115200 baud).
+Both boards communicate via a hardwired UART intercom link at 31250 baud. The T4.1 can also be controlled remotely by a Jetson or PC via XBee radio or USB-CDC (57600 baud by default, configurable).
 
 ---
 

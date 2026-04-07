@@ -22,7 +22,7 @@ Jetson / PC  ←— XBee or USB-CDC (framed CRC8 protocol) —→  Teensy 4.1 (m
 - **Software** (`software/`): Python 3. `brain.py` orchestrates everything. Transport abstraction (`transport/`) lets the same strategy code run on real hardware or simulator. Services in `services/` mirror firmware capabilities. Strategy in `strategy/match.py` is hot-reloadable.
 - **Entry point** (`software/run.py`): Unified for PC + Jetson. Flask + SocketIO on port 5000. Auto-detects platform (Linux=Jetson, Windows=PC). `sim/bridge.py` is a fake Teensy. `sim/physics.py` runs holonomic kinematics at 60Hz. `sim/world.py` has the occupancy grid + A* pathfinder.
 - **Web UI** (`software/sim/static/`): Single-page app — `index.html`, `app.js`, `style.css`. Canvas-based field rendering, map pins, trajectory builder, remote control drawer, actuator page with sequence editor, opponent simulation, grid brush tools.
-- **Protocol** (`shared/protocol.py`): `<id>:<cmd>|<crc8>\n` for commands, `r<id>:<response>|<crc8>\n` for replies, `TEL:<type>:<data>|<crc8>\n` for telemetry.
+- **Protocol** (`shared/protocol.py`): `<id>:<cmd>|<crc8>\n` for commands, `r<id>:<response>|<crc8>\n` for replies, `T:<chan> <data>|<crc8>\n` for compact telemetry (legacy `TEL:` prefix also supported).
 
 ### Key files to read when starting
 
@@ -50,17 +50,22 @@ Jetson / PC  ←— XBee or USB-CDC (framed CRC8 protocol) —→  Teensy 4.1 (m
 ### Current state (update this section each session)
 
 <!-- Update these bullets before pasting the prompt -->
-- Grid-cell brush for painting/erasing occupancy grid cells (replaces old dynamic round obstacles)
-- Fake opponent with placement, sequence playback, and canvas rendering
-- Actuator page: per-servo sliders, pose library (snapshot/apply/save/load), sequence builder (pose+delay+command steps, play/stop, export as Python code), pneumatics with `initPump()`
-- Pathfinder: A* with obstacle inflation (ROBOT_RADIUS clearance) and diagonal corner-cut blocking
-- Remote control: integrated as a slide-in drawer on the right side of the map view
-- Left nav: SVG icons, collapsible groups (Game, Debug, Setup)
-- Map: pin/popover system (Go, Set pos, Copy, Add waypoint), trajectory builder with copy/paste/execute
+- Unified entry point `run.py` (PC + Jetson, auto-detect platform)
+- Dual strategy: Remote (Jetson match.py) / Internal (C++ BlockRegistry)
+- Compact telemetry format (`T:p`, `T:m`, `T:s`, `T:c`, `T:od`) with configurable rates on SD
+- RuntimeConfig: key=value store loaded from `/config.cfg` on SD card
+- BlockRegistry: C++ blocks discoverable from Jetson, executable locally
+- StallDetector: sliding-window stall detection, per-move configurable
+- Webapp match control: Start/Stop/Resume + strategy switch detection
+- Motion target displayed on webapp map during match (hardware + sim)
+- Heartbeat tolerates 3 consecutive failures before disconnecting
+- Fallback only fires in Remote mode (strat=1) during active match
+- `onMatchEnd()` properly orders disengage before disable
+- STOPPED state diagnostic logging (heartbeat every 5s)
 
 ### What's next (update this too)
 
 <!-- Fill in your current priorities -->
-- Strategy development and mission testing
-- Actuator sequence refinement for match actions
-- Field testing with real hardware
+- StallDetector calibration (currently too sensitive, needs tuning)
+- Strategy development and match testing
+- Field testing and competition preparation
