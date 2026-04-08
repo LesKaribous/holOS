@@ -66,6 +66,7 @@ FLASHMEM void Actuators::registerPoses()
     if(groupAB.hasServo((int)ServoIDs::HUGGER_GRAB)){
         setServoPos(groupAB.getServo((int)ServoIDs::HUGGER_GRAB), ManipulatorPose::DROP, ActuatorPresets::AB.gripper_drop);
         setServoPos(groupAB.getServo((int)ServoIDs::HUGGER_GRAB), ManipulatorPose::GRAB, ActuatorPresets::AB.gripper_grab);
+        setServoPos(groupAB.getServo((int)ServoIDs::HUGGER_GRAB), ManipulatorPose::STORE, ActuatorPresets::AB.gripper_store);
     }
 
     // --- BC ---

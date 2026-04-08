@@ -19,6 +19,8 @@ Adafruit_PWMServoDriver pwm = Adafruit_PWMServoDriver();
 namespace Timing {
     constexpr uint32_t COLLECT_STOCK_A = 8000;
     constexpr uint32_t COLLECT_STOCK_B = 6000;
+    constexpr uint32_t STORE_STOCK_A = 8000;
+    constexpr uint32_t STORE_STOCK_B = 6000;
 }
 
 // ── Stack diagnostic ─────────────────────────────────────────────────────────
@@ -35,32 +37,21 @@ static uint32_t freeStack() {
 
 // Offset commun factored
 static void collectStock(Vec2 target, TableCompass tc, RobotCompass rc) {
-    constexpr float    APPROACH_OFFSET = 300.0f;
-    constexpr float    GRAB_OFFSET     = 155.0f;
+    constexpr float    APPROACH_OFFSET = 350.0f;
+    constexpr float    GRAB_OFFSET     = 210.0f;
     constexpr uint32_t GRAB_DELAY_MS   = 1000;
 
     Vec2 approach = target - PolarVec(getCompassOrientation(tc) * DEG_TO_RAD, APPROACH_OFFSET).toVec2();
     Vec2 grab     = target - PolarVec(getCompassOrientation(tc) * DEG_TO_RAD, GRAB_OFFSET).toVec2();
 
-    Console::info("Strategy") << "[collectStock] approach  SP=" << String(freeStack()) << Console::endl;
+    actuators.grab(rc);
     async motion.goAlign(approach, rc, getCompassOrientation(tc));
-
-    Console::info("Strategy") << "[collectStock] grab      SP=" << String(freeStack()) << Console::endl;
     async motion.goAlign(grab,     rc, getCompassOrientation(tc));
 
-    Console::info("Strategy") << "[collectStock] elevator↓ SP=" << String(freeStack()) << Console::endl;
     actuators.moveElevator(rc, ElevatorPose::DOWN);
-
-    Console::info("Strategy") << "[collectStock] waitMs(1) SP=" << String(freeStack()) << Console::endl;
     waitMs(GRAB_DELAY_MS);
-
-    Console::info("Strategy") << "[collectStock] grab()    SP=" << String(freeStack()) << Console::endl;
-    actuators.grab(rc);
-
-    Console::info("Strategy") << "[collectStock] waitMs(2) SP=" << String(freeStack()) << Console::endl;
+    actuators.store(rc);
     waitMs(GRAB_DELAY_MS);
-
-    Console::info("Strategy") << "[collectStock] elevator↑ SP=" << String(freeStack()) << Console::endl;
     actuators.moveElevator(rc, ElevatorPose::STORE);
 
     safety.enable();
@@ -68,6 +59,33 @@ static void collectStock(Vec2 target, TableCompass tc, RobotCompass rc) {
     Console::info("Strategy") << "[collectStock] done      SP=" << String(freeStack()) << Console::endl;
 }
 
+// Offset commun factored
+static void storeStock(Vec2 target, TableCompass tc, RobotCompass rc) {
+    constexpr float    APPROACH_OFFSET = 350.0f;
+    constexpr float    GRAB_OFFSET     = 210.0f;
+    constexpr uint32_t GRAB_DELAY_MS   = 1000;
+
+    Vec2 approach = target - PolarVec(getCompassOrientation(tc) * DEG_TO_RAD, APPROACH_OFFSET).toVec2();
+    Vec2 grab     = target - PolarVec(getCompassOrientation(tc) * DEG_TO_RAD, GRAB_OFFSET).toVec2();
+    Vec2 grabrecal= target - PolarVec(getCompassOrientation(tc) * DEG_TO_RAD, GRAB_OFFSET-20).toVec2();
+
+    async motion.goAlign(approach, rc, getCompassOrientation(tc));
+    async motion.goAlign(grab,     rc, getCompassOrientation(tc));
+
+    waitMs(GRAB_DELAY_MS);
+    actuators.drop(rc);//release just enough
+    waitMs(GRAB_DELAY_MS);
+    actuators.grab(rc);//Grab means wide open
+
+    motion.setFeedrate(0.3f);
+    async motion.goAlign(grabrecal,     rc, getCompassOrientation(tc));
+    motion.setFeedrate(1.0f);
+    async motion.goAlign(approach,     rc, getCompassOrientation(tc));
+
+    safety.enable();
+    motion.setFeedrate(1.0f);
+    Console::info("Strategy") << "[storeStock] done      SP=" << String(freeStack()) << Console::endl;
+}
 
 // ============================================================
 //  Définition des blocs — une fonction par objectif
@@ -93,22 +111,25 @@ static BlockResult blockCollectA() {
     //Console::info("Strategy") << "Zone A: " << colorName(color) << Console::endl;
     //if (!isColorUseful(color)) return BlockResult::FAILED;
 
-    Console::info("Strategy") << "[blockCollectA] goAlign SP=" << String(freeStack()) << Console::endl;
-
-    Vec2 approachYellow01 = POI::stockYellow_01;
-    approachYellow01 += PolarVec(getCompassOrientation(TableCompass::EAST) * DEG_TO_RAD, 100.0f).toVec2();
-
-    async motion.goAlign(approachYellow01, RobotCompass::AB, getCompassOrientation(TableCompass::WEST));
-
-    if (!motion.wasSuccessful()) {
-        Console::warn("Strategy") << "[blockCollectA] goAlign FAILED" << Console::endl;
-        return BlockResult::FAILED;
-    }
-
     Console::info("Strategy") << "[blockCollectA] → collectStock  SP=" << String(freeStack()) << Console::endl;
     collectStock(POI::stockYellow_01, TableCompass::WEST, RobotCompass::AB);
 
     Console::info("Strategy") << "[blockCollectA] END  SP=" << String(freeStack()) << Console::endl;
+    return motion.wasSuccessful() ? BlockResult::SUCCESS : BlockResult::FAILED;
+}
+
+static BlockResult blockStoreA() {
+    Console::info("Strategy") << "[blockStoreA] START  SP=" << String(freeStack()) << Console::endl;
+
+    // Interroger la couleur avant de se déplacer (sync, 400ms max)
+    //ObjectColor color = vision.queryColorSync(POI::testA, 400);
+    //Console::info("Strategy") << "Zone A: " << colorName(color) << Console::endl;
+    //if (!isColorUseful(color)) return BlockResult::FAILED;
+
+    Console::info("Strategy") << "[blockStoreA] → storeStock  SP=" << String(freeStack()) << Console::endl;
+    storeStock(POI::pantry_03, TableCompass::WEST, RobotCompass::AB);
+
+    Console::info("Strategy") << "[blockStoreA] END  SP=" << String(freeStack()) << Console::endl;
     return motion.wasSuccessful() ? BlockResult::SUCCESS : BlockResult::FAILED;
 }
 
@@ -143,10 +164,10 @@ static bool isZoneAFree() {
 // ============================================================
 
 FLASHMEM void registerBlocks() {
-
-    //TODO move the registration in strategy.cpp
     BlockRegistry& reg = BlockRegistry::instance();
     reg.add("collect_A", 10, 150, Timing::COLLECT_STOCK_A, blockCollectA, isZoneAFree);
+    reg.add("store_A", 10, 150, Timing::STORE_STOCK_A, blockStoreA, isZoneAFree);
+
     // reg.add("collect_B", 8, 80, Timing::COLLECT_STOCK_B, blockCollectB, isZoneBFree);
 }
 
@@ -207,7 +228,8 @@ FLASHMEM void recalage(){
     waitMs(600);
 
     if(ihm.isColor(Settings::BLUE)){
-        motion.setAbsPosition(Vec3( Vec2(250,250), -90 * DEG_TO_RAD));
+        motion.setAbsPosition(Vec3( Vec2(3000-125,145), -90 * DEG_TO_RAD));
+        motion.goAlign(Vec2(3000-350, 300), RobotCompass::AB, getCompassOrientation(TableCompass::WEST));
 
         /*
         motion.setFeedrate(0.2);
@@ -224,7 +246,8 @@ FLASHMEM void recalage(){
         //motion.setAbsPosition(Vec3(POI::b2, motion.getOrientation()));
 
     }else{
-        motion.setAbsPosition(Vec3(3000 - 200 , 250 ,-90 * DEG_TO_RAD));
+        motion.setAbsPosition(Vec3(125, 145 ,-90 * DEG_TO_RAD));
+        motion.goAlign(Vec2(350, 300), RobotCompass::AB, getCompassOrientation(TableCompass::EAST));
         /*
         motion.setFeedrate(0.2);
         probeBorder(TableCompass::SOUTH, RobotCompass::BC,100);
