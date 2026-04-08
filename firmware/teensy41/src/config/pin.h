@@ -151,6 +151,13 @@
             EV_CA_LEFT = 3;
         }
 
+        //NOTE
+            // 4 Hugger
+            // 5 Lift
+
+            // 4 et 5, 
+            // 16 et 23
+
         // Actuator Pinout
         namespace Servo{
             // Connector Act 1
