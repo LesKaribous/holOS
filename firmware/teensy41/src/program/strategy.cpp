@@ -94,7 +94,12 @@ static BlockResult blockCollectA() {
     //if (!isColorUseful(color)) return BlockResult::FAILED;
 
     Console::info("Strategy") << "[blockCollectA] goAlign SP=" << String(freeStack()) << Console::endl;
-    async motion.goAlign(POI::stockYellow_01, RobotCompass::AB, getCompassOrientation(TableCompass::SOUTH));
+
+    Vec2 approachYellow01 = POI::stockYellow_01;
+    approachYellow01 += PolarVec(getCompassOrientation(TableCompass::EAST) * DEG_TO_RAD, 100.0f).toVec2();
+
+    async motion.goAlign(approachYellow01, RobotCompass::AB, getCompassOrientation(TableCompass::WEST));
+
     if (!motion.wasSuccessful()) {
         Console::warn("Strategy") << "[blockCollectA] goAlign FAILED" << Console::endl;
         return BlockResult::FAILED;
@@ -138,6 +143,8 @@ static bool isZoneAFree() {
 // ============================================================
 
 FLASHMEM void registerBlocks() {
+
+    //TODO move the registration in strategy.cpp
     BlockRegistry& reg = BlockRegistry::instance();
     reg.add("collect_A", 10, 150, Timing::COLLECT_STOCK_A, blockCollectA, isZoneAFree);
     // reg.add("collect_B", 8, 80, Timing::COLLECT_STOCK_B, blockCollectB, isZoneBFree);

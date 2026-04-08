@@ -47,8 +47,8 @@ public:
     //  Options par move — POD appliqué dans move(), reset ensuite
     // ============================================================
     struct MoveOptions {
-        bool  stallEnabled     = true;   // active la stall detection
-        bool  cancelOnStall    = true;   // annule le move si stall détecté
+        bool  stallEnabled     = false;   // active la stall detection
+        bool  cancelOnStall    = false;   // annule le move si stall détecté
         bool  optimizeRotation = true;   // minimise la rotation (stepper mode)
         float feedrate         = -1.0f;  // -1 → utilise le feedrate global
     };
