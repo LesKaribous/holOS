@@ -50,6 +50,7 @@ void command_raise(const args_t& args);
 void command_lower(const args_t& args);
 void command_grab(const args_t& args);
 void command_drop(const args_t& args);
+void command_store(const args_t& args);
 void command_pump(const args_t& args);
 void command_ev(const args_t& args);
 void command_initPump(const args_t& args);

@@ -163,6 +163,15 @@ class MotionService:
         self._execute_go(target)
         return self
 
+    def go_heading(self, x_or_vec, y: float = None,
+                   theta_deg: float = 0.0) -> 'MotionService':
+        """Move to (x, y) and set final heading to theta_deg (table frame, 0=East).
+        Unlike go_align(), this does not require a RobotCompass side — the angle
+        is the raw robot heading. Use this for map-click "go with rotation" commands."""
+        target = x_or_vec if isinstance(x_or_vec, Vec2) else Vec2(x_or_vec, y)
+        self._execute_go_align(target, theta_deg)
+        return self
+
     def go_polar_align(self, heading_deg: float, dist: float,
                        rc: RobotCompass, orientation_deg: float) -> 'MotionService':
         target = self._pos + polar_vec(heading_deg, dist)

@@ -420,7 +420,9 @@ def api_exec():
 
 @app.route('/api/go', methods=['POST'])
 def api_go():
-    """Move to (x, y) via the active brain's motion service (uses pathfinder if enabled)."""
+    """Move to (x, y) via the active brain's motion service (uses pathfinder if enabled).
+    Optional 'theta' parameter (degrees, table frame 0=East): if provided, a goAlign
+    command is issued so the robot reaches the target with that final heading."""
     data = request.get_json(force=True) or {}
     try:
         x = float(data['x'])
@@ -429,7 +431,11 @@ def api_go():
         return jsonify({'ok': False, 'res': f'bad params: {e}'}), 400
     try:
         b = _active_brain()
-        b.motion.go(x, y)
+        theta = data.get('theta', None)
+        if theta is not None:
+            b.motion.go_heading(x, y, float(theta))
+        else:
+            b.motion.go(x, y)
         ok = b.motion.was_successful()
         return jsonify({'ok': ok, 'res': 'ok' if ok else 'failed'})
     except Exception as e:

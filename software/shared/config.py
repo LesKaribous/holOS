@@ -111,6 +111,21 @@ class BlockResult(Enum):
     FAILED  = 1
 
 
+class ElevatorPose(Enum):
+    """Mirrors firmware enum class ElevatorPose (actuators.h).
+    Integer values are sent directly in the elevator(side, pose) wire command."""
+    STORE = 0
+    UP    = 1
+    DOWN  = 2
+
+
+class ManipulatorPose(Enum):
+    """Mirrors firmware enum class ManipulatorPose (actuators.h)."""
+    DROP  = 0
+    GRAB  = 1
+    STORE = 2
+
+
 # ── 2D vector ─────────────────────────────────────────────────────────────────
 
 @dataclass

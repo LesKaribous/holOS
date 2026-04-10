@@ -21,6 +21,7 @@ namespace Timing {
     constexpr uint32_t COLLECT_STOCK_B = 6000;
     constexpr uint32_t STORE_STOCK_A = 8000;
     constexpr uint32_t STORE_STOCK_B = 6000;
+    constexpr uint32_t THERMO_SET = 15000;
 }
 
 // ── Stack diagnostic ─────────────────────────────────────────────────────────
@@ -104,34 +105,33 @@ static bool isColorUseful(ObjectColor color) {
 }
 
 static BlockResult blockCollectA() {
-    Console::info("Strategy") << "[blockCollectA] START  SP=" << String(freeStack()) << Console::endl;
-
-    // Interroger la couleur avant de se déplacer (sync, 400ms max)
-    //ObjectColor color = vision.queryColorSync(POI::testA, 400);
-    //Console::info("Strategy") << "Zone A: " << colorName(color) << Console::endl;
-    //if (!isColorUseful(color)) return BlockResult::FAILED;
-
-    Console::info("Strategy") << "[blockCollectA] → collectStock  SP=" << String(freeStack()) << Console::endl;
     collectStock(POI::stockYellow_01, TableCompass::WEST, RobotCompass::AB);
-
-    Console::info("Strategy") << "[blockCollectA] END  SP=" << String(freeStack()) << Console::endl;
     return motion.wasSuccessful() ? BlockResult::SUCCESS : BlockResult::FAILED;
 }
 
 static BlockResult blockStoreA() {
-    Console::info("Strategy") << "[blockStoreA] START  SP=" << String(freeStack()) << Console::endl;
-
-    // Interroger la couleur avant de se déplacer (sync, 400ms max)
-    //ObjectColor color = vision.queryColorSync(POI::testA, 400);
-    //Console::info("Strategy") << "Zone A: " << colorName(color) << Console::endl;
-    //if (!isColorUseful(color)) return BlockResult::FAILED;
-
-    Console::info("Strategy") << "[blockStoreA] → storeStock  SP=" << String(freeStack()) << Console::endl;
     storeStock(POI::pantry_03, TableCompass::WEST, RobotCompass::AB);
-
-    Console::info("Strategy") << "[blockStoreA] END  SP=" << String(freeStack()) << Console::endl;
     return motion.wasSuccessful() ? BlockResult::SUCCESS : BlockResult::FAILED;
 }
+
+static BlockResult blockCollectB() {
+    collectStock(POI::stockYellow_02, TableCompass::WEST, RobotCompass::AB);
+    return motion.wasSuccessful() ? BlockResult::SUCCESS : BlockResult::FAILED;
+}
+
+static BlockResult blockStoreB() {
+    storeStock(POI::pantry_04, TableCompass::EAST, RobotCompass::AB);
+    return motion.wasSuccessful() ? BlockResult::SUCCESS : BlockResult::FAILED;
+}
+
+static BlockResult thermometer_set() {
+    async motion.goAlign(POI::thermometer_hot_yellow, RobotCompass::C, getCompassOrientation(TableCompass::WEST));
+    actuators.getActuatorGroup(RobotCompass::C).moveServoToPose((int)ServoIDs::GRABBER_RIGHT, (int) ManipulatorPose::GRAB, 100);
+    async motion.go(POI::thermometer_target_yellow);
+    actuators.getActuatorGroup(RobotCompass::C).moveServoToPose((int)ServoIDs::GRABBER_RIGHT, (int) ManipulatorPose::STORE, 100);
+    return motion.wasSuccessful() ? BlockResult::SUCCESS : BlockResult::FAILED;
+}
+
 
 // ============================================================
 //  Conditions de faisabilité
@@ -155,6 +155,19 @@ static bool isZoneAFree() {
     return !occupied;
 }
 
+static bool isZoneBFree() {
+    bool occupied = occupancy.isZoneOccupied(POI::stockYellow_02, ZoneCheck::RADIUS);
+    if (occupied)
+        Console::warn("Strategy") << "Zone B occupee — bloc skipe" << Console::endl;
+    return !occupied;
+}
+
+static bool isZoneThermoFree() {
+    bool occupied = occupancy.isZoneOccupied(POI::thermometer_hot_yellow, ZoneCheck::RADIUS);
+    if (occupied)
+        Console::warn("Strategy") << "Zone Thermo occupee — bloc skipe" << Console::endl;
+    return !occupied;
+}
 
 // ============================================================
 //  registerBlocks() — Register individual blocks into BlockRegistry
@@ -167,6 +180,9 @@ FLASHMEM void registerBlocks() {
     BlockRegistry& reg = BlockRegistry::instance();
     reg.add("collect_A", 10, 150, Timing::COLLECT_STOCK_A, blockCollectA, isZoneAFree);
     reg.add("store_A",   10, 150, Timing::STORE_STOCK_A,   blockStoreA);
+    reg.add("collect_B",   10, 150, Timing::COLLECT_STOCK_B,   blockCollectB, isZoneBFree);
+    reg.add("store_B",   10, 150, Timing::STORE_STOCK_B,   blockStoreB, isZoneBFree);
+    reg.add("thermo_set", 10, 150, Timing::THERMO_SET,   thermometer_set, isZoneThermoFree);
     // reg.add("collect_B", 8, 80, Timing::COLLECT_STOCK_B, blockCollectB, isZoneBFree);
     // reg.add("store_B",   8, 80, Timing::STORE_STOCK_B,   blockStoreB);
 }
@@ -215,9 +231,12 @@ FLASHMEM void match() {
       m.addStep("collect_A", Timing::COLLECT_STOCK_A, blockCollectA, isZoneAFree);
       m.addStep("store_A",   Timing::STORE_STOCK_A,   blockStoreA); }
 
-    // { Mission& m = planner.addMission("stock_B", 8, 80);
-    //   m.addStep("collect_B", Timing::COLLECT_STOCK_B, blockCollectB, isZoneBFree);
-    //   m.addStep("store_B",   Timing::STORE_STOCK_B,   blockStoreB); }
+    { Mission& m = planner.addMission("stock_B", 8, 150);
+      m.addStep("collect_B", Timing::COLLECT_STOCK_B, blockCollectB, isZoneBFree);
+      m.addStep("store_B",   Timing::STORE_STOCK_B,   blockStoreB); }
+
+    { Mission& m = planner.addMission("thermo_set", 10, 150);
+      m.addStep("thermo_set", Timing::THERMO_SET, thermometer_set, isZoneThermoFree); }
 
     planner.run();
 
@@ -469,4 +488,33 @@ FLASHMEM void startPump(RobotCompass rc, bool side){
     // re-enters the script job causing interpreter state corruption → freeze.
     // delay() hard-blocks but 200 ms is well within the 5 000 ms heartbeat
     // timeout, so no disconnect risk.
-    constexpr uint16_t rampSteps[] = { 800, 1600
+    constexpr uint16_t rampSteps[] = { 800, 1600, 2400, 3200, 4095 };
+    for (uint16_t duty : rampSteps) {
+        pwm.setPWM(pumpPin, 0, duty);
+        delay(40);
+    }
+    setOutput(pumpPin, true); // Full power
+}
+
+FLASHMEM void stopPump(RobotCompass rc, uint16_t evPulseDuration, bool side){
+    uint8_t evPin ;
+    uint8_t pumpPin ;
+    if(side) evPin = Pin::PCA9685::EV_CA_RIGHT ;
+    else evPin = Pin::PCA9685::EV_CA_LEFT;
+    if(side) pumpPin = Pin::PCA9685::PUMP_CA_RIGHT;
+    else pumpPin = Pin::PCA9685::PUMP_CA_LEFT;
+    setOutput(pumpPin, false); // Stopper la pompe
+
+    // Wait for pump back-EMF to settle before energizing the EV solenoid.
+    // Sudden pump deenergization creates a back-EMF spike from the motor
+    // inductance; simultaneously opening the EV adds an inrush current spike.
+    // The combined voltage dip can trigger a Teensy brownout reset (= USB-CDC
+    // "serial closed").  100 ms is enough for the transient to dissipate while
+    // keeping total stopPump() time well within the 3 000 ms command timeout.
+    // IMPORTANT: use delay() NOT waitMs() — same reentrancy issue as startPump.
+    delay(100);
+
+    setOutput(evPin, true);    // Ouvrir l’EV
+    delay(evPulseDuration);    // Maintenir l’EV ouverte
+    setOutput(evPin, false);   // Fermer l’EV
+}

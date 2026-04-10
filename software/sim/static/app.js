@@ -897,11 +897,22 @@ function pinCoordsEdited() {
 // ── Pin actions ─────────────────────────────────────────────────────────────
 function pinGoHere() {
   if (!_mapPin) return;
+  // If theta differs from current robot heading by more than 2°, include it
+  // so the backend issues a goAlign instead of a plain go.
+  const currentThetaDeg = lastState?.robot ? lastState.robot.theta * 180 / Math.PI : null;
+  const pinTheta = _mapPin.theta ?? 0;
+  const rotationChanged = currentThetaDeg == null ||
+                          Math.abs(pinTheta - currentThetaDeg) > 2.0;
+  const body = { x: _mapPin.x, y: _mapPin.y };
+  if (rotationChanged) body.theta = pinTheta;
   fetch('/api/go', {
     method: 'POST', headers: {'Content-Type':'application/json'},
-    body: JSON.stringify({ x: _mapPin.x, y: _mapPin.y })
+    body: JSON.stringify(body)
   }).then(r => r.json()).then(d => {
-    showToast(d.ok ? `Go → (${_mapPin.x}, ${_mapPin.y})` : `Error: ${d.res}`);
+    const tag = rotationChanged
+      ? `(${_mapPin.x}, ${_mapPin.y}, ${pinTheta.toFixed(1)}°)`
+      : `(${_mapPin.x}, ${_mapPin.y})`;
+    showToast(d.ok ? `Go → ${tag}` : `Error: ${d.res}`);
   }).catch(() => showToast('Request failed'));
 }
 

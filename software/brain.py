@@ -22,6 +22,7 @@ from services.safety    import SafetyService
 from services.vision    import VisionService
 from services.chrono    import ChronoService
 from services.occupancy import OccupancyService
+from services.actuators import ActuatorsService
 from shared.occupancy   import OccupancyGrid
 from shared.pathfinder  import Pathfinder
 
@@ -59,6 +60,7 @@ class Brain:
         self.vision    = VisionService(transport)
         self.chrono    = ChronoService(transport)
         self.occupancy = OccupancyService(transport, grid)
+        self.actuators = ActuatorsService(transport)
 
         # Strategy module (hot-reloadable)
         self._strategy_module = None
@@ -100,6 +102,7 @@ class Brain:
             mod.safety    = self.safety
             mod.chrono    = self.chrono
             mod.occupancy = self.occupancy
+            mod.actuators = self.actuators
             mod.log       = self.log
 
             spec.loader.exec_module(mod)

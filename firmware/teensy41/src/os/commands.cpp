@@ -46,6 +46,7 @@ FLASHMEM void registerCommands() {
     CommandHandler::registerCommand("lower(side)", "Lower elevator", command_lower);
     CommandHandler::registerCommand("grab(side)", "Grab object using actuator", command_grab);
     CommandHandler::registerCommand("drop(side)", "Drop object using actuator", command_drop);
+    CommandHandler::registerCommand("store(side)", "Store object using actuator", command_store);
     CommandHandler::registerCommand("pump(side)", "enable pump", command_pump);
     CommandHandler::registerCommand("ev(side)", " disable pump", command_ev);
     CommandHandler::registerCommand("initPump", " Init Pump", command_initPump);
@@ -432,6 +433,14 @@ FLASHMEM void command_grab(const args_t& args){
     if(side.equals("AB")) actuators.grab(RobotCompass::AB);
     //else if(side.equals("BC")) actuators.grab(RobotCompass::BC);
     else if(side.equals("CA")) actuators.grab(RobotCompass::CA);
+}
+
+FLASHMEM void command_store(const args_t& args){
+    if(args.size() != 1)return;
+    const String& side = args[0];
+    if(side.equals("AB")) actuators.store(RobotCompass::AB);
+    //else if(side.equals("BC")) actuators.store(RobotCompass::BC);
+    else if(side.equals("CA")) actuators.store(RobotCompass::CA);
 }
 
 
