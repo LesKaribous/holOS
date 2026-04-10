@@ -157,27 +157,29 @@ static bool isZoneAFree() {
 
 
 // ============================================================
-//  registerBlocks() — Register all C++ blocks into BlockRegistry
+//  registerBlocks() — Register individual blocks into BlockRegistry
 //  Called once at boot from onRobotBoot().
-//  These blocks become discoverable from Jetson via blocks_list
+//  Blocks remain discoverable from Jetson via blocks_list
 //  and individually executable via run_block(name).
 // ============================================================
 
 FLASHMEM void registerBlocks() {
     BlockRegistry& reg = BlockRegistry::instance();
     reg.add("collect_A", 10, 150, Timing::COLLECT_STOCK_A, blockCollectA, isZoneAFree);
-    reg.add("store_A", 10, 150, Timing::STORE_STOCK_A, blockStoreA, isZoneAFree);
-
+    reg.add("store_A",   10, 150, Timing::STORE_STOCK_A,   blockStoreA);
     // reg.add("collect_B", 8, 80, Timing::COLLECT_STOCK_B, blockCollectB, isZoneBFree);
+    // reg.add("store_B",   8, 80, Timing::STORE_STOCK_B,   blockStoreB);
 }
+
 
 // ============================================================
 //  match() — point d'entrée du match (embedded fallback)
 //
-//  Builds a Mission from the BlockRegistry so that blocks
-//  already completed by Jetson (marked done) are automatically
-//  skipped.  This is the fallback strategy for when the Jetson
-//  is unavailable or when séquentielle strategy is selected.
+//  Utilise le Planner avec des Missions multi-étapes.
+//  Chaque Mission = un objectif complet (collect → store).
+//  Le Planner boucle tant qu'il reste du temps, retry les
+//  missions qui ont échoué, et skip celles dont la zone
+//  est occupée.
 // ============================================================
 
 FLASHMEM void match() {
@@ -190,27 +192,34 @@ FLASHMEM void match() {
     // skipped (defensive — initPump is idempotent).
     initPump();
 
-    // IMPORTANT: Mission is static to avoid ~700 bytes on the stack.
+    // IMPORTANT: Planner is static to avoid ~1KB on the stack.
     // match() is only called once per boot cycle (programAuto), so
-    // re-initialization is safe.  The deep nesting of async motion
-    // commands + os.run() loops can cause stack overflow if Mission
-    // lives on the stack alongside all the nested frames.
-    static Mission mission;
-    mission = Mission();   // reinit for fresh match
+    // re-initialization is safe.
+    static Planner planner;
+    planner = Planner();
 
-    mission
-        .setMode(Mission::SelectMode::PRIORITY)
+    planner
         .setTimeProvider([]() -> uint32_t {
             long t = chrono.getTimeLeft();
             return (t > 0) ? (uint32_t)t : 0u;
         })
-        .setSafetyMargin(5000);  // Ne pas démarrer un bloc si < 5s restantes
+        .setSafetyMargin(5000);  // Ne pas démarrer si < 5s restantes
 
-    // Populate from BlockRegistry — blocks marked done are included with
-    // done=true so Mission skips them automatically.
-    BlockRegistry::instance().buildMission(mission);
+    // ── Définition des missions ──────────────────────────────
+    //  Chaque mission = objectif complet.
+    //  Les steps sont exécutés en séquence.
+    //  Si un step fail → retry la mission plus tard.
+    //  Si zone occupée → skip, essayer une autre mission.
 
-    mission.run();
+    { Mission& m = planner.addMission("stock_A", 10, 150);
+      m.addStep("collect_A", Timing::COLLECT_STOCK_A, blockCollectA, isZoneAFree);
+      m.addStep("store_A",   Timing::STORE_STOCK_A,   blockStoreA); }
+
+    // { Mission& m = planner.addMission("stock_B", 8, 80);
+    //   m.addStep("collect_B", Timing::COLLECT_STOCK_B, blockCollectB, isZoneBFree);
+    //   m.addStep("store_B",   Timing::STORE_STOCK_B,   blockStoreB); }
+
+    planner.run();
 
     chrono.onMatchNearlyFinished();
     chrono.onMatchFinished();
@@ -460,33 +469,4 @@ FLASHMEM void startPump(RobotCompass rc, bool side){
     // re-enters the script job causing interpreter state corruption → freeze.
     // delay() hard-blocks but 200 ms is well within the 5 000 ms heartbeat
     // timeout, so no disconnect risk.
-    constexpr uint16_t rampSteps[] = { 800, 1600, 2400, 3200, 4095 };
-    for (uint16_t duty : rampSteps) {
-        pwm.setPWM(pumpPin, 0, duty);
-        delay(40);
-    }
-    setOutput(pumpPin, true); // Full power
-}
-
-FLASHMEM void stopPump(RobotCompass rc, uint16_t evPulseDuration, bool side){
-    uint8_t evPin ;
-    uint8_t pumpPin ;
-    if(side) evPin = Pin::PCA9685::EV_CA_RIGHT ;
-    else evPin = Pin::PCA9685::EV_CA_LEFT;
-    if(side) pumpPin = Pin::PCA9685::PUMP_CA_RIGHT;
-    else pumpPin = Pin::PCA9685::PUMP_CA_LEFT;
-    setOutput(pumpPin, false); // Stopper la pompe
-
-    // Wait for pump back-EMF to settle before energizing the EV solenoid.
-    // Sudden pump deenergization creates a back-EMF spike from the motor
-    // inductance; simultaneously opening the EV adds an inrush current spike.
-    // The combined voltage dip can trigger a Teensy brownout reset (= USB-CDC
-    // "serial closed").  100 ms is enough for the transient to dissipate while
-    // keeping total stopPump() time well within the 3 000 ms command timeout.
-    // IMPORTANT: use delay() NOT waitMs() — same reentrancy issue as startPump.
-    delay(100);
-
-    setOutput(evPin, true);    // Ouvrir l’EV
-    delay(evPulseDuration);    // Maintenir l’EV ouverte
-    setOutput(evPin, false);   // Fermer l’EV
-}
+    constexpr uint16_t rampSteps[] = { 800, 1600

@@ -2,140 +2,218 @@
 #include <stdint.h>
 
 // ============================================================
-//  Mission — Planificateur de tâches avec gestion du temps
-//  et des points pour robot de compétition
+//  Planner / Mission / Step — Planificateur de missions
+//  multi-étapes avec retry, cooldown et boucle continue.
+//
+//  Concepts :
+//    Block       — action atomique (inchangé, pour BlockRegistry)
+//    Step        — une étape dans une Mission (action + feasibility)
+//    Mission     — séquence ordonnée de Steps formant un objectif
+//    Planner     — sélectionne et exécute des Missions en boucle
 //
 //  Usage :
-//      static BlockResult collectA() {
-//          async motion.goAlign(...);
-//          if (!motion.wasSuccessful()) return BlockResult::FAILED;
-//          actuators.grab(...);
-//          return BlockResult::SUCCESS;
-//      }
+//      static Planner planner;
+//      planner = Planner();
+//      planner
+//          .setTimeProvider([]() -> uint32_t { return chrono.getTimeLeft(); })
+//          .setSafetyMargin(5000);
 //
-//      Mission mission;
-//      mission
-//          .setMode(Mission::SelectMode::PRIORITY)
-//          .setTimeProvider([]() -> uint32_t { return (uint32_t)chrono.getTimeLeft(); })
-//          .setSafetyMargin(5000)
-//          .add({ "collect_A", 10, 150, 8000, collectA })
-//          .add({ "collect_B",  8,  80, 6000, collectB });
-//      mission.run();
+//      { Mission& m = planner.addMission("stock_A", 10, 150);
+//        m.addStep("collect_A", 8000, blockCollectA, isZoneAFree);
+//        m.addStep("store_A",   8000, blockStoreA); }
+//
+//      { Mission& m = planner.addMission("stock_B", 8, 80);
+//        m.addStep("collect_B", 6000, blockCollectB, isZoneBFree);
+//        m.addStep("store_B",   6000, blockStoreB); }
+//
+//      planner.run();
 // ============================================================
 
 
 // ------------------------------------------------------------
-//  BlockResult
+//  BlockResult — résultat d'une action atomique
 // ------------------------------------------------------------
 
 enum class BlockResult : uint8_t {
-    SUCCESS = 0,  // Action terminée avec succès, points comptabilisés
-    FAILED  = 1,  // Action échouée (collision, obstacle, timeout...)
+    SUCCESS = 0,
+    FAILED  = 1,
 };
 
 
 // ------------------------------------------------------------
-//  BlockStats — Statistiques d'un bloc après tentative
+//  BlockStats — statistiques d'un bloc (pour BlockRegistry)
 // ------------------------------------------------------------
 
 struct BlockStats {
     BlockResult result      = BlockResult::FAILED;
-    uint32_t    durationMs  = 0;    // Durée réelle d'exécution
-    bool        attempted   = false; // Bloc effectivement tenté
-    bool        skippedTime = false; // Passé faute de temps
+    uint32_t    durationMs  = 0;
+    bool        attempted   = false;
+    bool        skippedTime = false;
 };
 
 
 // ------------------------------------------------------------
-//  Block — Unité d'action atomique
-//
-//  Champs obligatoires (dans l'ordre pour aggregate init) :
-//      name, priority, score, estimatedMs, action
-//  Champs optionnels :
-//      feasible  (nullptr = toujours faisable)
-//
-//  Exemple :
-//      Block b = { "collect_A", 10, 150, 8000, collectA, isZoneAFree };
-//      Block b = { "collect_B",  8,  80, 6000, collectB };  // pas de check
+//  Block — Unité d'action atomique (gardé pour BlockRegistry)
 // ------------------------------------------------------------
 
 struct Block {
-    using ActionFn   = BlockResult (*)();  // Pointeur vers la fonction d'action
-    using FeasibleFn = bool        (*)();  // Check de faisabilité (nullptr = toujours vrai)
+    using ActionFn   = BlockResult (*)();
+    using FeasibleFn = bool        (*)();
 
-    const char* name        = "unnamed"; // Nom du bloc pour les logs
-    uint8_t     priority    = 0;         // Priorité (plus grand = plus prioritaire)
-    uint16_t    score       = 0;         // Points accordés si SUCCESS
-    uint32_t    estimatedMs = 0;         // Durée estimée (ms). 0 = aucune contrainte temps.
-    ActionFn    action      = nullptr;   // Fonction à exécuter
-    FeasibleFn  feasible    = nullptr;   // nullptr = toujours faisable
+    const char* name        = "unnamed";
+    uint8_t     priority    = 0;
+    uint16_t    score       = 0;
+    uint32_t    estimatedMs = 0;
+    ActionFn    action      = nullptr;
+    FeasibleFn  feasible    = nullptr;
 
-    // État interne — géré par Mission, ne pas modifier manuellement
     BlockStats  stats;
     bool        done        = false;
 };
 
 
-// ------------------------------------------------------------
-//  Mission
-// ------------------------------------------------------------
+// ============================================================
+//  Step — une étape dans une Mission
+// ============================================================
+
+struct Step {
+    const char*      name        = "unnamed";
+    uint32_t         estimatedMs = 0;
+    Block::ActionFn  action      = nullptr;
+    Block::FeasibleFn feasible   = nullptr;   // check faisabilité (nullptr = toujours OK)
+};
+
+
+// ============================================================
+//  MissionState
+// ============================================================
+
+enum class MissionState : uint8_t {
+    PENDING   = 0,   // Jamais tentée
+    DONE      = 1,   // Tous les steps OK
+    FAILED    = 2,   // Un step a échoué ou infaisable — retryable
+    ABANDONED = 3,   // Max retries dépassé
+};
+
+
+// ============================================================
+//  Mission — séquence ordonnée de Steps
+// ============================================================
 
 class Mission {
 public:
-    static constexpr uint8_t  MAX_BLOCKS            = 16;
-    static constexpr uint32_t DEFAULT_SAFETY_MARGIN = 3000; // ms de marge avant fin de match
-
-    // Mode de sélection du prochain bloc
-    enum class SelectMode : uint8_t {
-        PRIORITY,  // Trie par priorité décroissante (ordre fixe garanti)
-        SCORE,     // Maximise le ratio score/temps parmi les blocs éligibles
-    };
+    static constexpr uint8_t  MAX_STEPS          = 8;
+    static constexpr uint8_t  DEFAULT_MAX_RETRIES = 3;
+    static constexpr uint32_t RETRY_COOLDOWN_MS   = 3000;
 
     Mission() = default;
 
-    // ---- Builder API (chainable) ----
+    // ---- Builder API ----
 
-    // Ajoute un bloc à la liste
-    Mission& add(Block block);
+    /// Ajoute un step à la mission.
+    Mission& addStep(const char* name, uint32_t estimatedMs,
+                     Block::ActionFn action,
+                     Block::FeasibleFn feasible = nullptr);
 
-    // Mode de sélection (PRIORITY par défaut)
-    Mission& setMode(SelectMode mode);
+    /// Check de faisabilité au niveau mission (avant de commencer).
+    Mission& setFeasible(Block::FeasibleFn fn);
 
-    // Marge de sécurité avant fin de match : un bloc est ignoré si son
-    // estimatedMs + safetyMargin > temps restant  (3000ms par défaut)
-    Mission& setSafetyMargin(uint32_t ms);
+    /// Max retries avant abandon (défaut = 3).
+    Mission& setMaxRetries(uint8_t n);
 
-    // Fournisseur de temps restant (en ms). Si non défini, aucune contrainte temps.
-    // Exemple : .setTimeProvider([]() -> uint32_t { return (uint32_t)chrono.getTimeLeft(); })
-    Mission& setTimeProvider(uint32_t (*fn)());
+    // ---- Getters ----
+
+    const char*  name()     const { return m_name; }
+    uint8_t      priority() const { return m_priority; }
+    uint16_t     score()    const { return m_score; }
+    MissionState state()    const { return m_state; }
+    uint8_t      retries()  const { return m_retries; }
+
+    /// Durée estimée totale (somme des steps restants).
+    uint32_t     remainingEstimatedMs() const;
+
+    /// Peut-on retenter cette mission ?
+    bool canRetry() const;
+
+    /// Le cooldown après échec est-il écoulé ?
+    bool isCooledDown() const;
+
+private:
+    friend class Planner;
+
+    const char*       m_name        = "unnamed";
+    uint8_t           m_priority    = 0;
+    uint16_t          m_score       = 0;
+    Block::FeasibleFn m_feasible    = nullptr;
+
+    Step    m_steps[MAX_STEPS];
+    uint8_t m_stepCount    = 0;
+    uint8_t m_currentStep  = 0;      // Prochain step à exécuter
+    uint8_t m_retries      = 0;
+    uint8_t m_maxRetries   = DEFAULT_MAX_RETRIES;
+
+    MissionState m_state         = MissionState::PENDING;
+    uint32_t     m_lastAttemptMs = 0;
+};
+
+
+// ============================================================
+//  Planner — sélectionne et exécute des Missions en boucle
+//
+//  Boucle continue tant qu'il reste du temps :
+//   1. Sélectionne la meilleure mission faisable
+//   2. Exécute ses steps séquentiellement
+//   3. Si FAIL → retry plus tard, essaie une autre
+//   4. Si toutes skippées → attend et re-check
+// ============================================================
+
+class Planner {
+public:
+    static constexpr uint8_t  MAX_MISSIONS          = 16;
+    static constexpr uint32_t IDLE_WAIT_MS           = 500;
+    static constexpr uint32_t DEFAULT_SAFETY_MARGIN  = 3000;
+
+    Planner() = default;
+
+    // ---- Builder API ----
+
+    /// Ajoute une mission et retourne une référence pour y ajouter des steps.
+    Mission& addMission(const char* name, uint8_t priority, uint16_t score);
+
+    /// Fournisseur de temps restant (ms). Sans provider → pas de contrainte temps.
+    Planner& setTimeProvider(uint32_t (*fn)());
+
+    /// Marge de sécurité avant fin de match (défaut 3000ms).
+    Planner& setSafetyMargin(uint32_t ms);
 
     // ---- Exécution ----
 
-    // Lance la mission. Bloquant — retourne quand tous les blocs éligibles ont été tentés.
+    /// Lance le planner. Bloquant — retourne quand tout est terminé ou plus de temps.
     void run();
 
     // ---- Diagnostics post-run ----
 
-    uint16_t totalScore()     const;  // Score cumulé des blocs SUCCESS
-    uint16_t potentialScore() const;  // Score max si tout réussissait
-    uint8_t  totalBlocks()    const;  // Nombre de blocs déclarés
-    uint8_t  attemptedCount() const;  // Blocs effectivement exécutés
-    uint8_t  successCount()   const;  // Blocs terminés SUCCESS
-    uint8_t  failedCount()    const;  // Blocs tentés mais FAILED
-    uint8_t  skippedCount()   const;  // Blocs non tentés (temps / infaisable)
-    uint32_t elapsedMs()      const;  // Temps total depuis run()
+    uint16_t totalScore()     const;
+    uint16_t potentialScore() const;
+    uint8_t  totalMissions()  const;
+    uint8_t  doneCount()      const;
+    uint8_t  failedCount()    const;
+    uint8_t  abandonedCount() const;
+    uint8_t  pendingCount()   const;
+    uint32_t elapsedMs()      const;
 
 private:
-    Block*   selectNext();
-    bool     canFit(const Block& b) const;
-    uint32_t remainingMs()          const;
-    void     logSummary()           const;
+    Mission* selectNext();
+    bool     canFitMission(const Mission& m) const;
+    uint32_t remainingMs()                   const;
+    void     executeMission(Mission& m);
+    bool     hasRetryable()                  const;
+    void     logSummary()                    const;
 
-    Block      m_blocks[MAX_BLOCKS];
+    Mission    m_missions[MAX_MISSIONS];
     uint8_t    m_count      = 0;
     uint16_t   m_score      = 0;
     uint32_t   m_startMs    = 0;
     uint32_t   m_safetyMs   = DEFAULT_SAFETY_MARGIN;
-    SelectMode m_mode       = SelectMode::PRIORITY;
     uint32_t (*m_timeProvider)() = nullptr;
 };

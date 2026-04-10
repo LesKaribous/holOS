@@ -270,11 +270,17 @@ FLASHMEM void onRobotBoot() {
     jetsonBridge.registerFallback(FallbackID::CUSTOM_1, []() {
         BlockRegistry& reg = BlockRegistry::instance();
         if (reg.count() > 0) {
-            Console::info("Fallback") << "Building mission from BlockRegistry (skipping done blocks)" << Console::endl;
-            static Mission fallbackMission;
-            fallbackMission = Mission();   // reinit
-            reg.buildMission(fallbackMission);
-            fallbackMission.run();
+            Console::info("Fallback") << "Building planner from BlockRegistry (skipping done blocks)" << Console::endl;
+            static Planner fallbackPlanner;
+            fallbackPlanner = Planner();   // reinit
+            fallbackPlanner
+                .setTimeProvider([]() -> uint32_t {
+                    long t = chrono.getTimeLeft();
+                    return (t > 0) ? (uint32_t)t : 0u;
+                })
+                .setSafetyMargin(5000);
+            reg.buildPlanner(fallbackPlanner);
+            fallbackPlanner.run();
         } else if (MissionController::isLoaded()) {
             Console::info("Fallback") << "Executing SD mission strategy" << Console::endl;
             MissionController::execute();

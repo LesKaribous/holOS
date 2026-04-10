@@ -61,10 +61,10 @@ public:
     bool isDone(const char* name) const;
     void resetAll();           // clear all done flags
 
-    // ── Build a Mission from the registry ────────────────────
-    //  Populates `mission` with all registered blocks, skipping
-    //  those already marked done.
-    void buildMission(Mission& mission) const;
+    // ── Build a Planner from the registry (fallback) ─────────
+    //  Each block becomes a single-step Mission in the Planner.
+    //  Blocks already marked done are skipped.
+    void buildPlanner(Planner& planner) const;
 
 private:
     BlockRegistry() = default;

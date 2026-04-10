@@ -105,23 +105,17 @@ void BlockRegistry::resetAll() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-//  Build a Mission from registry (for fallback)
+//  Build a Planner from registry (for fallback)
+//  Each block becomes a single-step Mission.
+//  Blocks already marked done are skipped.
 // ─────────────────────────────────────────────────────────────────────────────
 
-void BlockRegistry::buildMission(Mission& mission) const {
+void BlockRegistry::buildPlanner(Planner& planner) const {
     for (uint8_t i = 0; i < m_count; ++i) {
         const Entry& e = m_entries[i];
-        if (!e.used) continue;
-        // Create a Block — mark done if already completed
-        Block b;
-        b.name        = e.name;
-        b.priority    = e.priority;
-        b.score       = e.score;
-        b.estimatedMs = e.estimatedMs;
-        b.action      = e.action;
-        b.feasible    = e.feasible;
-        b.done        = e.done;   // skip blocks already completed by Jetson
-        mission.add(b);
+        if (!e.used || e.done) continue;   // skip done blocks
+        Mission& m = planner.addMission(e.name, e.priority, e.score);
+        m.addStep(e.name, e.estimatedMs, e.action, e.feasible);
     }
 }
 
