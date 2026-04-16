@@ -53,6 +53,15 @@ class Brain:
         # Path planner built on the shared grid
         pathfinder = Pathfinder(grid)
 
+        # Diagnostic: report how many static cells the pathfinder sees at startup.
+        # Helps debug "static obstacles ignored" cases — if this prints 0 and
+        # you had painted blue cells, the grid was not populated before Brain
+        # creation (or the JSON wasn't loaded).
+        _static_count = sum(1 for gx in range(len(grid._static))
+                               for gy in range(len(grid._static[0]))
+                               if grid._static[gx][gy])
+        print(f"[Brain] Pathfinder initialized with {_static_count} static occupancy cells")
+
         # Services — safety must be created before motion (motion hooks into it)
         self.safety    = SafetyService(transport)
         self.motion    = MotionService(transport, theta_offset_deg=theta_offset_deg,

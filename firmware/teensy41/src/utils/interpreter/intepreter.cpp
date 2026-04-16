@@ -141,7 +141,34 @@ FLASHMEM String Interpreter::untilLineEnd(){
     }
     while(input.charAt(pos) == '\n' || input.charAt(pos) == 13) pos++;
     return line;
-}   
+}
+
+// Read characters up to the end of the current *statement*. Statements are
+// delimited by ';' (in addition to '\n'/'\r'). This lets chained commands
+// like "via(x1,y1);via(x2,y2);go(x,y)" be parsed as multiple statements
+// on a single frame — used by holOS when the A* planner chains pass-through
+// waypoints before a final motion command.
+FLASHMEM String Interpreter::untilStatementEnd(){
+    String line = "";
+    while (pos < input.length()
+           && input.charAt(pos) != '\n'
+           && input.charAt(pos) != 13
+           && input.charAt(pos) != ';') {
+        line += input.charAt(pos);
+        pos++;
+    }
+    // Consume the trailing separator(s) + any whitespace so the next
+    // parseStatement() call starts fresh on the next command identifier.
+    while (pos < input.length()
+           && (input.charAt(pos) == '\n'
+               || input.charAt(pos) == 13
+               || input.charAt(pos) == ';'
+               || input.charAt(pos) == ' '
+               || input.charAt(pos) == '\t')) {
+        pos++;
+    }
+    return line;
+}
 
 FLASHMEM std::shared_ptr<CommandStatement> Interpreter::parseCommandStatement() {
     auto command = std::make_shared<CommandStatement>();
@@ -154,7 +181,11 @@ FLASHMEM std::shared_ptr<CommandStatement> Interpreter::parseCommandStatement() 
         Console::error("Interpreter") << "Expecting '(' got " << currentToken.value << Console::endl;
     }else{
 
-        String arg = untilLineEnd();
+        // Use untilStatementEnd so chained commands separated by ';' on the
+        // same line (e.g. "via(x,y);via(x,y);go(x,y)") are parsed as
+        // individual statements. untilLineEnd would swallow the rest of the
+        // chain into this command's argument string.
+        String arg = untilStatementEnd();
         int lastParenthesis = arg.lastIndexOf(")");
         if(lastParenthesis == -1){
             Console::error("Interpreter") << "missing right parenthesis in command statement"  << Console::endl;

@@ -7,9 +7,11 @@
 
 namespace Calibration {
 
+
+    
 CalibrationProfile Current = {
     { 1.0f,   1.0f,   1.0f   },   // Holonomic  : A  B  C  (same as DEFAULTS)
-    { 1.089f,-1.089f, 0.831f },    // Cartesian  : X  Y  ROT
+    { 1.203677f,-1.203677f, 0.831f },    // Cartesian  : X  Y  ROT
 };
 float OtosLinear  = OTOS_LINEAR_DEFAULT;
 float OtosAngular = OTOS_ANGULAR_DEFAULT;

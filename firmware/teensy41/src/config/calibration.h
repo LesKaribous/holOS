@@ -32,9 +32,9 @@ namespace Calibration {
     // Kept here as a reset target — never modified at runtime.
     const CalibrationProfile DEFAULTS = {
         { 1.0f,   1.0f,   1.0f   },   // Holonomic  : A  B  C
-        { 1.089f,-1.089f, 0.831f },    // Cartesian  : X  Y  ROT
+        { 1.203677f,-1.203677f, 0.831f },    // Cartesian  : X  Y  ROT
     };
-    constexpr float OTOS_LINEAR_DEFAULT  = 0.9714f;
+    constexpr float OTOS_LINEAR_DEFAULT  = 0.990723f;
     constexpr float OTOS_ANGULAR_DEFAULT = 1.0f;
 
     // ── Live (mutable) values — modified by calibration commands and SD load ──

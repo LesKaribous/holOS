@@ -1222,6 +1222,16 @@ function togglePathfinding(on) {
     body: JSON.stringify({ enabled: on }),
   });
 }
+function toggleMotionMode(on) {
+  // Switch the motion service to LIVE_PURSUIT for the next go() call.
+  // The Python service auto-reverts to LEGACY_WAYPOINT after one move
+  // so we also flip the checkbox back here once the request lands.
+  fetch('/api/motion_mode', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ mode: on ? 'pursuit' : 'waypoint' }),
+  });
+}
 function setFeedrate(v) {
   document.getElementById('feedrate-val').textContent=parseFloat(v).toFixed(2)+'×';
   socket.emit('set_feedrate',{value:parseFloat(v)});
@@ -3552,44 +3562,203 @@ function calibReset() {
     });
 }
 
-// ── Measurement tool ──────────────────────────────────────────────────────────
-function calibMeasure() {
-  const dist = parseFloat(document.getElementById('calib-measure-dist').value);
-  if (isNaN(dist) || dist < 50 || dist > 3000) {
-    _calibStatusMsg('⚠ Distance invalide (50–3000 mm)');
+// ── Calibration wizard ────────────────────────────────────────────────────────
+// 3-step flow:
+//   1. User selects axis (x/y/theta) + commanded distance → POST open_move/open_turn
+//   2. Robot moves open-loop, OTOS delta returned
+//   3. User types real measured distance → POST /compute → suggestion shown
+//   4. User clicks Appliquer → existing POST /api/calibration applies values
+let _calibWiz = {
+  axis: 'x',
+  commanded: 0,
+  otosMeasured: 0,
+  unit: 'mm',       // 'mm' for x/y, '°' for theta
+  suggested: null,  // last compute response
+};
+
+function _calibWizHideAll() {
+  for (const id of ['calib-wiz-measure', 'calib-wiz-suggest', 'calib-wiz-error']) {
+    const el = document.getElementById(id);
+    if (el) el.classList.add('hidden');
+  }
+}
+
+function _calibWizShowError(msg) {
+  const el = document.getElementById('calib-wiz-error');
+  if (el) { el.textContent = '✗ ' + msg; el.classList.remove('hidden'); }
+}
+
+// Swap the distance label between mm and deg when axis changes
+document.addEventListener('DOMContentLoaded', () => {
+  const sel = document.getElementById('calib-wiz-axis');
+  if (sel) sel.addEventListener('change', () => {
+    const lbl  = document.getElementById('calib-wiz-distlbl');
+    const dist = document.getElementById('calib-wiz-dist');
+    if (sel.value === 'theta') {
+      if (lbl)  lbl.textContent  = 'Angle (°)';
+      if (dist) { dist.value = 90; dist.min = 5; dist.max = 720; }
+    } else {
+      if (lbl)  lbl.textContent  = 'Distance (mm)';
+      if (dist) { dist.value = 500; dist.min = 50; dist.max = 1500; }
+    }
+  });
+});
+
+function calibWizStart() {
+  const axis = document.getElementById('calib-wiz-axis').value;
+  const val  = parseFloat(document.getElementById('calib-wiz-dist').value);
+  if (isNaN(val) || val <= 0) {
+    _calibWizShowError('Valeur invalide');
     return;
   }
-  const btn = document.getElementById('btn-calib-measure');
-  const res = document.getElementById('calib-measure-result');
-  btn.disabled = true;
-  btn.textContent = '⏳ En cours...';
-  res.classList.add('hidden');
-  res.textContent = '';
+  _calibWiz.axis      = axis;
+  _calibWiz.commanded = val;
+  _calibWiz.unit      = (axis === 'theta') ? '°' : 'mm';
+  _calibWizHideAll();
 
-  fetch('/api/calibration/measure', {
+  const btn = document.getElementById('btn-calib-wiz-start');
+  btn.disabled = true;
+  btn.textContent = '⏳ Déplacement...';
+
+  const isTurn = (axis === 'theta');
+  const url    = isTurn ? '/api/calibration/open_turn' : '/api/calibration/open_move';
+  const body   = isTurn ? { angle_deg: val } : { dist_mm: val, axis };
+
+  // Hard client-side timeout so the wizard never hangs if the backend gets
+  // stuck. Must be strictly larger than the backend execute_calib timeout
+  // (35 s) + some margin, so the server always gets a chance to reply first.
+  const abort    = new AbortController();
+  const abortMs  = 45000;
+  const abortId  = setTimeout(() => abort.abort(), abortMs);
+  const resetBtn = () => { btn.disabled = false; btn.textContent = '▶ Déplacer'; };
+
+  fetch(url, {
     method: 'POST',
     headers: {'Content-Type':'application/json'},
-    body: JSON.stringify({ dist_mm: dist }),
+    body: JSON.stringify(body),
+    signal: abort.signal,
   })
   .then(r => r.json())
   .then(d => {
-    btn.disabled = false;
-    btn.textContent = '📏 Mesurer';
-    if (d.ok) {
-      res.textContent = d.result || '(pas de réponse)';
-      res.classList.remove('hidden');
-      _calibStatusMsg('✓ Mesure terminée');
-    } else {
-      res.textContent = 'Erreur: ' + (d.error || '?');
-      res.classList.remove('hidden');
-      _calibStatusMsg('✗ ' + (d.error || 'Erreur'));
+    clearTimeout(abortId);
+    resetBtn();
+    if (!d.ok) {
+      const raw = d.raw ? ` — raw: ${d.raw}` : '';
+      _calibWizShowError((d.error || 'Échec du déplacement') + raw);
+      return;
     }
+    // Pull the OTOS reading depending on kind
+    let otos;
+    if (isTurn) {
+      otos = d.otos_dth_deg;
+    } else {
+      otos = d.otos_dist;
+    }
+    _calibWiz.otosMeasured = otos;
+
+    document.getElementById('calib-wiz-cmd').textContent  =
+      `${val.toFixed(2)} ${_calibWiz.unit}`;
+    document.getElementById('calib-wiz-otos').textContent =
+      `${otos.toFixed(2)} ${_calibWiz.unit}`;
+    const actualEl = document.getElementById('calib-wiz-actual');
+    actualEl.value = '';
+    actualEl.focus();
+    document.getElementById('calib-wiz-measure').classList.remove('hidden');
+    _calibStatusMsg(`✓ Déplacement ${axis} terminé`);
   })
   .catch(e => {
-    btn.disabled = false;
-    btn.textContent = '📏 Mesurer';
-    _calibStatusMsg('✗ ' + e.message);
+    clearTimeout(abortId);
+    resetBtn();
+    if (e.name === 'AbortError') {
+      _calibWizShowError(
+        `Timeout client (${abortMs/1000}s). Le robot est peut-être bloqué — `
+        + `vérifie son état et relance.`);
+    } else {
+      _calibWizShowError(e.message);
+    }
   });
+}
+
+function calibWizCompute() {
+  const actual = parseFloat(document.getElementById('calib-wiz-actual').value);
+  if (isNaN(actual) || actual <= 0) {
+    _calibWizShowError('Mesure réelle invalide');
+    return;
+  }
+  fetch('/api/calibration/compute', {
+    method: 'POST',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({
+      axis:          _calibWiz.axis,
+      commanded:     _calibWiz.commanded,
+      otos_measured: _calibWiz.otosMeasured,
+      actual:        actual,
+    }),
+  })
+  .then(r => r.json())
+  .then(d => {
+    if (!d.ok) {
+      _calibWizShowError(d.error || 'Calcul échoué');
+      return;
+    }
+    _calibWiz.suggested = d;
+
+    // Render suggestion block
+    const lines = [];
+    lines.push(`Axe: ${d.axis}`);
+    lines.push(`Commandé     : ${d.commanded} ${_calibWiz.unit}`);
+    lines.push(`OTOS mesuré  : ${d.otos_measured} ${_calibWiz.unit}`);
+    lines.push(`Réel (règle) : ${d.actual} ${_calibWiz.unit}`);
+    lines.push('');
+    lines.push(`Motion ratio : ${d.motion_ratio}`);
+    lines.push(`OTOS ratio   : ${d.otos_ratio}`);
+    lines.push('');
+    lines.push('Corrections proposées:');
+    for (const k of Object.keys(d.suggested)) {
+      const oldV = d.current[k];
+      const newV = d.suggested[k];
+      const pct  = ((newV - oldV) / oldV * 100).toFixed(2);
+      lines.push(`  ${k}: ${oldV} → ${newV}  (${pct >= 0 ? '+' : ''}${pct}%)`);
+    }
+    document.getElementById('calib-wiz-suggest-body').textContent = lines.join('\n');
+
+    const warnEl = document.getElementById('calib-wiz-warnings');
+    warnEl.textContent = (d.warnings && d.warnings.length)
+      ? '⚠ ' + d.warnings.join(' · ')
+      : '';
+
+    document.getElementById('calib-wiz-suggest').classList.remove('hidden');
+    document.getElementById('calib-wiz-measure').classList.add('hidden');
+  })
+  .catch(e => _calibWizShowError(e.message));
+}
+
+function calibWizApply() {
+  if (!_calibWiz.suggested || !_calibWiz.suggested.suggested) return;
+  const payload = Object.assign({}, _calibWiz.suggested.suggested);
+  // Re-use the existing apply endpoint which fires the right calib_* commands
+  fetch('/api/calibration', {
+    method: 'POST',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify(payload),
+  })
+  .then(r => r.json())
+  .then(d => {
+    if (d.ok) {
+      _calibData = Object.assign(_calibData, d.calib || {});
+      calibRefreshInputs();
+      _calibStatusMsg('✓ Calibration appliquée — pensez à sauver sur SD');
+      calibWizCancel();
+    } else {
+      _calibWizShowError(d.error || 'Application échouée');
+    }
+  })
+  .catch(e => _calibWizShowError(e.message));
+}
+
+function calibWizCancel() {
+  _calibWiz.suggested = null;
+  _calibWizHideAll();
 }
 
 // ── Status message ─────────────────────────────────────────────────────────────

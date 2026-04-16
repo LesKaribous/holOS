@@ -4,6 +4,7 @@
 #include "os/jobs/job.h"
 #include "utils/geometry.h"
 #include "services/motion/controller/positionController.h"
+#include "services/motion/controller/pursuitController.h"
 #include "services/motion/controller/stepperController.h"
 #include "services/motion/stepper.h"
 
@@ -42,6 +43,16 @@
 
 class Motion : public Service, public Job {
 public:
+
+    // ============================================================
+    //  Modes de contrôle
+    //   LEGACY_WAYPOINT : queue de waypoints (cruise/stepper),
+    //                     comportement historique.
+    //   LIVE_PURSUIT    : suivi de cible vive (aim()), idéal pour
+    //                     navigation haut niveau replanifiée à la
+    //                     volée par le bridge Python.
+    // ============================================================
+    enum class ControlMode { LEGACY_WAYPOINT, LIVE_PURSUIT };
 
     // ============================================================
     //  Options par move — POD appliqué dans move(), reset ensuite
@@ -157,6 +168,21 @@ public:
     void enableCruiseMode();
     void disableCruiseMode();
 
+    // ---- Mode contrôle (waypoint vs pursuit) ----
+    void        setControlMode(ControlMode m);
+    ControlMode getControlMode() const { return m_controlMode; }
+
+    // ---- Pursuit mode API (LIVE_PURSUIT uniquement) ----
+    // aim(x,y) installe/actualise la cible vive et démarre le job
+    // pursuit s'il n'est pas déjà en cours. setHeadingMode active
+    // l'alignement automatique d'une face robot sur la direction
+    // de la cible.
+    void aim(float x, float y);
+    void aim(Vec2 target);
+    void setHeadingMode(bool enabled, RobotCompass face = RobotCompass::A);
+    bool isHeadingMode() const;
+    bool isPursuitWatchdogTripped() const;
+
     // ---- Artificial Potential Fields avoidance ──────────────────────────────
     // Requires cruise mode (OTOS feedback).  Has no effect in stepper mode.
     // scale > 0 overrides the default gain; pass -1 to keep current value.
@@ -194,9 +220,12 @@ private:
     // ---- Contrôleurs ----
     PositionController cruise_controller;
     StepperController  stepper_controller;
+    PursuitController  pursuit_controller;
 
-    bool use_cruise_mode      = true;
-    bool current_move_cruised = false;
+    bool        use_cruise_mode      = true;
+    bool        current_move_cruised = false;
+    bool        current_move_pursuit = false;
+    ControlMode m_controlMode        = ControlMode::LEGACY_WAYPOINT;
 
     // ---- Options ----
     MoveOptions m_pendingOpts;

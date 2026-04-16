@@ -13,10 +13,10 @@ namespace POI{
     const Vec2 startBlue = Vec2(2625,225);
     const Vec2 startBlue_ninja = Vec2(2285,100);
 
-    const Vec2 thermometer_hot_yellow = Vec2(200,1850);
-    const Vec2 thermometer_hot_blue = Vec2(3000-200, 1850);
-    const Vec2 thermometer_target_yellow = Vec2(700,1850);
-    const Vec2 thermometer_target_blue = Vec2(2300,1850);
+    const Vec2 thermometer_hot_yellow = Vec2(200,1840);
+    const Vec2 thermometer_hot_blue = Vec2(3000-200, 1840);
+    const Vec2 thermometer_target_yellow = Vec2(700,1840);
+    const Vec2 thermometer_target_blue = Vec2(2300,1840);
 
     // ------------------------------------------
     // Garde Manger - Pantry

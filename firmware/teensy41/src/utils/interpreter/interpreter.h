@@ -15,6 +15,7 @@ private:
     Token parseIdentifier();
 
     String untilLineEnd();
+    String untilStatementEnd();
 
     void skipWhitespace();
 

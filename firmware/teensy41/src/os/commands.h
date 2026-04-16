@@ -45,6 +45,11 @@ void command_setAbsPosition(const args_t& args);
 void command_resetCompass(const args_t& args);
 void command_collision_detect(const args_t& args);
 
+// Motion — pursuit / live-target mode
+void command_motion_mode(const args_t& args);    // motion_mode(0|1)
+void command_aim(const args_t& args);            // aim(x,y)
+void command_aim_heading(const args_t& args);    // aim_heading(face|off)
+
 //Actuators
 void command_raise(const args_t& args);
 void command_lower(const args_t& args);
@@ -83,7 +88,15 @@ void command_calib_cart(const args_t& args);
 void command_calib_holo(const args_t& args);
 void command_calib_otos_linear(const args_t& args);
 void command_calib_otos_angular(const args_t& args);
-void command_calib_measure(const args_t& args);
+void command_calib_move_open(const args_t& args);
+void command_calib_turn_open(const args_t& args);
+
+// Last calibration report payload (populated by calib_move_open / calib_turn_open).
+// Format: "kind=move cmd=... axis=... dx=... dy=... dth=... od=..."
+//      or "kind=turn cmd_deg=... dth_rad=... od_deg=..."
+//      or "kind=error msg=..."
+// Empty string if no calibration command has run yet.
+const char* getLastCalibReport();
 
 // Motion — rotation around arbitrary point
 void command_goAround(const args_t& args);

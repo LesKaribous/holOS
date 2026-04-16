@@ -126,9 +126,10 @@ static BlockResult blockStoreB() {
 
 static BlockResult thermometer_set() {
     async motion.goAlign(POI::thermometer_hot_yellow, RobotCompass::C, getCompassOrientation(TableCompass::WEST));
-    actuators.getActuatorGroup(RobotCompass::C).moveServoToPose((int)ServoIDs::GRABBER_RIGHT, (int) ManipulatorPose::GRAB, 100);
+    actuators.getActuatorGroup(RobotCompass::CA).moveServoToPose((int)ServoIDs::GRABBER_RIGHT, (int) ManipulatorPose::DROP, 100);
     async motion.go(POI::thermometer_target_yellow);
-    actuators.getActuatorGroup(RobotCompass::C).moveServoToPose((int)ServoIDs::GRABBER_RIGHT, (int) ManipulatorPose::STORE, 100);
+    actuators.getActuatorGroup(RobotCompass::CA).moveServoToPose((int)ServoIDs::GRABBER_RIGHT, (int) ManipulatorPose::STORE, 100);
+
     return motion.wasSuccessful() ? BlockResult::SUCCESS : BlockResult::FAILED;
 }
 

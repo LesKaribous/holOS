@@ -81,13 +81,19 @@ FLASHMEM void registerCommands() {
     CommandHandler::registerCommand("calib_holo(a,b,c)",         "Set per-wheel holonomic scale factors",     command_calib_holo);
     CommandHandler::registerCommand("calib_otos_linear(value)",  "Set OTOS linear scalar",                    command_calib_otos_linear);
     CommandHandler::registerCommand("calib_otos_angular(value)", "Set OTOS angular scalar",                   command_calib_otos_angular);
-    CommandHandler::registerCommand("calib_measure(dist_mm)",    "Open-loop move + report OTOS measurement",  command_calib_measure);
+    CommandHandler::registerCommand("calib_move_open(dist_mm,axis_id)", "Open-loop linear move (axis_id: 0=X, 1=Y), report OTOS delta",  command_calib_move_open);
+    CommandHandler::registerCommand("calib_turn_open(angle_deg)",    "Open-loop rotation, report OTOS heading delta",       command_calib_turn_open);
 
     // Motion — arc / rotation around arbitrary point
     CommandHandler::registerCommand("goAround(cx,cy,angleDeg)",  "Rotate around point (cx,cy) by angle",      command_goAround);
 
     // Motion — APF obstacle avoidance
     CommandHandler::registerCommand("apf(on[,scale])",           "Enable/disable APF avoidance (cruise mode only)", command_apf);
+
+    // Motion — pursuit / live target mode
+    CommandHandler::registerCommand("motion_mode(0|1)",          "Set motion control mode (0=waypoint, 1=pursuit)", command_motion_mode);
+    CommandHandler::registerCommand("aim(x,y)",                  "Update live pursuit target (LIVE_PURSUIT only)",  command_aim);
+    CommandHandler::registerCommand("aim_heading(face|off)",     "Lock robot face on travel direction (A,AB,B,…,off)", command_aim_heading);
 
     // Mission SD write session (used by holOS deploy-to-SD)
     CommandHandler::registerCommand("mission_sd_open",           "Open /mission_fallback.cfg for writing",     command_mission_sd_open);
@@ -348,6 +354,37 @@ FLASHMEM void command_resume(const args_t& args){
 
 FLASHMEM void command_cancel(const args_t& args){
     motion.cancel();
+}
+
+
+// Motion — pursuit / live-target API
+FLASHMEM void command_motion_mode(const args_t& args){
+    if(args.size() != 1) return;
+    int mode = args[0].toInt();
+    if(mode == 1) motion.setControlMode(Motion::ControlMode::LIVE_PURSUIT);
+    else          motion.setControlMode(Motion::ControlMode::LEGACY_WAYPOINT);
+}
+
+FLASHMEM void command_aim(const args_t& args){
+    if(args.size() != 2) return;
+    float x = args[0].toFloat();
+    float y = args[1].toFloat();
+    motion.aim(x, y);
+}
+
+FLASHMEM void command_aim_heading(const args_t& args){
+    if(args.size() != 1) return;
+    String face = args[0];
+    face.trim();
+    if(face.equalsIgnoreCase("off") || face.equalsIgnoreCase("0")){
+        motion.setHeadingMode(false);
+        return;
+    }
+    if(!validCompassString(face)){
+        Console::error("Interpreter") << "aim_heading: invalid face " << face << Console::endl;
+        return;
+    }
+    motion.setHeadingMode(true, compassFromString(face));
 }
 
 
@@ -682,73 +719,202 @@ FLASHMEM void command_calib_otos_angular(const args_t& args) {
 }
 
 /**
- * calib_measure(dist_mm) — open-loop move + OTOS measurement.
+ * calib_move_open(dist_mm, axis) — open-loop linear move on X or Y, report OTOS delta.
  *
- * Procedure:
- *   1. Records current OTOS position (with current linear scale applied).
- *   2. Moves forward dist_mm using stepper mode (no OTOS feedback → scale error
- *      doesn't affect the move distance, steppers give ground truth).
- *   3. Reads final OTOS position.
- *   4. Reports measured distance and the suggested corrected OtosLinear.
+ * NEW calibration strategy (does NOT assume the robot is already calibrated):
+ *   1. Records OTOS start pose.
+ *   2. Forces stepper / open-loop mode so the move distance depends ONLY on
+ *      the current cart/holo scale factors (NOT on OTOS feedback).
+ *   3. Commands a polar move on the requested axis (X: heading=0°, Y: heading=90°).
+ *   4. Restores cruise mode.
+ *   5. Reports a single parseable result line:
+ *        Calib: kind=move cmd=<dist> axis=<x|y> dx=<mm> dy=<mm> dth=<rad> od=<mm>
  *
- * Use this to calibrate calib_otos_linear:
- *   - Place a ruler; run calib_measure(500)
- *   - If OTOS reports 480mm for a 500mm move: ratio = 500/480 ≈ 1.042
- *   - New OtosLinear = current * ratio  (or use the printed suggestion directly)
+ * The user then measures the REAL moved distance with a ruler and the Jetson
+ * side computes corrected cart/OTOS factors from (cmd, od, actual). Since
+ * we can't trust OTOS yet, the ruler is the ground truth — this command
+ * never computes any suggested correction itself.
  *
- * Note: the robot must be in a clear straight path of at least dist_mm.
- * Stall detection is disabled for this move to avoid false positives.
+ * IMPORTANT vs the old calib_measure:
+ *   - Hard timeout with explicit motion.cancel() so the handler can never
+ *     deadlock if the motion FSM gets stuck.
+ *   - The blocking wait is delegated to os.execute() (via the `async` macro
+ *     which is misleadingly named — it calls execute(job, false) which ticks
+ *     os.run() in its inner loop, so services DO get dispatched).
+ *   - Feedrate is clamped for safety because we're open-loop and uncalibrated.
  */
-FLASHMEM void command_calib_measure(const args_t& args) {
-    if (args.size() != 1) {
-        Console::error("Calib") << "Usage: calib_measure(dist_mm)" << Console::endl;
+// Last calibration report payload — read back by JetsonBridge so the reply
+// frame carries the data instead of a generic "ok". Console::info still emits
+// a human-readable line for USB observers.
+static char g_lastCalibReport[192] = {0};
+
+const char* getLastCalibReport() { return g_lastCalibReport; }
+
+FLASHMEM static void calibReportMove(float cmd, const char* axis,
+                                     float dx, float dy, float dth) {
+    float od = sqrtf(dx * dx + dy * dy);
+    snprintf(g_lastCalibReport, sizeof(g_lastCalibReport),
+             "kind=move cmd=%.3f axis=%s dx=%.3f dy=%.3f dth=%.6f od=%.3f",
+             cmd, axis, dx, dy, dth, od);
+    Console::info("Calib") << g_lastCalibReport << Console::endl;
+}
+
+FLASHMEM static void calibReportTurn(float cmd_deg, float dth_rad) {
+    float od_deg = dth_rad * 180.0f / 3.14159265358979f;
+    snprintf(g_lastCalibReport, sizeof(g_lastCalibReport),
+             "kind=turn cmd_deg=%.3f dth_rad=%.6f od_deg=%.3f",
+             cmd_deg, dth_rad, od_deg);
+    Console::info("Calib") << g_lastCalibReport << Console::endl;
+}
+
+FLASHMEM static void calibReportError(const char* msg) {
+    snprintf(g_lastCalibReport, sizeof(g_lastCalibReport), "kind=error msg=%s", msg);
+    Console::error("Calib") << msg << Console::endl;
+}
+
+FLASHMEM void command_calib_move_open(const args_t& args) {
+    g_lastCalibReport[0] = 0;
+    if (args.size() != 2) {
+        calibReportError("usage:calib_move_open(dist_mm,axis_id)");
         return;
     }
     float dist = args[0].toFloat();
-    if (dist < 50.0f || dist > 3000.0f) {
-        Console::error("Calib") << "dist_mm must be 50–3000" << Console::endl;
+    // axis_id is a numeric code: 0 = X, 1 = Y. We can't pass "x"/"y" as letters
+    // because CommandHandler::execute runs every argument through
+    // Expression::evaluate(), which would interpret the bare token as a
+    // variable lookup and return an empty string.
+    int axis_id = args[1].toInt();
+
+    if (dist < 50.0f || dist > 1500.0f) {
+        calibReportError("dist_out_of_range");
         return;
     }
 
-    // Force stepper mode so the move doesn't use OTOS feedback
-    // (we want to measure OTOS, not correct with it)
-    motion.disableCruiseMode();
-
-    Vec3 startPos = localisation.getPosition();
-    Console::info("Calib") << "Start pos: x=" << startPos.x << " y=" << startPos.y << Console::endl;
-
-    // Move forward, no stall detection (avoid false positive on calibration surface)
-    async motion.noStall().goPolar(0, dist);
-
-    // Wait for completion while keeping ISR-driven services alive
-    // (delay() is safe here — motion ISR runs via interrupt)
-    unsigned long t0 = millis();
-    static constexpr unsigned long TIMEOUT_MS = 15000UL;
-    while (!motion.hasFinished() && (millis() - t0) < TIMEOUT_MS) {
-        delay(20);
+    float heading_deg = 0.0f;
+    const char* axis_name = "x";
+    if      (axis_id == 0) { heading_deg =  0.0f; axis_name = "x"; }
+    else if (axis_id == 1) { heading_deg = 90.0f; axis_name = "y"; }
+    else {
+        calibReportError("axis_id_must_be_0_or_1");
+        return;
     }
 
+    if (motion.isMoving()) {
+        calibReportError("motion_busy");
+        return;
+    }
+
+    // Snapshot state we will restore after
+    float prevFeedrate = motion.getFeedrate();
+
+    motion.disableCruiseMode();           // force true open-loop / stepper mode
+    motion.setFeedrate(0.30f);            // slow for safety on uncalibrated robot
+
+    Vec3 startPos = localisation.getPosition();
+    Console::info("Calib") << "Start pose x=" << startPos.x
+                           << " y=" << startPos.y
+                           << " th=" << startPos.z << Console::endl;
+
+    // Fire the move. `async` pushes the job onto the OS stack and blocks in
+    // os.execute() which internally calls os.run() until the job is no longer
+    // pending. Services keep ticking during the move.
+    async motion.noStall().goPolar(heading_deg, dist);
+
+    // Belt-and-braces timeout. At 30% feedrate we're looking at ~100 mm/s
+    // worst case, so 1500 mm max / 100 mm/s = 15 s. Add 5 s fuse.
+    unsigned long t0 = millis();
+    constexpr unsigned long TIMEOUT_MS = 20000UL;
+    while (!motion.hasFinished() && (millis() - t0) < TIMEOUT_MS) {
+        os.run();       // keep services alive
+        yield();
+    }
+    if (!motion.hasFinished()) {
+        Console::error("Calib") << "Motion timeout — forcing cancel" << Console::endl;
+        motion.cancel();
+        // Give the cancel a chance to unwind
+        unsigned long tc = millis();
+        while (!motion.hasFinished() && (millis() - tc) < 2000UL) {
+            os.run();
+            yield();
+        }
+    }
+
+    // Restore configuration
+    motion.setFeedrate(prevFeedrate);
     motion.enableCruiseMode();
 
     Vec3 endPos = localisation.getPosition();
-    float dx = endPos.x - startPos.x;
-    float dy = endPos.y - startPos.y;
-    float otosDistance = sqrtf(dx * dx + dy * dy);
+    float dx  = endPos.x - startPos.x;
+    float dy  = endPos.y - startPos.y;
+    float dth = endPos.z - startPos.z;
 
-    Console::info("Calib") << "─────────────────────────────────" << Console::endl;
-    Console::info("Calib") << "Target distance  : " << dist << " mm" << Console::endl;
-    Console::info("Calib") << "OTOS measured    : " << otosDistance << " mm" << Console::endl;
+    calibReportMove(dist, axis_name, dx, dy, dth);
+}
 
-    if (otosDistance > 10.0f) {
-        float ratio = dist / otosDistance;
-        float suggested = Calibration::OtosLinear * ratio;
-        Console::info("Calib") << "Current OtosLinear : " << Calibration::OtosLinear << Console::endl;
-        Console::info("Calib") << "Ratio (target/otos): " << ratio << Console::endl;
-        Console::info("Calib") << "→ Suggested : calib_otos_linear(" << suggested << ")" << Console::endl;
-        Console::info("Calib") << "─────────────────────────────────" << Console::endl;
-    } else {
-        Console::error("Calib") << "OTOS reading too small — is localisation enabled?" << Console::endl;
+/**
+ * calib_turn_open(angle_deg) — open-loop rotation, report OTOS heading delta.
+ *
+ * Same pattern as calib_move_open but for pure rotation. No cartesian
+ * correction is computed here — the user provides the real rotation
+ * measurement (protractor / wall reference) and the Jetson side derives the
+ * cr / oa corrections.
+ *
+ * Report line:
+ *   Calib: kind=turn cmd_deg=<deg> dth_rad=<rad> od_deg=<deg>
+ */
+FLASHMEM void command_calib_turn_open(const args_t& args) {
+    g_lastCalibReport[0] = 0;
+    if (args.size() != 1) {
+        calibReportError("usage:calib_turn_open(angle_deg)");
+        return;
     }
+    float angle_deg = args[0].toFloat();
+    if (fabsf(angle_deg) < 5.0f || fabsf(angle_deg) > 720.0f) {
+        calibReportError("angle_out_of_range");
+        return;
+    }
+
+    if (motion.isMoving()) {
+        calibReportError("motion_busy");
+        return;
+    }
+
+    float prevFeedrate = motion.getFeedrate();
+
+    motion.disableCruiseMode();
+    motion.setFeedrate(0.30f);
+
+    Vec3 startPos = localisation.getPosition();
+    Console::info("Calib") << "Start pose th=" << startPos.z << Console::endl;
+
+    // withOptimization(false) forbids the planner from taking the short way
+    // around — important for calibration where we want the commanded angle
+    // to be executed literally (e.g. 360° should mean a full turn).
+    async motion.noStall().withOptimization(false).turn(angle_deg);
+
+    unsigned long t0 = millis();
+    constexpr unsigned long TIMEOUT_MS = 20000UL;
+    while (!motion.hasFinished() && (millis() - t0) < TIMEOUT_MS) {
+        os.run();
+        yield();
+    }
+    if (!motion.hasFinished()) {
+        Console::error("Calib") << "Turn timeout — forcing cancel" << Console::endl;
+        motion.cancel();
+        unsigned long tc = millis();
+        while (!motion.hasFinished() && (millis() - tc) < 2000UL) {
+            os.run();
+            yield();
+        }
+    }
+
+    motion.setFeedrate(prevFeedrate);
+    motion.enableCruiseMode();
+
+    Vec3 endPos = localisation.getPosition();
+    float dth_rad = endPos.z - startPos.z;
+
+    calibReportTurn(angle_deg, dth_rad);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

@@ -37,6 +37,8 @@ import platform
 
 # ── Platform detection ────────────────────────────────────────────────────────
 IS_JETSON = (platform.system() == 'Linux')
+print(f"[run.py] Detected platform: {platform.system()} (IS_JETSON={IS_JETSON})")
+
 _DEFAULT_JETSON_PORT = '/dev/ttyUSB0'
 
 # Sequence runner state
@@ -144,9 +146,9 @@ _hw_serial_mode     = 'wired' # 'wired' | 'xbee'
 # Updated whenever the user sends a calibration command; reset to firmware
 # defaults when calib_reset is called.
 _CALIB_DEFAULTS = {
-    'cx': 1.089, 'cy': -1.089, 'cr': 0.831,  # Cartesian scale factors
+    'cx': 1.203677, 'cy': -1.203677, 'cr': 0.831,  # Cartesian scale factors
     'ha': 1.0,   'hb': 1.0,   'hc': 1.0,     # per-wheel holonomic factors
-    'ol': 0.9714, 'oa': 1.0,                  # OTOS linear / angular scalars
+    'ol': 0.990723, 'oa': 1.0,                  # OTOS linear / angular scalars
 }
 _calib = dict(_CALIB_DEFAULTS)
 
@@ -223,6 +225,7 @@ sim_state = {
         'collision':    True,
         'safety':       True,
         'pathfinding':  True,
+        'pursuit':      False,   # LIVE_PURSUIT mode for next go() (auto-revert)
         'show_grid':    False,
         'show_trail':   True,
         'show_path':    True,
@@ -603,9 +606,47 @@ def api_calib_reset():
     _calib = dict(_CALIB_DEFAULTS)
     return jsonify({'ok': True, 'calib': dict(_calib)})
 
-@app.route('/api/calibration/measure', methods=['POST'])
-def api_calib_measure():
-    """Run calib_measure(dist_mm) on the robot, wait for result."""
+def _calib_error_from_raw(res: str) -> str:
+    """Extract a human-readable error from a 'kind=error msg=...' firmware reply."""
+    import re
+    if not res:
+        return 'empty reply'
+    m = re.search(r'msg=([^\s]+)', res)
+    return f'firmware: {m.group(1)}' if m else f'firmware: {res!r}'
+
+
+def _parse_calib_report(text: str) -> dict:
+    """Extract key=value pairs from a firmware 'Calib: ...' report line.
+
+    Example payloads:
+      'kind=move cmd=500.00 axis=x dx=487.10 dy=2.30 dth=0.021 od=487.15'
+      'kind=turn cmd_deg=90.0 dth_rad=1.547 od_deg=88.65'
+      'kind=error msg=motion_busy'
+
+    Values can be floats (numeric keys) or bare tokens like 'move', 'turn',
+    'error', 'x', 'y', 'motion_busy'. We capture any non-whitespace run, then
+    opportunistically convert to float — non-numeric values stay as strings.
+    """
+    import re
+    out = {}
+    if not text:
+        return out
+    for m in re.finditer(r'([a-z_]+)=(\S+)', text):
+        k, v = m.group(1), m.group(2)
+        try:
+            out[k] = float(v)
+        except ValueError:
+            out[k] = v
+    return out
+
+
+@app.route('/api/calibration/open_move', methods=['POST'])
+def api_calib_open_move():
+    """Open-loop linear calibration move on X or Y axis.
+
+    Body: { dist_mm: float, axis: 'x'|'y' }
+    Returns: { ok, commanded, axis, otos_dx, otos_dy, otos_dth, otos_dist, raw }
+    """
     if not _calib_connected():
         return jsonify({'ok': False, 'error': 'not connected'}), 503
     data = request.get_json(force=True) or {}
@@ -613,16 +654,189 @@ def api_calib_measure():
         dist = float(data.get('dist_mm', 500))
     except (TypeError, ValueError):
         return jsonify({'ok': False, 'error': 'invalid dist_mm'}), 400
+    axis = str(data.get('axis', 'x')).lower()
 
-    if dist < 50 or dist > 3000:
-        return jsonify({'ok': False, 'error': 'dist_mm must be 50–3000'}), 400
+    if dist < 50 or dist > 1500:
+        return jsonify({'ok': False, 'error': 'dist_mm must be 50–1500'}), 400
+    if axis not in ('x', 'y'):
+        return jsonify({'ok': False, 'error': "axis must be 'x' or 'y'"}), 400
 
     try:
-        # Long timeout — robot has to physically move
-        ok, res = _hw_transport.execute(f'calib_measure({dist})', timeout_ms=20000)
-        return jsonify({'ok': ok, 'result': res})
+        # Firmware has its own 20 s fuse; give the transport a bit of slack.
+        # axis_id is numeric (0=X, 1=Y): the firmware interpreter evaluates
+        # every argument through Expression, so a bare 'x'/'y' would be
+        # mis-parsed as an empty variable lookup.
+        axis_id = 0 if axis == 'x' else 1
+        # execute_calib: short ACK wait + long wait on 'T:cal' telemetry.
+        # Hard timeout ensures the wizard can recover even if the move hangs.
+        ok, res = _hw_transport.execute_calib(
+            f'calib_move_open({dist},{axis_id})',
+            ack_timeout_ms=3000, calib_timeout_ms=35000)
+        parsed = _parse_calib_report(res)
+        kind = parsed.get('kind')
+        if not ok:
+            return jsonify({'ok': False,
+                            'error': f'transport error (no reply in 30s) — raw={res!r}',
+                            'raw': res})
+        if kind == 'error':
+            return jsonify({'ok': False, 'error': _calib_error_from_raw(res), 'raw': res})
+        if kind != 'move':
+            return jsonify({'ok': False,
+                            'error': f'unexpected reply (kind={kind!r}) — raw={res!r}',
+                            'raw': res})
+        return jsonify({
+            'ok':        True,
+            'commanded': parsed.get('cmd', dist),
+            'axis':      parsed.get('axis', axis),
+            'otos_dx':   parsed.get('dx', 0.0),
+            'otos_dy':   parsed.get('dy', 0.0),
+            'otos_dth':  parsed.get('dth', 0.0),
+            'otos_dist': parsed.get('od', 0.0),
+            'raw':       res,
+        })
     except Exception as e:
         return jsonify({'ok': False, 'error': str(e)}), 500
+
+
+@app.route('/api/calibration/open_turn', methods=['POST'])
+def api_calib_open_turn():
+    """Open-loop rotation calibration move.
+
+    Body: { angle_deg: float }
+    Returns: { ok, commanded_deg, otos_dth_rad, otos_dth_deg, raw }
+    """
+    if not _calib_connected():
+        return jsonify({'ok': False, 'error': 'not connected'}), 503
+    data = request.get_json(force=True) or {}
+    try:
+        angle = float(data.get('angle_deg', 90))
+    except (TypeError, ValueError):
+        return jsonify({'ok': False, 'error': 'invalid angle_deg'}), 400
+
+    if abs(angle) < 5 or abs(angle) > 720:
+        return jsonify({'ok': False, 'error': 'angle_deg must be 5–720 (absolute)'}), 400
+
+    try:
+        ok, res = _hw_transport.execute_calib(
+            f'calib_turn_open({angle})',
+            ack_timeout_ms=3000, calib_timeout_ms=35000)
+        parsed = _parse_calib_report(res)
+        kind = parsed.get('kind')
+        if not ok:
+            return jsonify({'ok': False,
+                            'error': f'transport error (no reply in 30s) — raw={res!r}',
+                            'raw': res})
+        if kind == 'error':
+            return jsonify({'ok': False, 'error': _calib_error_from_raw(res), 'raw': res})
+        if kind != 'turn':
+            return jsonify({'ok': False,
+                            'error': f'unexpected reply (kind={kind!r}) — raw={res!r}',
+                            'raw': res})
+        return jsonify({
+            'ok':            True,
+            'commanded_deg': parsed.get('cmd_deg', angle),
+            'otos_dth_rad':  parsed.get('dth_rad', 0.0),
+            'otos_dth_deg':  parsed.get('od_deg', 0.0),
+            'raw':           res,
+        })
+    except Exception as e:
+        return jsonify({'ok': False, 'error': str(e)}), 500
+
+
+@app.route('/api/calibration/compute', methods=['POST'])
+def api_calib_compute():
+    """Stateless: compute suggested calibration values from a measured move.
+
+    Does NOT apply any values — the UI then calls POST /api/calibration with
+    the ones to apply.
+
+    Body:
+      { axis: 'x'|'y'|'theta',
+        commanded:     float,   # what was asked (mm for x/y, deg for theta)
+        otos_measured: float,   # what OTOS reported (mm or deg, same unit as commanded)
+        actual:        float }  # what the user measured with ruler/protractor
+
+    Math:
+      motion scale:  new = old * (commanded / actual)
+      OTOS scale:    new = old * (actual    / otos_measured)
+    """
+    data = request.get_json(force=True) or {}
+    try:
+        axis = str(data.get('axis', 'x')).lower()
+        commanded     = float(data['commanded'])
+        otos_measured = float(data['otos_measured'])
+        actual        = float(data['actual'])
+    except (KeyError, TypeError, ValueError):
+        return jsonify({'ok': False, 'error': 'missing/invalid fields'}), 400
+
+    if axis not in ('x', 'y', 'theta'):
+        return jsonify({'ok': False, 'error': "axis must be 'x','y','theta'"}), 400
+    if commanded <= 0:
+        return jsonify({'ok': False, 'error': 'commanded must be > 0'}), 400
+    if actual <= 0:
+        return jsonify({'ok': False, 'error': 'actual must be > 0'}), 400
+    if abs(otos_measured) < 10:
+        return jsonify({'ok': False,
+                        'error': 'otos_measured too small (<10) — OTOS likely off'}), 400
+
+    rel_err = abs(commanded - actual) / commanded
+    if rel_err > 0.5:
+        return jsonify({
+            'ok': False,
+            'error': f'|commanded-actual| is {rel_err*100:.0f}% of commanded — refused (likely typo)'
+        }), 400
+
+    motion_ratio = commanded / actual             # >1 → undershot → increase scale
+    otos_ratio   = actual / abs(otos_measured)    # >1 → OTOS undershot → increase
+
+    warnings = []
+    def _check(name, old, new):
+        if old == 0:
+            warnings.append(f'{name}: current value is 0')
+            return
+        r = new / old
+        if r < 0.5 or r > 1.5:
+            warnings.append(f'{name}: correction factor {r:.3f} outside [0.5, 1.5]')
+
+    current = {}
+    suggested = {}
+
+    if axis == 'x':
+        old_cx = _calib['cx']; new_cx = old_cx * motion_ratio
+        old_ol = _calib['ol']; new_ol = old_ol * otos_ratio
+        _check('cx', old_cx, new_cx)
+        _check('ol', old_ol, new_ol)
+        current   = {'cx': old_cx, 'ol': old_ol}
+        suggested = {'cx': round(new_cx, 6), 'ol': round(new_ol, 6)}
+
+    elif axis == 'y':
+        old_cy = _calib['cy']; new_cy = old_cy * motion_ratio
+        old_ol = _calib['ol']; new_ol = old_ol * otos_ratio
+        _check('cy', old_cy, new_cy)
+        _check('ol', old_ol, new_ol)
+        current   = {'cy': old_cy, 'ol': old_ol}
+        suggested = {'cy': round(new_cy, 6), 'ol': round(new_ol, 6)}
+
+    else:  # theta
+        old_cr = _calib['cr']; new_cr = old_cr * motion_ratio
+        old_oa = _calib['oa']; new_oa = old_oa * otos_ratio
+        _check('cr', old_cr, new_cr)
+        _check('oa', old_oa, new_oa)
+        current   = {'cr': old_cr, 'oa': old_oa}
+        suggested = {'cr': round(new_cr, 6), 'oa': round(new_oa, 6)}
+
+    return jsonify({
+        'ok':            True,
+        'axis':          axis,
+        'commanded':     commanded,
+        'otos_measured': otos_measured,
+        'actual':        actual,
+        'motion_ratio':  round(motion_ratio, 6),
+        'otos_ratio':    round(otos_ratio,   6),
+        'current':       current,
+        'suggested':     suggested,
+        'warnings':      warnings,
+    })
 
 def _try_parse_calib_response(text: str):
     """Parse a key=value calibration string and update _calib cache."""
@@ -1156,6 +1370,29 @@ def api_pathfinding():
     if _hw_brain is not None:
         _hw_brain.motion.use_pathfinding = enabled
     return jsonify({'ok': True, 'pathfinding': enabled})
+
+
+# ── Motion control mode (waypoint vs live pursuit) ───────────────────────────
+
+@app.route('/api/motion_mode', methods=['POST'])
+def api_motion_mode():
+    """Toggle the motion control mode for the next go() call.
+
+    Body: {'mode': 'waypoint' | 'pursuit'}
+      waypoint → legacy chained-via behaviour (default)
+      pursuit  → live target tracking with rolling carrot + replan
+
+    Pursuit auto-reverts to waypoint after a single move (opt-in per click).
+    """
+    from services.motion import MotionMode
+    data = request.get_json(force=True) or {}
+    mode_str = str(data.get('mode', 'waypoint')).lower()
+    mode = MotionMode.LIVE_PURSUIT if mode_str == 'pursuit' else MotionMode.LEGACY_WAYPOINT
+    sim_state['features']['pursuit'] = (mode == MotionMode.LIVE_PURSUIT)
+    brain.motion.set_mode(mode)
+    if _hw_brain is not None:
+        _hw_brain.motion.set_mode(mode)
+    return jsonify({'ok': True, 'mode': mode.name})
 
 
 # ── SocketIO events ───────────────────────────────────────────────────────────

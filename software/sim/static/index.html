@@ -373,6 +373,12 @@
           <span>A*</span>
         </label>
 
+        <label class="mbar-toggle" title="LIVE_PURSUIT mode for next go() — smooth carrot following with dynamic replanning. Auto-reverts after one move.">
+          <input type="checkbox" id="feat-pursuit" onchange="toggleMotionMode(this.checked)">
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="8" r="2"/><path d="M8 1v3M8 12v3M1 8h3M12 8h3"/></svg>
+          <span>Pursuit</span>
+        </label>
+
         <div class="mbar-sep"></div>
 
         <span class="mbar-hint">Click → pin point · Brush → paint static grid · Right-click → toggle cell</span>
@@ -1191,22 +1197,59 @@
             </div>
           </div>
 
-          <!-- ── Measurement tool ────────────────────────────────────────── -->
+          <!-- ── Assistant de calibration (wizard) ───────────────────────── -->
           <div class="calib-card calib-card-wide">
-            <div class="calib-card-title">Outil de mesure OTOS
-              <span class="calib-card-hint">Move en boucle ouverte → mesure OTOS → suggère la correction</span>
+            <div class="calib-card-title">Assistant de calibration
+              <span class="calib-card-hint">Mesure le réel au mètre ruban → corrige Motion + OTOS</span>
             </div>
             <div class="calib-measure-desc">
-              Placez le robot sur une surface libre.
-              Entrez la distance cible, cliquez <strong>Mesurer</strong>.
-              Le robot avancera en mode stepper, puis le résultat OTOS sera affiché.
+              Ne suppose <em>pas</em> que le robot est déjà calibré. Le robot fait un
+              mouvement en boucle ouverte (stepper) avec les valeurs actuelles, lit
+              l'OTOS, puis vous mesurez physiquement la distance parcourue pour
+              recaler les deux étages (Motion &amp; OTOS).
             </div>
-            <div class="calib-row">
-              <label class="calib-lbl">Distance (mm)</label>
-              <input type="number" id="calib-measure-dist" class="calib-input" value="500" min="50" max="3000" step="10">
-              <button class="btn btn-sm green" id="btn-calib-measure" onclick="calibMeasure()">📏 Mesurer</button>
+
+            <!-- Step 1 : choix axe + distance -->
+            <div class="calib-row" style="margin-top:8px; gap:8px; flex-wrap:wrap">
+              <label class="calib-lbl">Axe</label>
+              <select id="calib-wiz-axis" class="calib-input" style="width:auto">
+                <option value="x">X (avant)</option>
+                <option value="y">Y (gauche)</option>
+                <option value="theta">θ (rotation)</option>
+              </select>
+              <label class="calib-lbl" id="calib-wiz-distlbl">Distance (mm)</label>
+              <input type="number" id="calib-wiz-dist" class="calib-input" value="500" min="50" max="1500" step="10">
+              <button class="btn btn-sm green" id="btn-calib-wiz-start" onclick="calibWizStart()">▶ Déplacer</button>
             </div>
-            <div id="calib-measure-result" class="calib-measure-result hidden"></div>
+
+            <!-- Step 2 : OTOS result + ruler prompt -->
+            <div id="calib-wiz-measure" class="calib-measure-result hidden" style="margin-top:10px">
+              <div class="calib-row">
+                <span class="calib-lbl">Commandé:</span>
+                <strong id="calib-wiz-cmd">–</strong>
+                <span class="calib-lbl" style="margin-left:16px">OTOS mesuré:</span>
+                <strong id="calib-wiz-otos">–</strong>
+              </div>
+              <div class="calib-row" style="margin-top:8px">
+                <label class="calib-lbl">Distance réelle mesurée</label>
+                <input type="number" id="calib-wiz-actual" class="calib-input" step="0.1" placeholder="mm / °">
+                <button class="btn btn-sm green" id="btn-calib-wiz-compute" onclick="calibWizCompute()">⚙ Calculer</button>
+                <button class="btn btn-sm" onclick="calibWizCancel()">Annuler</button>
+              </div>
+            </div>
+
+            <!-- Step 3 : suggestion + apply -->
+            <div id="calib-wiz-suggest" class="calib-measure-result hidden" style="margin-top:10px">
+              <div id="calib-wiz-suggest-body" style="white-space:pre-wrap; font-family:monospace; font-size:12px"></div>
+              <div id="calib-wiz-warnings" style="color:#b7770d; font-size:12px; margin-top:6px"></div>
+              <div class="calib-row" style="margin-top:10px; gap:8px">
+                <button class="btn btn-sm green" id="btn-calib-wiz-apply" onclick="calibWizApply()">✓ Appliquer</button>
+                <button class="btn btn-sm" onclick="calibWizCancel()">Rejeter</button>
+              </div>
+            </div>
+
+            <div id="calib-wiz-error" class="calib-measure-result hidden"
+                 style="margin-top:10px; color:#c0392b"></div>
           </div>
 
         </div><!-- /calib-grid -->

@@ -72,6 +72,12 @@ class XBeeTransport(Transport):
         self._motion_done_ok    = False
         self._waiting_motion    = False
 
+        # Calibration report tracking — populated by 'T:cal <payload>' telemetry
+        # frames sent by the firmware after calib_move_open / calib_turn_open
+        # complete. wait_calib() blocks until one is received (with timeout).
+        self._calib_evt     = threading.Event()
+        self._calib_payload = ""
+
         # Write-side mutex — prevents two threads (test runner + heartbeat)
         # from interleaving bytes on the serial port simultaneously.
         self._write_lock = threading.Lock()
@@ -236,6 +242,44 @@ class XBeeTransport(Transport):
 
         return (True, response)
 
+    def execute_calib(self, cmd: str,
+                      ack_timeout_ms:  int = 3000,
+                      calib_timeout_ms: int = 30000) -> Tuple[bool, str]:
+        """Fire a calibration command and wait for its 'T:cal <payload>' telemetry.
+
+        The firmware replies 'ok' immediately to the request frame, then blocks
+        for the duration of the open-loop motion (~15–20 s), and finally pushes
+        a dedicated telemetry frame with the key=value report. This method
+        performs the full round-trip and returns (ok, payload_or_error_str).
+
+        Timeouts are hard — on expiry we fire 'cancel' to stop any in-flight
+        motion so the wizard can recover without a T41 reboot.
+        """
+        # Arm the calib event BEFORE sending the request so we never miss a
+        # racey telemetry frame that arrives before we get a chance to wait.
+        with self._lock:
+            self._calib_evt.clear()
+            self._calib_payload = ""
+
+        ok, res = self.execute(cmd, timeout_ms=ack_timeout_ms)
+        if not ok:
+            return (False, f"ack_{res}")
+        if res != "ok":
+            # Firmware replied something unexpected (e.g. err:…) — propagate it.
+            return (False, res)
+
+        finished = self._calib_evt.wait(timeout=calib_timeout_ms / 1000.0)
+        if not finished:
+            # Telemetry never arrived — cancel any in-flight move so the user
+            # can retry immediately instead of rebooting the T41.
+            print("[Transport] calib telemetry timeout — firing cancel")
+            self.fire("cancel")
+            return (False, "calib_telemetry_timeout")
+
+        with self._lock:
+            payload = self._calib_payload
+        return (True, payload)
+
     def fire(self, cmd: str) -> None:
         """Send a fire-and-forget command (framed, no reply awaited).
 
@@ -336,6 +380,11 @@ class XBeeTransport(Transport):
                 if self._waiting_motion:
                     self._motion_done_ok = success
                     self._motion_done_evt.set()
+            # Calibration report — store for wait_calib() to pick up.
+            if ttype == 'cal':
+                with self._lock:
+                    self._calib_payload = data
+                self._calib_evt.set()
             # Dispatch to subscribers
             for cb in self._tel_subs.get(ttype, []):
                 try:

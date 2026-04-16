@@ -37,6 +37,12 @@ class Pathfinder:
 
     def __init__(self, occupancy: OccupancyGrid):
         self.occ = occupancy
+        # Set by find_path() to indicate whether the last call returned a
+        # real A* path (False) or had to fall back to a straight [start,goal]
+        # because no path was found / start or goal was unreachable.
+        # Callers that care about safety (e.g. MotionService on hardware)
+        # should check this and refuse to execute the fallback.
+        self.last_search_failed: bool = False
 
     # ── Inflated planning grid ────────────────────────────────────────────────
 
@@ -82,7 +88,12 @@ class Pathfinder:
 
     def find_path(self, start: Vec2, goal: Vec2) -> List[Vec2]:
         """Return a simplified list of waypoints from start to goal.
-        Falls back to [start, goal] if no path is found."""
+        Falls back to [start, goal] if no path is found.
+
+        Sets ``self.last_search_failed = True`` whenever the returned path
+        is the unsafe straight-line fallback so callers can detect failure.
+        """
+        self.last_search_failed = False
         gs = self.occ.world_to_grid(start)
         gg = self.occ.world_to_grid(goal)
         if gs == gg:
@@ -95,11 +106,24 @@ class Pathfinder:
             if not (self.occ._static[gg[0]][gg[1]] or self.occ._dynamic[gg[0]][gg[1]]):
                 pg[gg[0]][gg[1]] = False
         elif not (0 <= gg[0] < GRID_W and 0 <= gg[1] < GRID_H):
+            self.last_search_failed = True
             return [start, goal]
 
-        # Unblock start cell (robot is already there).
+        # Unblock the start cell AND its immediate neighbourhood.
+        # Rationale: if the robot *is* at `start`, by definition those cells
+        # are physically reachable. Without this, a start placed near a wall
+        # (or at the uncalibrated (0,0) corner) would be surrounded by cells
+        # blocked by the wall-margin test and A* would fail immediately.
+        # We only lift the wall margin here, NOT real obstacles.
         if 0 <= gs[0] < GRID_W and 0 <= gs[1] < GRID_H:
-            pg[gs[0]][gs[1]] = False
+            sx0 = max(0, gs[0] - self._INFLATE)
+            sx1 = min(GRID_W - 1, gs[0] + self._INFLATE)
+            sy0 = max(0, gs[1] - self._INFLATE)
+            sy1 = min(GRID_H - 1, gs[1] + self._INFLATE)
+            for ox in range(sx0, sx1 + 1):
+                for oy in range(sy0, sy1 + 1):
+                    if not (self.occ._static[ox][oy] or self.occ._dynamic[ox][oy]):
+                        pg[ox][oy] = False
 
         g_score  = {gs: 0.0}
         came_from: dict = {}
@@ -135,6 +159,7 @@ class Pathfinder:
         # No path found — log and fall back to direct move
         print(f"[Pathfinder] NO PATH from ({start.x:.0f},{start.y:.0f}) to "
               f"({goal.x:.0f},{goal.y:.0f}) — falling back to direct move")
+        self.last_search_failed = True
         return [start, goal]
 
     def _h(self, a, b) -> float:

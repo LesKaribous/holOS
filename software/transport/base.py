@@ -44,6 +44,19 @@ class Transport(ABC):
         """Send a fire-and-forget command (no reply expected)."""
         ...
 
+    def execute_calib(self, cmd: str,
+                      ack_timeout_ms:  int = 3000,
+                      calib_timeout_ms: int = 30000) -> Tuple[bool, str]:
+        """Calibration fire-and-telemetry round-trip.
+
+        Default implementation just delegates to execute() — real transports
+        (XBee/Wired) override this with a two-phase wait (ACK first, then
+        the 'T:cal <payload>' telemetry frame).
+
+        Returns (True, 'kind=move …') on success, (False, error_str) otherwise.
+        """
+        return self.execute(cmd, timeout_ms=calib_timeout_ms)
+
     # ── Telemetry subscription ────────────────────────────────────────────────
 
     @abstractmethod

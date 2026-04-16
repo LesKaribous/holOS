@@ -74,7 +74,7 @@ namespace ActuatorPresets{
         65,   // left_Store, //min pos 10 max à 65
 
         162,   // right_Grab,
-        162,   // right_Drop,
+        140,   // right_Drop,
         121, // right_Store,
 
         50,  // elevator_Up,

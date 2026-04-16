@@ -530,6 +530,37 @@ FLASHMEM void JetsonBridge::handleRequest(Request& req) {
         return;
     }
 
+    // ── Calibration open-loop moves: fire-and-telemetry pattern ──────────────
+    // We mirror the go()/turn() motion pattern: ACK immediately, then block
+    // inside os.execute() while the move runs, then push the report as a
+    // 'cal' telemetry frame. Python subscribes to 'cal' and correlates the
+    // payload with the command it just fired. This avoids sending the
+    // reply FRAME after a 15–20 s delay — replies after long blocks were
+    // arriving truncated / out-of-window on the Python side.
+    if (lastCmd.startsWith("calib_move_open(") ||
+        lastCmd.startsWith("calib_turn_open(")) {
+        // Immediate ACK — Python unblocks its reply wait at once.
+        req.reply("ok");
+
+        // The command itself zeroes g_lastCalibReport on entry, so a stale
+        // payload from a previous run can't be served if we abort early.
+
+        // Run the command synchronously. This blocks until the move is
+        // done or hits the 20 s firmware fuse. Services keep ticking via
+        // the nested os.run() inside the command's wait loop.
+        String mutable_cmd = cmd;
+        os.execute(mutable_cmd);
+
+        // Push the calibration report as a dedicated telemetry channel.
+        // Frame format: "T:cal <key>=<val> <key>=<val> ..."
+        const char* rep = getLastCalibReport();
+        char buf[240];
+        snprintf(buf, sizeof(buf), "T:cal %s",
+                 (rep && rep[0]) ? rep : "kind=error msg=no_report");
+        _pushFrame(buf);
+        return;
+    }
+
     // ── All other commands: execute and reply ok ──────────────────────────────
     _executeCommand(cmd, req);
 }

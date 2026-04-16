@@ -27,6 +27,7 @@ FLASHMEM void Motion::attach() {
     Job::reset();
     stepper_controller.setSteppers(&m_sA, &m_sB, &m_sC);
     cruise_controller.setSteppers(&m_sA, &m_sB, &m_sC);
+    pursuit_controller.setSteppers(&m_sA, &m_sB, &m_sC);
 
     _absolute      = Settings::Motion::ABSOLUTE;
     _startPosition = {0, 0, 0};
@@ -59,6 +60,18 @@ FLASHMEM void Motion::exec() { run(); }
 
 FLASHMEM void Motion::onRunning() {
     if (!isBusy()) return;
+
+    // ── Mode pursuit : pas de queue, pas de complétion automatique ──
+    // Le contrôleur tourne tant qu'il reçoit des aim() et qu'il n'est
+    // pas annulé. C'est la couche haute (Python) qui décide quand
+    // l'arrêter via cancel().
+    if (current_move_pursuit) {
+        if (pursuit_controller.isCanceled()) {
+            Console::warn("Motion") << "Pursuit canceled by controller" << Console::endl;
+            onCanceled();
+        }
+        return;
+    }
 
     // Annulation venue du contrôleur
     bool controllerCanceled = current_move_cruised ? cruise_controller.isCanceled()
@@ -113,7 +126,12 @@ FLASHMEM void Motion::onRunning() {
 FLASHMEM void Motion::onPausing() {
     bool finished = false;
 
-    if (current_move_cruised) {
+    if (current_move_pursuit) {
+        // Pursuit n'a pas de notion propre de pause : on rentre en
+        // canceling et on sort dès que la vélocité a atteint zéro.
+        finished = pursuit_controller.isCanceled() ||
+                   pursuit_controller.isCompleted();
+    } else if (current_move_cruised) {
         Vec3 pos = estimatedPosition();
         if (pos != _position) {
             _position = pos;
@@ -132,7 +150,11 @@ FLASHMEM void Motion::onPausing() {
 FLASHMEM void Motion::onCanceling() {
     bool finished = false;
 
-    if (current_move_cruised) {
+    if (current_move_pursuit) {
+        // Le pursuit_controller décélère seul dans son onCanceling().
+        finished = pursuit_controller.isCanceled() ||
+                   pursuit_controller.isCompleted();
+    } else if (current_move_cruised) {
         Vec3 pos = estimatedPosition();
         if (pos != _position) {
             _position = pos;
@@ -166,8 +188,15 @@ FLASHMEM void Motion::onCanceled() {
     _isMoving   = false;
     _isRotating = false;
 
+    // Drain any pending waypoints so the next go()/turn() does not replay
+    // a stale queue head (root cause of the "robot re-visits previous
+    // positions" bug when a soft cancel leaves the queue dirty).
+    clearWaypoints();
+
     cruise_controller.reset();
     stepper_controller.reset();
+    pursuit_controller.reset();
+    current_move_pursuit = false;
     _startPosition = _position = estimatedPosition();
 
     Console::info("Motion") << "Move canceled" << Console::endl;
@@ -180,14 +209,16 @@ FLASHMEM void Motion::onCanceled() {
 
 void Motion::step() {
     SERVICE_METHOD_HEADER
-    if (current_move_cruised) cruise_controller.step();
-    else                      stepper_controller.step();
+    if      (current_move_pursuit) pursuit_controller.step();
+    else if (current_move_cruised) cruise_controller.step();
+    else                           stepper_controller.step();
 }
 
 void Motion::control() {
     SERVICE_METHOD_HEADER
-    if (current_move_cruised) cruise_controller.control();
-    else                      stepper_controller.control();
+    if      (current_move_pursuit) pursuit_controller.control();
+    else if (current_move_cruised) cruise_controller.control();
+    else                           stepper_controller.control();
 }
 
 
@@ -476,8 +507,9 @@ FLASHMEM void Motion::cancel() {
     if (isCanceling() || isCanceled() || isCompleted()) return;
     Job::cancel();
     if (isCanceling()) {
-        if (current_move_cruised) cruise_controller.cancel();
-        else                      stepper_controller.cancel();
+        if      (current_move_pursuit) pursuit_controller.cancel();
+        else if (current_move_cruised) cruise_controller.cancel();
+        else                           stepper_controller.cancel();
     }
 }
 
@@ -491,6 +523,8 @@ FLASHMEM void Motion::complete() {
     _startPosition = _position = estimatedPosition();
     cruise_controller.reset();
     stepper_controller.reset();
+    pursuit_controller.reset();
+    current_move_pursuit = false;
     Job::complete();
     Console::info("Motion") << "Move completed" << Console::endl;
 }
@@ -503,6 +537,8 @@ FLASHMEM void Motion::forceCancel() {
     _startPosition = _position = estimatedPosition();
     cruise_controller.reset();
     stepper_controller.reset();
+    pursuit_controller.reset();
+    current_move_pursuit = false;
     Job::forceCancel();
     Console::info("Motion") << "Move force-canceled" << Console::endl;
 }
@@ -689,3 +725,90 @@ FLASHMEM float Motion::getFeedrate() const { return m_feedrate; }
 
 FLASHMEM void Motion::setAsync() { m_async = true; }
 FLASHMEM void Motion::setSync()  { m_async = false; }
+
+
+// ============================================================
+//  Control mode (LEGACY_WAYPOINT vs LIVE_PURSUIT)
+// ============================================================
+
+FLASHMEM void Motion::setControlMode(ControlMode m) {
+    if (m == m_controlMode) return;
+    if (isMoving() || isRunning()) {
+        Console::error("Motion") << "Cannot change control mode while moving" << Console::endl;
+        return;
+    }
+    m_controlMode = m;
+    Console::info("Motion") << "Control mode = "
+        << (m == ControlMode::LIVE_PURSUIT ? "LIVE_PURSUIT" : "LEGACY_WAYPOINT")
+        << Console::endl;
+}
+
+
+// ============================================================
+//  Pursuit mode API — aim() / heading
+// ============================================================
+
+FLASHMEM void Motion::aim(float x, float y) { aim(Vec2(x, y)); }
+
+FLASHMEM void Motion::aim(Vec2 t) {
+    if (m_controlMode != ControlMode::LIVE_PURSUIT) {
+        Console::error("Motion") << "aim() requires LIVE_PURSUIT mode" << Console::endl;
+        return;
+    }
+    if (!enabled()) {
+        Console::error("Motion") << "Motion not enabled" << Console::endl;
+        return;
+    }
+    if (!localisation.enabled()) {
+        Console::error("Motion") << "Pursuit requires localisation" << Console::endl;
+        return;
+    }
+
+    Vec3 t3(t.a, t.b, _position.c);  // garde l'orientation actuelle par défaut
+
+    // Premier aim : démarre le job pursuit
+    if (!current_move_pursuit || !isRunning()) {
+        // Si un autre job est en cours, on l'annule (force) avant
+        // de basculer en pursuit.
+        if (isRunning()) cancel();
+        Job::reset();
+        engage();
+
+        cruise_controller.reset();
+        stepper_controller.reset();
+        pursuit_controller.reset();
+
+        float effFeed = (m_activeOpts.feedrate > 0.0f) ? m_activeOpts.feedrate : m_feedrate;
+        pursuit_controller.setFeedrate(effFeed);
+        pursuit_controller.setPosition(_position);
+        pursuit_controller.setTarget(t3);
+
+        current_move_pursuit = true;
+        current_move_cruised = false;
+        _isMoving = true;
+        _target   = t3;
+
+        Console::info("Motion") << "Pursuit start, aim=" << t3 << Console::endl;
+        pursuit_controller.start();
+        Job::start();
+        m_moveStartMs = millis();
+    } else {
+        // Mise à jour vivante de la cible — pas de reset
+        pursuit_controller.setTarget(t3);
+        _target = t3;
+    }
+}
+
+FLASHMEM void Motion::setHeadingMode(bool enabled, RobotCompass face) {
+    pursuit_controller.setHeadingMode(enabled, face);
+    Console::info("Motion") << "Pursuit heading mode "
+        << (enabled ? "ON" : "OFF") << Console::endl;
+}
+
+FLASHMEM bool Motion::isHeadingMode() const {
+    return pursuit_controller.isHeadingMode();
+}
+
+FLASHMEM bool Motion::isPursuitWatchdogTripped() const {
+    return pursuit_controller.watchdogTripped();
+}

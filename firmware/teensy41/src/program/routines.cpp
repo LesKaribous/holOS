@@ -48,13 +48,23 @@ FLASHMEM void programAuto() {
         Console::info("OS") << "Intelligent strategy — Jetson remote controlled mode." << Console::endl;
         // The Jetson drives the robot. We stay in loop and let JetsonBridge
         // dispatch incoming commands. Match ends when chrono fires onMatchEnd().
+        //
+        // IMPORTANT: os.flush() is a NO-OP when the job stack is empty
+        // (it only drains pending jobs). In remote mode there are no jobs
+        // pushed here, so using flush() would leave updateServices() never
+        // being called → screen black, intercom off, chrono frozen,
+        // JetsonBridge never reads incoming commands. Use os.run() instead
+        // which goes through auto_routine() → updateServices().
         while (chrono.getTimeLeft() > 0) {
-            // Honour pause from match_stop — spin without processing commands
+            // Honour pause from match_stop — still tick services so the
+            // bridge can receive a resume/cancel and the IHM keeps drawing.
             if (jetsonBridge.isMatchPaused()) {
-                os.flush();
+                os.run();
+                yield();
                 continue;
             }
-            os.flush(); // process one iteration
+            os.run();   // dispatches services + processes any pending jobs
+            yield();    // feed watchdogs / allow Teensy USB, Serial IRQs
         }
     } else {
         if (!useIntelligent) {
