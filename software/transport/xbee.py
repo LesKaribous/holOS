@@ -116,10 +116,10 @@ class XBeeTransport(Transport):
             # Firmware auto-detects which port (USB-CDC or XBee) receives the
             # first valid frame.  We always send raw "ping\n" — firmware replies
             # "pong:usb\n" or "pong:xbee\n" to identify the active bridge.
-            deadline = time.time() + 3.0
+            deadline = time.time() + 8.0   # XBee radio needs more time than USB
             while not self._connected and time.time() < deadline:
                 self._serial.write(b"ping\n")
-                time.sleep(0.2)
+                time.sleep(0.5)
 
             if self._connected:
                 self._start_heartbeat()
@@ -156,6 +156,8 @@ class XBeeTransport(Transport):
             self._replies.clear()
         self._motion_done_evt.set()   # unblock any waiting motion call
         self._waiting_motion = False
+        # Clear all subscribers so stale closures (e.g. socketio.emit refs) are released
+        self._tel_subs.clear()
         if self._serial is not None:
             try:
                 if self._serial.is_open:

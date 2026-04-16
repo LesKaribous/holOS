@@ -100,11 +100,9 @@ function serialRefreshPorts() {
 function serialConnect() {
   const port = (document.getElementById('serial-port-sel') || document.getElementById('t-port-sel'))?.value;
   if (!port) { showToast('Select a serial port first'); return; }
-  const mode = document.getElementById('t-mode-sel')?.value;
-  const baud = (mode === 'xbee') ? 57600 : 115200;
   cgSetRobotConnecting();
   setSerialStatus('Connecting…', '');
-  socket.emit('serial_connect', {port, baud});
+  socket.emit('serial_connect', {port});
 }
 
 function serialDisconnect() {

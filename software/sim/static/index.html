@@ -94,12 +94,8 @@
 <div id="robot-panel" class="conn-panel hidden">
   <div class="conn-panel-title">Robot — Teensy 4.1</div>
   <div class="conn-panel-row" style="gap:6px;flex-wrap:wrap">
-    <select id="serial-port-sel" class="input-sm" style="flex:1;min-width:130px">
+    <select id="serial-port-sel" class="input-sm" style="flex:1;min-width:160px">
       <option value="">— port —</option>
-    </select>
-    <select id="serial-mode-sel" class="input-sm" style="width:104px">
-      <option value="wired" selected>USB Wired</option>
-      <option value="xbee">XBee / Jetson</option>
     </select>
     <button class="btn-tiny" onclick="serialRefreshPorts()" title="Refresh ports">↺</button>
   </div>
@@ -109,9 +105,7 @@
     <span id="serial-status-val" style="font-size:11px;color:var(--text-dim)">not connected</span>
   </div>
   <div class="conn-panel-row" style="font-size:10px;color:var(--text-dim);line-height:1.4">
-    USB Wired: direct USB serial @ 115 200 bd.<br>
-    XBee / Jetson: radio link @ 31 250 bd.<br>
-    Robot telemetry mirrors to the map view.
+    USB or XBee auto-detected from firmware pong response.
   </div>
 </div>
 
@@ -977,12 +971,8 @@
 
       <div id="term-conn-bar">
         <span class="mode-label">Serial port</span>
-        <select id="t-port-sel" class="input-sm" style="flex:1;max-width:180px">
+        <select id="t-port-sel" class="input-sm" style="flex:1;max-width:220px">
           <option value="">— none —</option>
-        </select>
-        <select id="t-mode-sel" class="input-sm" style="width:104px">
-          <option value="wired" selected>USB Wired</option>
-          <option value="xbee">XBee / Jetson</option>
         </select>
         <button class="btn-tiny" onclick="serialRefreshPorts()">↺</button>
         <button class="btn-tiny green" onclick="serialConnect()">Connect</button>

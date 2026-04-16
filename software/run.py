@@ -1595,24 +1595,17 @@ def on_reload_strategy():
 
 # ── Serial connection logic (shared between SocketIO handler and --connect) ──
 
-def _do_connect(port: str, baud: int):
+def _do_connect(port: str):
     """Connect to the robot over serial. Called from a background thread.
+    Transport type (USB vs XBee) is auto-detected from the firmware pong response.
     Updates globals and emits SocketIO status events."""
     global _hw_transport, _hw_brain, _hw_connecting, _hw_serial_port, _hw_serial_mode
     global _hw_tel_data, _connection_mode
     t = None
     try:
-        from shared.config import USB_DIRECT_BAUDRATE, XBEE_BAUDRATE
-        if baud == USB_DIRECT_BAUDRATE:
-            from transport.wired import WiredTransport
-            t = WiredTransport(port=port)
-            transport_label = f'USB Wired @ {baud} bps'
-            _hw_serial_mode = 'wired'
-        else:
-            from transport.xbee import XBeeTransport
-            t = XBeeTransport(port=port, baudrate=baud)
-            transport_label = f'XBee @ {baud} bps'
-            _hw_serial_mode = 'xbee'
+        from shared.config import BRIDGE_BAUDRATE
+        from transport.xbee import XBeeTransport
+        t = XBeeTransport(port=port, baudrate=BRIDGE_BAUDRATE)
 
         # Subscribe raw UART feed BEFORE connect() so handshake bytes are visible.
         def _on_raw_rx(line):
@@ -1621,11 +1614,13 @@ def _do_connect(port: str, baud: int):
             socketio.emit('uart_raw', {'dir': 'tx', 'line': line})
         t.subscribe_telemetry('_raw',    _on_raw_rx)
         t.subscribe_telemetry('_raw_tx', _on_raw_tx)
-        socketio.emit('uart_raw', {'dir': 'sys', 'line': f'[connect] {port} @ {baud} bps ({_hw_serial_mode})'})
+        socketio.emit('uart_raw', {'dir': 'sys', 'line': f'[connect] {port} @ {BRIDGE_BAUDRATE} bps'})
 
         ok = t.connect()
         if ok:
             global _hw_test_runner
+            bridge_type     = t.bridge_type or 'xbee'
+            transport_label = f'{"USB Wired" if bridge_type == "usb" else "XBee"} ({port})'
             _hw_transport   = t
             _hw_serial_port = port
             # Reset live telemetry on new connection
@@ -1754,8 +1749,9 @@ def _do_connect(port: str, baud: int):
                 })
             t.subscribe_telemetry('_console', _on_console)
 
-            # Set connection mode based on transport type
-            _connection_mode = 'usb' if _hw_serial_mode == 'wired' else 'xbee'
+            # Transport type is auto-detected from pong response ('usb' or 'xbee')
+            _hw_serial_mode  = 'wired' if t.bridge_type == 'usb' else 'xbee'
+            _connection_mode = t.bridge_type if t.bridge_type in ('usb', 'xbee') else 'xbee'
 
             # ── Unexpected disconnect handler ─────────────────────────────
             # Do NOT clear _hw_transport — the transport object may reconnect
@@ -1779,7 +1775,7 @@ def _do_connect(port: str, baud: int):
             # ── Reconnection handler ─────────────────────────────────────
             # Fires when transport receives a pong after having been
             # disconnected.  Restore backend state + notify frontend.
-            _saved_mode  = 'usb' if _hw_serial_mode == 'wired' else 'xbee'
+            _saved_mode  = _connection_mode
             _saved_label = transport_label
 
             def _on_hw_reconnect():
@@ -1815,7 +1811,8 @@ def _do_connect(port: str, baud: int):
             t.on_connect(_on_hw_reconnect)
 
             socketio.emit('serial_status', {
-                'ok': True, 'msg': f'Connected — {transport_label}'
+                'ok': True, 'msg': f'Connected — {transport_label}',
+                'bridge': _connection_mode, 'port': port,
             })
             socketio.emit('tests_catalog_changed', {'mode': _connection_mode})
             brain.log(f'[HW] Connected — {transport_label}')
@@ -1823,14 +1820,11 @@ def _do_connect(port: str, baud: int):
         else:
             _hw_transport   = None
             _hw_serial_port = None
-            hint = ('Check USB cable and Teensy firmware'
-                    if baud == USB_DIRECT_BAUDRATE
-                    else 'Check XBee wiring and baud rate')
             socketio.emit('serial_status', {
                 'ok': False,
-                'msg': f'No response from Teensy on {port} — {hint}',
+                'msg': f'No response from Teensy on {port} — check wiring, baud rate ({BRIDGE_BAUDRATE}), and XBee pairing',
             })
-            print(f"  [holOS] No response from Teensy on {port} — {hint}")
+            print(f"  [holOS] No response from Teensy on {port}")
     except Exception as e:
         if t is not None:
             try:
@@ -1851,7 +1845,6 @@ def _do_connect(port: str, baud: int):
 def on_serial_connect(data):
     global _hw_transport, _hw_brain, _hw_connecting
     port = (data.get('port') or '').strip()
-    baud = int(data.get('baud') or 115200)
 
     if not port:
         emit('serial_status', {'ok': False, 'msg': 'No port selected'})
@@ -1873,7 +1866,7 @@ def on_serial_connect(data):
     _hw_connecting = True
     emit('serial_status', {'ok': False, 'msg': f'Connecting to {port}…', 'connecting': True})
 
-    threading.Thread(target=_do_connect, args=(port, baud),
+    threading.Thread(target=_do_connect, args=(port,),
                      daemon=True, name='serial-connect').start()
 
 
@@ -2405,9 +2398,10 @@ def main():
         def _auto_connect():
             global _hw_connecting
             time.sleep(1.0)  # Let Flask/SocketIO initialize
+            from shared.config import BRIDGE_BAUDRATE as _AB
             _hw_connecting = True
-            print(f"  [holOS] Auto-connecting to {connect_port} @ {connect_baud}…")
-            _do_connect(connect_port, connect_baud)
+            print(f"  [holOS] Auto-connecting to {connect_port} @ {_AB} bps…")
+            _do_connect(connect_port)
             # Auto-start match if requested and connected
             if args.auto_start and _hw_transport is not None and _hw_transport.is_connected:
                 time.sleep(0.5)
