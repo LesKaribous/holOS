@@ -10,6 +10,8 @@
 #define INTERCOM_SERIAL   Serial1   // UART physique T4.1↔T4.0
 #define INTERCOM_BAUDRATE 31250
 
+#define OTOS_AUX_SERIAL Serial3
+
 // ── Bridge holOS / Jetson — auto-détection USB ↔ XBee ────────────────────────
 // Au boot, JetsonBridge écoute sur les deux ports :
 //   – Serial  (USB-CDC)  : connexion filaire PC ↔ Teensy
@@ -24,16 +26,12 @@
 extern Stream* g_bridgeSerial;           // Defined in jetson_bridge.cpp
 #define BRIDGE_SERIAL    (*g_bridgeSerial)
 #define BRIDGE_USB       Serial          // USB-CDC — /dev/ttyACM0 / COMx
-#define BRIDGE_XBEE      Serial3         // XBee 868 MHz radio module
+#define BRIDGE_XBEE      Serial2         // XBee 868 MHz radio module
 #define BRIDGE_BAUDRATE  57600
-
-// TwinVision — caméra centrale (sur Serial2)
-#define VISION_SERIAL   Serial2
-#define VISION_BAUDRATE 115200
 
 // Console debug — toujours sur USB (lignes sans |crc ignorées par le parser Python)
 #define CONSOLE_SERIAL   Serial
-#define CONSOLE_BAUDRATE 115200
+#define CONSOLE_BAUDRATE 57600
 
 #define TW_STRAT1 CHERRY
 #define TW_STRAT2 CAKE
