@@ -14,7 +14,10 @@ Usage:
 
 import threading
 import time
-import serial
+try:
+    import serial
+except ImportError:
+    serial = None  # type: ignore[assignment]
 from typing import Callable, Dict, List, Optional, Tuple
 
 from .base import Transport
@@ -52,7 +55,7 @@ class XBeeTransport(Transport):
     def __init__(self, port: str, baudrate: int = BRIDGE_BAUDRATE):
         self._port     = port
         self._baudrate = baudrate
-        self._serial: Optional[serial.Serial] = None
+        self._serial = None  # serial.Serial when connected
         self._connected = False
 
         # Auto-identified bridge type: 'usb', 'xbee', or None (unknown)
@@ -95,6 +98,8 @@ class XBeeTransport(Transport):
     # ── Connection lifecycle ──────────────────────────────────────────────────
 
     def connect(self) -> bool:
+        if serial is None:
+            raise RuntimeError("pyserial not installed — run: pip install pyserial")
         try:
             self._serial = serial.Serial(
                 port=self._port,
@@ -312,7 +317,11 @@ class XBeeTransport(Transport):
             with self._write_lock:
                 try:
                     self._serial.write(data.encode('ascii'))
-                except serial.SerialException as e:
+                    # Raw TX feed — strip trailing newline for display
+                    for cb in self._tel_subs.get('_raw_tx', []):
+                        try: cb(data.rstrip('\n'))
+                        except Exception: pass
+                except Exception as e:
                     print(f"[Transport] Write error: {e}")
 
     # ── Internal: reader loop ─────────────────────────────────────────────────
@@ -327,7 +336,12 @@ class XBeeTransport(Transport):
                 buf += chunk
                 while b'\n' in buf:
                     line, buf = buf.split(b'\n', 1)
-                    self._process_line(line.decode('ascii', errors='ignore'))
+                    decoded = line.decode('ascii', errors='ignore')
+                    # Raw RX feed — fire before any parsing so subscribers see every byte
+                    for cb in self._tel_subs.get('_raw', []):
+                        try: cb(decoded)
+                        except Exception: pass
+                    self._process_line(decoded)
             except Exception as e:
                 if self._running:
                     print(f"[Transport] Reader error: {e}")

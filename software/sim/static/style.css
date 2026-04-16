@@ -819,6 +819,41 @@ html, body { height: 100%; overflow: hidden; margin: 0;
   background: var(--surface); border-top: 1px solid var(--surface2); flex-shrink: 0;
 }
 
+/* ── Terminal tab bar ────────────────────────────────────────────────────── */
+#term-tab-bar {
+  display: flex; background: var(--surface); border-bottom: 1px solid var(--surface2);
+  padding: 0 8px; flex-shrink: 0;
+}
+.term-tab {
+  background: none; border: none; border-bottom: 2px solid transparent;
+  padding: 5px 14px; font-size: 12px; color: var(--text-dim); cursor: pointer;
+  font-weight: 500; transition: color .15s, border-color .15s; white-space: nowrap;
+}
+.term-tab:hover { color: var(--text); }
+.term-tab.active { color: var(--brand); border-bottom-color: var(--brand); }
+.term-pane { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+
+/* ── UART raw output pane ────────────────────────────────────────────────── */
+#uart-output {
+  flex: 1; overflow-y: auto; padding: 8px 10px;
+  font-family: 'Consolas', monospace; font-size: 11px;
+  background: #0d1117; display: flex; flex-direction: column; gap: 1px;
+}
+#uart-output::-webkit-scrollbar { width: 4px; }
+#uart-output::-webkit-scrollbar-thumb { background: #30363d; }
+
+.uart-line { display: flex; align-items: baseline; gap: 8px; line-height: 1.55; }
+.uart-dir-rx  { color: #3fb950; font-size: 10px; font-weight: 700;
+                flex-shrink: 0; width: 16px; text-align: center; }
+.uart-dir-tx  { color: #58a6ff; font-size: 10px; font-weight: 700;
+                flex-shrink: 0; width: 16px; text-align: center; }
+.uart-dir-sys { color: #f78166; font-size: 10px; font-weight: 700;
+                flex-shrink: 0; width: 16px; text-align: center; }
+.uart-ts   { color: #484f58; font-size: 10px; flex-shrink: 0; }
+.uart-data { color: #e6edf3; word-break: break-all; }
+.uart-data.tx { color: #79c0ff; }
+.uart-data.sys { color: #f78166; font-style: italic; }
+
 /* ══════════════════════════════════════════════════════════════════════════
    SHARED / UTILITIES
 ══════════════════════════════════════════════════════════════════════════ */

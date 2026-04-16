@@ -39,7 +39,11 @@ import platform
 IS_JETSON = (platform.system() == 'Linux')
 print(f"[run.py] Detected platform: {platform.system()} (IS_JETSON={IS_JETSON})")
 
-_DEFAULT_JETSON_PORT = '/dev/ttyUSB0'
+_DEFAULT_JETSON_PORT  = '/dev/ttyTHS1'
+# Jetson 40-pin header pins 8 & 10 → UART2 (ttyTHS1).
+# Not enumerated by list_ports.comports(), so we inject it manually.
+_ONBOARD_UART         = '/dev/ttyTHS1'
+_ONBOARD_UART_DESC    = 'Onboard UART2 (pins 8 & 10) — XBee'
 
 # Sequence runner state
 _seq_stop   = threading.Event()
@@ -140,6 +144,10 @@ _hw_test_runner     = None   # TestRunner for real hardware tests
 _hw_connecting      = False  # True while a connection attempt is in progress
 _hw_serial_port     = None   # Serial port in use (e.g. 'COM6' or '/dev/ttyACM0')
 _hw_serial_mode     = 'wired' # 'wired' | 'xbee'
+
+# ── Match state (server-authoritative, broadcast to all clients) ──────────────
+_match_running = False
+_match_paused  = False
 
 # ── Calibration state (Python-side cache) ─────────────────────────────────────
 # Mirrors Calibration::Current + OtosLinear/OtosAngular on the firmware.
@@ -340,6 +348,11 @@ def _build_state() -> dict:
         'hw_tel_mask':     dict(_hw_tel_mask),
         'hw_t40':          (_hw_tel_data.get('t40') or 'unknown') if hw_on else 'unknown',
         'jetson_ip':       _jetson_config.get('ip', ''),
+        # ── Match state ──────────────────────────────────────────────────────────
+        'match_running':   _match_running,
+        'match_paused':    _match_paused,
+        # ── Platform ─────────────────────────────────────────────────────────────
+        'is_jetson':       IS_JETSON,
     }
 
 
@@ -1309,14 +1322,50 @@ def on_vision_view_active(data):
 
 @app.route('/api/serial/ports')
 def api_serial_ports():
+    import glob as _glob
+    seen  = set()
+    ports = []
+    log   = []   # accumulated for UART tab broadcast
+
+    def _add(device, desc, source):
+        if device not in seen:
+            seen.add(device)
+            ports.append({'port': device, 'desc': desc})
+            log.append(f'  + {device}  ({desc})  [{source}]')
+
+    # On Jetson, always expose the onboard UART first.
+    if IS_JETSON:
+        _add(_ONBOARD_UART, _ONBOARD_UART_DESC, 'hardcoded')
+
+    # pyserial enumeration (may return an empty list on Tegra/ARM kernels).
     try:
         import serial.tools.list_ports
-        return jsonify([
-            {'port': p.device, 'desc': p.description}
-            for p in serial.tools.list_ports.comports()
-        ])
-    except ImportError:
-        return jsonify([])
+        pl = list(serial.tools.list_ports.comports())
+        log.append(f'  pyserial comports(): {len(pl)} result(s)')
+        for p in pl:
+            _add(p.device, p.description, 'pyserial')
+    except Exception as e:
+        log.append(f'  pyserial comports() ERROR: {e}')
+        print(f"[ports] list_ports.comports() failed: {e}")
+
+    # Direct /dev glob — fallback for kernels where pyserial sysfs walk misses devices.
+    for pattern in ('/dev/ttyUSB*', '/dev/ttyACM*', '/dev/ttyTHS*'):
+        for dev in sorted(_glob.glob(pattern)):
+            _add(dev, dev.split('/')[-1], 'glob')
+
+    # Print full scan result to server log
+    print(f"[ports] scan complete — {len(ports)} port(s):")
+    for line in log:
+        print(line)
+    if not ports:
+        print("[ports] WARNING: no ports found")
+
+    # Broadcast to UART tab so the user can see results without looking at server logs
+    socketio.emit('uart_raw', {'dir': 'sys', 'line': f'[port scan] {len(ports)} port(s) found'})
+    for line in log:
+        socketio.emit('uart_raw', {'dir': 'sys', 'line': line})
+
+    return jsonify(ports)
 
 
 # ── Static occupancy map API ──────────────────────────────────────────────────
@@ -1435,17 +1484,31 @@ def on_set_color(data):
 
 @socketio.on('run_strategy')
 def on_run_strategy():
+    global _match_running, _match_paused
+    _match_running = True
+    _match_paused  = False
+    socketio.emit('match_state', {'running': True, 'paused': False})
     _active_brain().run_match()
+    _match_running = False
+    _match_paused  = False
+    socketio.emit('match_state', {'running': False, 'paused': False})
 
 
 @socketio.on('stop_strategy')
 def on_stop_strategy():
+    global _match_running, _match_paused
     _active_brain().stop_match()
+    _match_running = False
+    _match_paused  = False
+    socketio.emit('match_state', {'running': False, 'paused': False})
 
 
 @socketio.on('reset')
 def on_reset():
+    global _match_running, _match_paused
     brain.stop_match()
+    _match_running = False
+    _match_paused  = False
     robot.reset_to_start(sim_state['team'])
     occupancy.reset_dynamic()   # Keep static layer across resets
     sim_state['score'] = 0
@@ -1550,6 +1613,15 @@ def _do_connect(port: str, baud: int):
             t = XBeeTransport(port=port, baudrate=baud)
             transport_label = f'XBee @ {baud} bps'
             _hw_serial_mode = 'xbee'
+
+        # Subscribe raw UART feed BEFORE connect() so handshake bytes are visible.
+        def _on_raw_rx(line):
+            socketio.emit('uart_raw', {'dir': 'rx', 'line': line})
+        def _on_raw_tx(line):
+            socketio.emit('uart_raw', {'dir': 'tx', 'line': line})
+        t.subscribe_telemetry('_raw',    _on_raw_rx)
+        t.subscribe_telemetry('_raw_tx', _on_raw_tx)
+        socketio.emit('uart_raw', {'dir': 'sys', 'line': f'[connect] {port} @ {baud} bps ({_hw_serial_mode})'})
 
         ok = t.connect()
         if ok:
@@ -1872,6 +1944,21 @@ def on_actuator_fire(data):
     emit('terminal_rx', {'cmd': cmd, 'ok': True, 'res': '(fired)', 'mode': mode})
 
 
+@socketio.on('uart_raw_tx')
+def on_uart_raw_tx(data):
+    """Send raw text directly to the serial port (no framing). Used by UART tab."""
+    text = data.get('text', '')
+    if not text:
+        return
+    if _hw_transport is None:
+        emit('uart_raw', {'dir': 'sys', 'line': '[not connected to hardware]'})
+        return
+    # Append newline if missing and write — _raw_tx subscriber echoes it to UART tab
+    if not text.endswith('\n'):
+        text += '\n'
+    _hw_transport._write(text)
+
+
 @socketio.on('run_sequence')
 def on_run_sequence(data):
     """Run a list of {cmd, delay_ms} steps in a background thread."""
@@ -2125,24 +2212,26 @@ def on_match_start():
       strat=1 (remote/intelligent) → also starts the Python brain
       strat=0 (internal/sequential) → firmware runs C++ blocks autonomously
 
-    UI feedback is emitted immediately after the firmware ACK so the webapp
-    does not appear to "do nothing" while health is being queried.
+    UI feedback is broadcast to ALL clients immediately after the firmware ACK.
     """
+    global _match_running, _match_paused
     t = _active_transport()
     if t is None or not t.is_connected:
         brain.log('[MATCH] No HW transport connected — cannot start firmware match')
-        emit('match_state', {'running': False, 'error': 'not_connected'})
+        socketio.emit('match_state', {'running': False, 'error': 'not_connected'})
         return
 
     ok, res = t.execute('match_start', timeout_ms=3000)
     if not ok:
         brain.log(f'[MATCH] Remote start FAILED: {res}')
-        emit('match_state', {'running': False})
+        socketio.emit('match_state', {'running': False})
         return
 
-    # Firmware ACKed — match is starting.  Emit immediately so UI updates.
+    # Firmware ACKed — match is starting.  Broadcast to all clients.
+    _match_running = True
+    _match_paused  = False
     brain.log('[MATCH] Firmware match started ✓')
-    emit('match_state', {'running': True})
+    socketio.emit('match_state', {'running': True, 'paused': False})
 
     # Now check strategy switch to decide whether to also run the Python brain.
     h_ok, h_res = t.execute('health', timeout_ms=2000)
@@ -2156,6 +2245,7 @@ def on_match_start():
 @socketio.on('match_stop')
 def on_match_stop():
     """Remote match stop — pauses program, cancels in-flight motion."""
+    global _match_running, _match_paused
     t = _active_transport()
     if t is not None and t.is_connected:
         ok, res = t.execute('match_stop', timeout_ms=3000)
@@ -2163,7 +2253,9 @@ def on_match_stop():
             brain.log('[MATCH] Remote stop → paused')
         else:
             brain.log(f'[MATCH] Remote stop failed: {res}')
-        emit('match_state', {'running': not ok, 'paused': ok})
+        _match_running = not ok
+        _match_paused  = ok
+        socketio.emit('match_state', {'running': not ok, 'paused': ok})
     else:
         brain.log('[MATCH] No transport connected')
 
@@ -2171,12 +2263,15 @@ def on_match_stop():
 @socketio.on('match_resume')
 def on_match_resume():
     """Resume a paused match."""
+    global _match_running, _match_paused
     t = _active_transport()
     if t is not None and t.is_connected:
         ok, res = t.execute('match_resume', timeout_ms=3000)
         if ok:
             brain.log('[MATCH] Resumed')
-        emit('match_state', {'running': ok, 'paused': not ok})
+        _match_running = ok
+        _match_paused  = not ok
+        socketio.emit('match_state', {'running': ok, 'paused': not ok})
 
 
 # ── C++ Block discovery & execution ──────────────────────────────────────────

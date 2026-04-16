@@ -42,10 +42,10 @@
   <!-- Connectivity graph : PC ── holOS ── Robot -->
   <div class="cg-wrap" id="conn-graph">
 
-    <!-- Node: PC / Browser -->
+    <!-- Node: PC / Jetson -->
     <div class="cg-node">
       <span class="cg-dot" id="cg-dot-ws"></span>
-      <span class="cg-lbl">PC</span>
+      <span class="cg-lbl" id="cg-lbl-client">PC</span>
     </div>
 
     <!-- Link PC → holOS -->
@@ -993,7 +993,13 @@
         </span>
       </div>
 
-      <div class="terminal-panel">
+      <div id="term-tab-bar">
+        <button class="term-tab active" id="term-tab-cmd"  onclick="switchTermTab('cmd')">Commands</button>
+        <button class="term-tab"        id="term-tab-uart" onclick="switchTermTab('uart')">UART Raw</button>
+      </div>
+
+      <!-- ── Commands pane (existing) ──────────────────────────────── -->
+      <div id="term-pane-cmd" class="term-pane">
         <div id="terminal-output"></div>
         <div class="terminal-input-row">
           <span class="term-prompt">&gt;</span>
@@ -1004,6 +1010,20 @@
           <button class="btn-tiny" onclick="terminalSend(true)"  title="Fire — no reply">⚡</button>
         </div>
         <div class="terminal-hint">↵ execute &nbsp;|&nbsp; ⚡ fire &nbsp;|&nbsp; ↑↓ history</div>
+      </div>
+
+      <!-- ── UART Raw pane (new) ────────────────────────────────────── -->
+      <div id="term-pane-uart" class="term-pane" style="display:none">
+        <div id="uart-output"></div>
+        <div class="terminal-input-row">
+          <span class="term-prompt" style="color:#58a6ff;font-family:monospace">TX</span>
+          <input id="uart-input" type="text" class="terminal-input" style="color:#e6edf3"
+                 placeholder="raw text — sent as-is + newline" autocomplete="off"
+                 onkeydown="onUartKey(event)">
+          <button class="btn-tiny" onclick="uartRawSend()" title="Send raw text">Send</button>
+          <button class="btn-tiny" onclick="clearUart()" title="Clear output">✕ Clear</button>
+        </div>
+        <div class="terminal-hint">Full duplex UART — framed exchanges + raw send</div>
       </div>
 
     </div><!-- /view-terminal -->
@@ -1740,5 +1760,19 @@
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.2/socket.io.min.js"></script>
 <script src="static/app.js"></script>
+<script src="static/js/map.js"></script>
+<script src="static/js/map_tools.js"></script>
+<script src="static/js/match.js"></script>
+<script src="static/js/strategy.js"></script>
+<script src="static/js/macros.js"></script>
+<script src="static/js/missions.js"></script>
+<script src="static/js/terminal.js"></script>
+<script src="static/js/network.js"></script>
+<script src="static/js/tests.js"></script>
+<script src="static/js/modules.js"></script>
+<script src="static/js/calibration.js"></script>
+<script src="static/js/vision.js"></script>
+<script src="static/js/remote.js"></script>
+<script src="static/js/actuators.js"></script>
 </body>
 </html>

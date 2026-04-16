@@ -56,7 +56,7 @@ XBEE_BAUDRATE         = 57600   # XBee radio link
 HEARTBEAT_INTERVAL_S  = 0.5   # s between heartbeats
 JETSON_TIMEOUT_S      = 2.0   # s before Teensy considers Jetson lost
 CMD_TIMEOUT_MS        = 30000 # ms — max time to wait for a motion command to complete
-TELEMETRY_RATE_HZ     = 10    # Hz — telemetry push rate from Jetson to Teensy
+TELEMETRY_RATE_HZ     = 5    # Hz — telemetry push rate from Jetson to Teensy
 
 # ── Enums ─────────────────────────────────────────────────────────────────────
 
