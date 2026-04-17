@@ -501,25 +501,32 @@ FLASHMEM void JetsonBridge::handleRequest(Request& req) {
     }
 
     // ── Calibration open-loop moves: fire-and-telemetry pattern ──────────────
-    // We mirror the go()/turn() motion pattern: ACK immediately, then block
-    // inside os.execute() while the move runs, then push the report as a
-    // 'cal' telemetry frame. Python subscribes to 'cal' and correlates the
-    // payload with the command it just fired. This avoids sending the
-    // reply FRAME after a 15–20 s delay — replies after long blocks were
-    // arriving truncated / out-of-window on the Python side.
+    // ACK immediately, execute the command directly (bypassing the
+    // Interpreter/Program machinery to avoid re-entrancy issues with the
+    // shared os.script member), then push the report as a 'T:cal' frame.
     if (lastCmd.startsWith("calib_move_open(") ||
         lastCmd.startsWith("calib_turn_open(")) {
         // Immediate ACK — Python unblocks its reply wait at once.
         req.reply("ok");
 
-        // The command itself zeroes g_lastCalibReport on entry, so a stale
-        // payload from a previous run can't be served if we abort early.
+        // Parse arguments directly from the command string.
+        // Format: "calib_move_open(500.0,0)" or "calib_turn_open(90)"
+        int openP  = lastCmd.indexOf('(');
+        int closeP = lastCmd.lastIndexOf(')');
+        if (openP >= 0 && closeP > openP) {
+            String argStr = lastCmd.substring(openP + 1, closeP);
+            args_t args = CommandHandler::extractArguments(argStr);
 
-        // Run the command synchronously. This blocks until the move is
-        // done or hits the 20 s firmware fuse. Services keep ticking via
-        // the nested os.run() inside the command's wait loop.
-        String mutable_cmd = cmd;
-        os.execute(mutable_cmd);
+            // Call the command function directly — no os.execute(String&),
+            // no Interpreter, no Program. The command internally uses
+            // `async` which blocks via os.execute(Job&, false) for the
+            // motion, keeping services alive through nested os.run().
+            if (lastCmd.startsWith("calib_move_open(")) {
+                command_calib_move_open(args);
+            } else {
+                command_calib_turn_open(args);
+            }
+        }
 
         // Push the calibration report as a dedicated telemetry channel.
         // Frame format: "T:cal <key>=<val> <key>=<val> ..."

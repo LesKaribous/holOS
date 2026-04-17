@@ -422,6 +422,17 @@ class XBeeTransport(Transport):
                                 try: cb(motion_data)
                                 except Exception as e:
                                     print(f"[Transport] Telemetry callback error (m): {e}")
+                            # Legacy 'motion' subscribers — reformat to match
+                            # the old per-channel format tests expect:
+                            #   "RUNNING tx ty dist feed" / "IDLE feed"
+                            if state == 'R':
+                                legacy_motion = f"RUNNING {parts[4]} {parts[5]} {parts[6]} {parts[7]}"
+                            else:
+                                legacy_motion = f"IDLE {parts[4]}"
+                            for cb in self._tel_subs.get('motion', []):
+                                try: cb(legacy_motion)
+                                except Exception as e:
+                                    print(f"[Transport] Telemetry callback error (motion): {e}")
                             for cb in self._tel_subs.get('s', []):
                                 try: cb(safety_data)
                                 except Exception as e:
@@ -440,9 +451,9 @@ class XBeeTransport(Transport):
                 return
 
             # Handle motion done internally.
-            # Firmware sends "DONE:ok,dur=…,dist=…,stall=0" (with stats appended),
-            # so we must use startswith(), NOT ==, to detect a successful DONE.
-            if ttype == 'motion' and data.startswith('DONE:'):
+            # Firmware sends "T:m DONE:ok,dur=…,dist=…,stall=0" — ttype is 'm'.
+            # We must use startswith(), NOT ==, to detect a successful DONE.
+            if ttype == 'm' and data.startswith('DONE:'):
                 success = data.startswith('DONE:ok')
                 if self._waiting_motion:
                     self._motion_done_ok = success
@@ -452,12 +463,19 @@ class XBeeTransport(Transport):
                 with self._lock:
                     self._calib_payload = data
                 self._calib_evt.set()
-            # Dispatch to subscribers
+            # Dispatch to subscribers (by exact ttype)
             for cb in self._tel_subs.get(ttype, []):
                 try:
                     cb(data)
                 except Exception as e:
                     print(f"[Transport] Telemetry callback error: {e}")
+            # Legacy alias: 'm' → 'motion' (tests subscribe to 'motion')
+            if ttype == 'm':
+                for cb in self._tel_subs.get('motion', []):
+                    try:
+                        cb(data)
+                    except Exception as e:
+                        print(f"[Transport] Telemetry callback error (motion): {e}")
             return
 
         if kind == 'request':
