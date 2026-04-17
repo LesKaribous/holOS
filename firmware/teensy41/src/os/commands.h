@@ -94,10 +94,14 @@ void command_calib_turn_open(const args_t& args);
 // Probe: wall probing for position recalibration (recalage)
 void command_probe_open(const args_t& args);
 
-// Last calibration report payload (populated by calib_move_open / calib_turn_open / probe_open).
+// Stall probe: stall-detection calibration against a wall
+void command_stall_probe(const args_t& args);
+
+// Last calibration report payload (populated by calib_move_open / calib_turn_open / probe_open / stall_probe).
 // Format: "kind=move cmd=... axis=... dx=... dy=... dth=... od=..."
 //      or "kind=turn cmd_deg=... dth_rad=... od_deg=..."
 //      or "kind=probe wall=... face=... x=... y=... theta=..."
+//      or "kind=stall_probe wall=... face=... x=... y=... theta=... stalled=... dur_ms=... travel_mm=... stall_min_trans=..."
 //      or "kind=error msg=..."
 // Empty string if no calibration command has run yet.
 const char* getLastCalibReport();

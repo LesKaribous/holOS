@@ -431,6 +431,64 @@ function probeStart() {
   });
 }
 
+// ── Stall Probe (stall-detection calibration) ─────────────────────────────────
+function stallProbeStart() {
+  const wall       = document.getElementById('stall-probe-wall').value;
+  const face       = document.getElementById('stall-probe-face').value;
+  const clearance  = parseFloat(document.getElementById('stall-probe-clearance').value) || 200;
+  const degagement = parseFloat(document.getElementById('stall-probe-degagement').value) || 80;
+
+  const btn   = document.getElementById('btn-stall-probe-start');
+  const resEl = document.getElementById('stall-probe-result');
+  const errEl = document.getElementById('stall-probe-error');
+  resEl.classList.add('hidden');
+  errEl.classList.add('hidden');
+  btn.disabled = true;
+  btn.textContent = '⏳ Approche...';
+
+  const abort   = new AbortController();
+  const abortMs = 50000;
+  const abortId = setTimeout(() => abort.abort(), abortMs);
+  const resetBtn = () => { btn.disabled = false; btn.textContent = '⚡ Lancer'; };
+
+  fetch('/api/calibration/stall_probe', {
+    method: 'POST',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ wall, face, clearance, degagement }),
+    signal: abort.signal,
+  })
+  .then(r => r.json())
+  .then(d => {
+    clearTimeout(abortId);
+    resetBtn();
+    if (!d.ok) {
+      errEl.textContent = '✗ ' + (d.error || 'Stall probe failed');
+      errEl.classList.remove('hidden');
+      return;
+    }
+    const thetaDeg = (d.theta * 180 / Math.PI).toFixed(1);
+    const stalledTxt = d.stalled ? '✓ Stall détecté' : '✗ Pas de stall';
+    resEl.innerHTML =
+      `<strong>Position corrigée</strong><br>` +
+      `X = ${parseFloat(d.x).toFixed(1)} mm &nbsp; Y = ${parseFloat(d.y).toFixed(1)} mm &nbsp; θ = ${thetaDeg}°<br>` +
+      `<strong>Stall</strong>: ${stalledTxt}<br>` +
+      `Durée: ${d.dur_ms} ms &nbsp; Distance parcourue: ${parseFloat(d.travel_mm).toFixed(1)} mm &nbsp; Min trans: ${parseFloat(d.stall_min_trans).toFixed(2)} mm<br>` +
+      `<span style="color:var(--text-dim)">Mur: ${d.wall} &nbsp; Face: ${d.face}</span>`;
+    resEl.classList.remove('hidden');
+    _calibStatusMsg(`✓ Stall probe ${wall} terminé — ${stalledTxt}`);
+  })
+  .catch(e => {
+    clearTimeout(abortId);
+    resetBtn();
+    if (e.name === 'AbortError') {
+      errEl.textContent = `✗ Timeout (${abortMs/1000}s). Le robot est peut-être bloqué.`;
+    } else {
+      errEl.textContent = '✗ ' + e.message;
+    }
+    errEl.classList.remove('hidden');
+  });
+}
+
 // ── View activation ────────────────────────────────────────────────────────────
 function onCalibViewActivated() {
   calibInit();

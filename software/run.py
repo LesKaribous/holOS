@@ -929,6 +929,60 @@ def api_calib_probe():
         return jsonify({'ok': False, 'error': str(e)}), 500
 
 
+@app.route('/api/calibration/stall_probe', methods=['POST'])
+def api_calib_stall_probe():
+    """Stall-detection calibration probe — approach wall, stall, correct position, back off.
+
+    Body: { wall: 'NORTH'|'SOUTH'|'EAST'|'WEST', face: 'A'|'AB'|'B'|'BC'|'C'|'CA',
+            clearance?: float (mm, default 200), degagement?: float (mm, default 80) }
+    Returns: { ok, wall, face, x, y, theta, stalled, dur_ms, travel_mm, stall_min_trans, raw }
+    """
+    if not _calib_connected():
+        return jsonify({'ok': False, 'error': 'not connected'}), 503
+    data = request.get_json(force=True) or {}
+    wall = str(data.get('wall', '')).upper()
+    face = str(data.get('face', '')).upper()
+    clearance  = float(data.get('clearance', 200))
+    degagement = float(data.get('degagement', 80))
+
+    if wall not in ('NORTH', 'SOUTH', 'EAST', 'WEST'):
+        return jsonify({'ok': False, 'error': f"wall must be NORTH/SOUTH/EAST/WEST, got '{wall}'"}), 400
+    if face not in ('A', 'AB', 'B', 'BC', 'C', 'CA'):
+        return jsonify({'ok': False, 'error': f"face must be A/AB/B/BC/C/CA, got '{face}'"}), 400
+
+    try:
+        ok, res = _hw_transport.execute_calib(
+            f'stall_probe({wall},{face},{clearance:.0f},{degagement:.0f})',
+            ack_timeout_ms=3000, calib_timeout_ms=45000)
+        parsed = _parse_calib_report(res)
+        kind = parsed.get('kind')
+        if not ok:
+            return jsonify({'ok': False,
+                            'error': f'transport error — raw={res!r}',
+                            'raw': res})
+        if kind == 'error':
+            return jsonify({'ok': False, 'error': _calib_error_from_raw(res), 'raw': res})
+        if kind != 'stall_probe':
+            return jsonify({'ok': False,
+                            'error': f'unexpected reply (kind={kind!r}) — raw={res!r}',
+                            'raw': res})
+        return jsonify({
+            'ok':              True,
+            'wall':            parsed.get('wall', wall),
+            'face':            parsed.get('face', face),
+            'x':               parsed.get('x', 0.0),
+            'y':               parsed.get('y', 0.0),
+            'theta':           parsed.get('theta', 0.0),
+            'stalled':         int(parsed.get('stalled', 0)),
+            'dur_ms':          int(parsed.get('dur_ms', 0)),
+            'travel_mm':       parsed.get('travel_mm', 0.0),
+            'stall_min_trans': parsed.get('stall_min_trans', 0.0),
+            'raw':             res,
+        })
+    except Exception as e:
+        return jsonify({'ok': False, 'error': str(e)}), 500
+
+
 @app.route('/api/calibration/compute', methods=['POST'])
 def api_calib_compute():
     """Stateless: compute suggested calibration values from a measured move.

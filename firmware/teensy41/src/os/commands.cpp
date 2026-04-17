@@ -84,6 +84,9 @@ FLASHMEM void registerCommands() {
     CommandHandler::registerCommand("calib_move_open(dist_mm,axis_id)", "Open-loop linear move (axis_id: 0=X, 1=Y), report OTOS delta",  command_calib_move_open);
     CommandHandler::registerCommand("calib_turn_open(angle_deg)",    "Open-loop rotation, report OTOS heading delta",       command_calib_turn_open);
 
+    // Stall calibration probe — approach wall, detect stall, correct position, back off
+    CommandHandler::registerCommand("stall_probe(wall,face,clearance,degagement)", "Stall-detection calibration probe against a wall", command_stall_probe);
+
     // Motion — arc / rotation around arbitrary point
     CommandHandler::registerCommand("goAround(cx,cy,angleDeg)",  "Rotate around point (cx,cy) by angle",      command_goAround);
 
@@ -355,6 +358,123 @@ FLASHMEM void command_probe_open(const args_t& args) {
              "kind=probe wall=%s face=%s x=%.1f y=%.1f theta=%.4f",
              wallStr.c_str(), faceStr.c_str(), pos.x, pos.y, pos.c);
     Console::info("Probe") << g_lastCalibReport << Console::endl;
+}
+
+/**
+ * stall_probe(wall, face, clearance, degagement) — stall-detection calibration probe.
+ *
+ * Similar to probe_open() but designed to calibrate / validate stall detection.
+ * The robot aligns the specified face toward the wall, then advances with
+ * cancelOnStall(true) at a low feedrate.  When the stall detector fires
+ * (robot hit the wall), the move is cancelled automatically.  The firmware
+ * then:
+ *   1. Applies the corrected absolute position (known wall coordinate).
+ *   2. Backs off by `degagement` mm.
+ *   3. Reports the corrected position + stall stats via T:cal.
+ *
+ * Args:
+ *   wall       : NORTH | SOUTH | EAST | WEST
+ *   face       : A | AB | B | BC | C | CA
+ *   clearance  : approach distance in mm before the slow probe phase (default 200)
+ *   degagement : back-off distance in mm after contact (default 80)
+ *
+ * Report: kind=stall_probe wall=<W> face=<F> x=<mm> y=<mm> theta=<rad>
+ *         stalled=<0|1> dur_ms=<ms> travel_mm=<mm> stall_min_trans=<mm>
+ */
+FLASHMEM void command_stall_probe(const args_t& args) {
+    g_lastCalibReport[0] = 0;
+    if (args.size() < 2) {
+        calibReportError("usage:stall_probe(wall,face[,clearance,degagement])");
+        return;
+    }
+
+    String wallStr = args[0];
+    String faceStr = args[1];
+    float clearance  = (args.size() >= 3) ? args[2].toFloat() : 200.0f;
+    float degagement = (args.size() >= 4) ? args[3].toFloat() : 80.0f;
+
+    // Parse wall
+    TableCompass tc = TableCompass::NORTH;
+    if      (wallStr.equalsIgnoreCase("NORTH")) tc = TableCompass::NORTH;
+    else if (wallStr.equalsIgnoreCase("SOUTH")) tc = TableCompass::SOUTH;
+    else if (wallStr.equalsIgnoreCase("EAST"))  tc = TableCompass::EAST;
+    else if (wallStr.equalsIgnoreCase("WEST"))  tc = TableCompass::WEST;
+    else {
+        snprintf(g_lastCalibReport, sizeof(g_lastCalibReport),
+                 "kind=error msg=invalid_wall_%s", wallStr.c_str());
+        return;
+    }
+
+    // Parse face
+    if (!validCompassString(faceStr)) {
+        snprintf(g_lastCalibReport, sizeof(g_lastCalibReport),
+                 "kind=error msg=invalid_face_%s", faceStr.c_str());
+        return;
+    }
+    RobotCompass rc = compassFromString(faceStr);
+
+    if (motion.isMoving()) {
+        calibReportError("motion_busy");
+        return;
+    }
+
+    // Save & configure
+    float prevFeedrate = motion.getFeedrate();
+    bool  wasAbsolute  = motion.isAbsolute();
+
+    motion.disableCruiseMode();
+    motion.setFeedrate(0.20f);    // slow for stall calibration
+
+    // 1) Align face toward wall
+    async motion.noStall().align(rc, getCompassOrientation(tc));
+
+    // 2) Approach phase (relative, no stall — just get close to the wall)
+    motion.setRelative();
+    async motion.noStall().goPolar(getCompassOrientation(rc), clearance);
+
+    // 3) Probe phase — advance with stall detection, stop on contact
+    motion.cancelOnStall(true);
+    async motion.goPolar(getCompassOrientation(rc), degagement + 100.0f);  // overshoot target — stall will cancel
+    motion.cancelOnStall(false);
+
+    // Grab stall stats before they're overwritten
+    Motion::MoveStats stats = motion.getLastStats();
+
+    // 4) Apply corrected position (known wall coordinate)
+    float _offset = getOffsets(rc);
+    Vec3 position = motion.estimatedPosition();
+
+    if      (tc == TableCompass::NORTH) position.y = 0.0f    + _offset;
+    else if (tc == TableCompass::SOUTH) position.y = 2000.0f - _offset;
+    else if (tc == TableCompass::EAST)  position.x = 3000.0f - _offset;
+    else if (tc == TableCompass::WEST)  position.x = 0.0f    + _offset;
+
+    position.c = DEG_TO_RAD * (getCompassOrientation(tc) - getCompassOrientation(rc));
+    motion.setAbsPosition(position);
+    delay(200);
+
+    // 5) Back off
+    if (degagement > 0) {
+        async motion.noStall().goPolar(getCompassOrientation(rc), -degagement);
+    }
+
+    // Restore
+    if (wasAbsolute) motion.setAbsolute();
+    motion.setFeedrate(prevFeedrate);
+    motion.enableCruiseMode();
+
+    // 6) Report corrected position + stall stats
+    Vec3 finalPos = motion.estimatedPosition();
+    snprintf(g_lastCalibReport, sizeof(g_lastCalibReport),
+             "kind=stall_probe wall=%s face=%s x=%.1f y=%.1f theta=%.4f"
+             " stalled=%d dur_ms=%lu travel_mm=%.1f stall_min_trans=%.2f",
+             wallStr.c_str(), faceStr.c_str(),
+             finalPos.x, finalPos.y, finalPos.c,
+             stats.stalled ? 1 : 0,
+             (unsigned long)stats.durationMs,
+             stats.traveledMm,
+             stats.stallMinTransMm);
+    Console::info("StallProbe") << g_lastCalibReport << Console::endl;
 }
 
 // Motion — pass-through waypoint (used in chained via(x,y);go(x,y) commands)
