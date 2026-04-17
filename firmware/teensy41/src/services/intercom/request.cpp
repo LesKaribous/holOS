@@ -95,6 +95,14 @@ bool Request::flushPendingReply() {
         s_hasPendingReply = false;
         return true;
     }
+    // Frame too large for the TX buffer — write blocking to avoid
+    // the reply being stuck forever (same issue as ring buffer drain).
+    if (len + 1 > 64) {
+        BRIDGE_SERIAL.print(s_pendingReply);
+        BRIDGE_SERIAL.write('\n');
+        s_hasPendingReply = false;
+        return true;
+    }
     return false;
 }
 
@@ -131,6 +139,14 @@ void Request::reply(const char* answer) {
     if (m_source == BridgeSource::USB) {
         int needed = (int)strlen(_payload) + 1;
         if (BRIDGE_SERIAL.availableForWrite() >= needed) {
+            BRIDGE_SERIAL.print(_payload);
+            BRIDGE_SERIAL.write('\n');
+        } else if (needed > 64) {
+            // Frame exceeds HardwareSerial TX buffer capacity (e.g. calib
+            // reports ~80+ bytes on Serial2/XBee).  Write blocking —
+            // Serial.write() handles chunked TX internally.  Without this,
+            // the reply would be queued in s_pendingReply whose flush has
+            // the same availableForWrite() gate and would never drain.
             BRIDGE_SERIAL.print(_payload);
             BRIDGE_SERIAL.write('\n');
         } else {

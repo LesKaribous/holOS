@@ -100,23 +100,46 @@ FLASHMEM void JetsonBridge::run() {
 
     // Deferred calibration report — push T:cal frame from a clean context
     // (not nested inside _readPort → handleRequest → async).
+    // IMPORTANT: writes directly to BRIDGE_SERIAL instead of _pushFrame()
+    // because the T:cal frame (~80 bytes) exceeds the HardwareSerial TX
+    // buffer (~40 bytes on Teensy 4.1 Serial2/XBee).  _pushFrame() checks
+    // availableForWrite() before writing and falls back to the ring buffer
+    // which has the same check — so the frame would be stuck forever.
+    // Serial.write() handles blocking internally and is safe here.
     if (m_calibReportPending) {
         m_calibReportPending = false;
         const char* rep = getLastCalibReport();
         char calBuf[240];
-        snprintf(calBuf, sizeof(calBuf), "T:cal %s",
+        int n = snprintf(calBuf, sizeof(calBuf), "T:cal %s",
                  (rep && rep[0]) ? rep : "kind=error msg=no_report");
-        _pushFrame(calBuf);
+        if (n > 0 && n < (int)sizeof(calBuf)) {
+            uint8_t crc = CRC8.smbus((const uint8_t*)calBuf, n);
+            char framed[256];
+            int fn = snprintf(framed, sizeof(framed), "%s|%d\n", calBuf, (int)crc);
+            BRIDGE_SERIAL.write((const uint8_t*)framed, fn);
+        }
     }
 
     _checkWatchdog();
 
     // JB-1: Drain ring buffer every run() call (was: every 10ms timer)
+    // Normal path: non-blocking write if TX buffer has room.
+    // Safety net: if a frame has been stuck for 2+ drain attempts (i.e.
+    // it's larger than the TX buffer can ever hold at once), force a
+    // blocking write via Serial.write() which handles chunked TX.
     while (_tqCount > 0) {
         int flen = (int)strlen(_tqPool[_tqHead]);
-        if (BRIDGE_SERIAL.availableForWrite() < flen + 1) break;
-        BRIDGE_SERIAL.write((const uint8_t*)_tqPool[_tqHead], flen);
-        BRIDGE_SERIAL.write('\n');
+        if (BRIDGE_SERIAL.availableForWrite() >= flen + 1) {
+            BRIDGE_SERIAL.write((const uint8_t*)_tqPool[_tqHead], flen);
+            BRIDGE_SERIAL.write('\n');
+        } else if (flen + 1 > 64) {
+            // Frame exceeds any reasonable HardwareSerial TX buffer size —
+            // write it blocking so it doesn't sit in the ring buffer forever.
+            BRIDGE_SERIAL.write((const uint8_t*)_tqPool[_tqHead], flen);
+            BRIDGE_SERIAL.write('\n');
+        } else {
+            break;  // TX buffer will drain, retry next run()
+        }
         _tqHead = (_tqHead + 1) % TQUEUE_SLOTS;
         --_tqCount;
     }
