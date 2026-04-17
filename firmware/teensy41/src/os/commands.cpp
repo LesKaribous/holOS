@@ -267,6 +267,38 @@ FLASHMEM void command_probe(const args_t &args){
 
 }
 
+// ════════════════════════════════════════════════════════════════════════════
+//  Calibration / probe report helpers — shared by calib_move_open,
+//  calib_turn_open and probe_open.  Defined here so probe_open (below) and
+//  the calib commands (further down) can both use them.
+// ════════════════════════════════════════════════════════════════════════════
+
+static char g_lastCalibReport[192] = {0};
+
+const char* getLastCalibReport() { return g_lastCalibReport; }
+
+FLASHMEM static void calibReportMove(float cmd, const char* axis,
+                                     float dx, float dy, float dth) {
+    float od = sqrtf(dx * dx + dy * dy);
+    snprintf(g_lastCalibReport, sizeof(g_lastCalibReport),
+             "kind=move cmd=%.3f axis=%s dx=%.3f dy=%.3f dth=%.6f od=%.3f",
+             cmd, axis, dx, dy, dth, od);
+    Console::info("Calib") << g_lastCalibReport << Console::endl;
+}
+
+FLASHMEM static void calibReportTurn(float cmd_deg, float dth_rad) {
+    float od_deg = dth_rad * 180.0f / 3.14159265358979f;
+    snprintf(g_lastCalibReport, sizeof(g_lastCalibReport),
+             "kind=turn cmd_deg=%.3f dth_rad=%.6f od_deg=%.3f",
+             cmd_deg, dth_rad, od_deg);
+    Console::info("Calib") << g_lastCalibReport << Console::endl;
+}
+
+FLASHMEM static void calibReportError(const char* msg) {
+    snprintf(g_lastCalibReport, sizeof(g_lastCalibReport), "kind=error msg=%s", msg);
+    Console::error("Calib") << msg << Console::endl;
+}
+
 /**
  * probe_open(wall, face) — wall probe with telemetry report.
  *
@@ -794,34 +826,7 @@ FLASHMEM void command_calib_otos_angular(const args_t& args) {
  *     os.run() in its inner loop, so services DO get dispatched).
  *   - Feedrate is clamped for safety because we're open-loop and uncalibrated.
  */
-// Last calibration report payload — read back by JetsonBridge so the reply
-// frame carries the data instead of a generic "ok". Console::info still emits
-// a human-readable line for USB observers.
-static char g_lastCalibReport[192] = {0};
-
-const char* getLastCalibReport() { return g_lastCalibReport; }
-
-FLASHMEM static void calibReportMove(float cmd, const char* axis,
-                                     float dx, float dy, float dth) {
-    float od = sqrtf(dx * dx + dy * dy);
-    snprintf(g_lastCalibReport, sizeof(g_lastCalibReport),
-             "kind=move cmd=%.3f axis=%s dx=%.3f dy=%.3f dth=%.6f od=%.3f",
-             cmd, axis, dx, dy, dth, od);
-    Console::info("Calib") << g_lastCalibReport << Console::endl;
-}
-
-FLASHMEM static void calibReportTurn(float cmd_deg, float dth_rad) {
-    float od_deg = dth_rad * 180.0f / 3.14159265358979f;
-    snprintf(g_lastCalibReport, sizeof(g_lastCalibReport),
-             "kind=turn cmd_deg=%.3f dth_rad=%.6f od_deg=%.3f",
-             cmd_deg, dth_rad, od_deg);
-    Console::info("Calib") << g_lastCalibReport << Console::endl;
-}
-
-FLASHMEM static void calibReportError(const char* msg) {
-    snprintf(g_lastCalibReport, sizeof(g_lastCalibReport), "kind=error msg=%s", msg);
-    Console::error("Calib") << msg << Console::endl;
-}
+// (calibration report helpers moved up — before command_probe_open)
 
 FLASHMEM void command_calib_move_open(const args_t& args) {
     g_lastCalibReport[0] = 0;
