@@ -104,16 +104,27 @@ class OccupancyGrid:
 
     # ── Dynamic layer ─────────────────────────────────────────────────────────
 
-    def set_dynamic_cells(self, cells: List[Tuple[int, int]]) -> None:
+    def set_dynamic_cells(self, cells: List[Tuple[int, int]],
+                          inflate: int = 1) -> None:
         """Replace the entire dynamic layer with the given (gx, gy) active-cell list.
-        Called by OccupancyService when a TEL:occ_dyn frame arrives."""
+        Called by OccupancyService when a TEL:occ_dyn frame arrives.
+
+        inflate — radius in cells to expand each detected point.
+            The T40 LIDAR marks single cells (~150 mm) at the beacon centre,
+            but adversary robots can be up to 300 mm in diameter.  inflate=1
+            marks a 3×3 neighbourhood (±150 mm) so the pathfinder treats them
+            as ~450 mm obstacles, giving our robot safe clearance.
+        """
         with self._lock:
             for col in self._dynamic:
                 for i in range(len(col)):
                     col[i] = False
             for gx, gy in cells:
-                if 0 <= gx < GRID_W and 0 <= gy < GRID_H:
-                    self._dynamic[gx][gy] = True
+                for dx in range(-inflate, inflate + 1):
+                    for dy in range(-inflate, inflate + 1):
+                        nx, ny = gx + dx, gy + dy
+                        if 0 <= nx < GRID_W and 0 <= ny < GRID_H:
+                            self._dynamic[nx][ny] = True
 
     def reset_dynamic(self) -> None:
         with self._lock:

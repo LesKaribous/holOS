@@ -146,20 +146,9 @@ void CartesianGrid::store(DataPoint point) {
     int xi = worldToGridX(point.x);
     int yi = worldToGridY(point.y);
 
-    // Expand detection to a 3×3 neighbourhood (±1 cell = ±150mm).
-    // LIDAR sees the beacon (~100mm) at the center of a robot that can
-    // be up to 300mm in diameter. Marking neighbours prevents the carrot
-    // controller from driving too close to adversaries.
-    uint32_t now = millis();
-    for (int dx = -1; dx <= 1; ++dx) {
-        for (int dy = -1; dy <= 1; ++dy) {
-            int nx = xi + dx;
-            int ny = yi + dy;
-            if (nx >= 0 && nx < GRID_WIDTH && ny >= 0 && ny < GRID_HEIGHT) {
-                occupancy[nx][ny] = 255;
-                lastUpdate[nx][ny] = now;
-            }
-        }
+    if (xi >= 0 && xi < GRID_WIDTH && yi >= 0 && yi < GRID_HEIGHT) {
+        occupancy[xi][yi] = 255;
+        lastUpdate[xi][yi] = millis();
     }
 }
 
