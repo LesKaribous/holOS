@@ -43,16 +43,11 @@ FLASHMEM void JetsonBridge::attach() {
     });
 
     // ── Load telemetry rates from SD config (/config.cfg) ──────────────────
-    m_telPosMs    = (unsigned long)RuntimeConfig::getInt("tel.pos_ms",    (int)m_telPosMs);
-    m_telMotionMs = (unsigned long)RuntimeConfig::getInt("tel.motion_ms", (int)m_telMotionMs);
-    m_telSafetyMs = (unsigned long)RuntimeConfig::getInt("tel.safety_ms", (int)m_telSafetyMs);
-    m_telChronoMs = (unsigned long)RuntimeConfig::getInt("tel.chrono_ms", (int)m_telChronoMs);
-    m_telOccMs    = (unsigned long)RuntimeConfig::getInt("tel.occ_ms",    (int)m_telOccMs);
+    m_telAggrMs = (unsigned long)RuntimeConfig::getInt("tel.aggr_ms", (int)m_telAggrMs);
+    m_telOccMs  = (unsigned long)RuntimeConfig::getInt("tel.occ_ms",  (int)m_telOccMs);
 
-    Console::info("JetsonBridge") << "Attached. Tel rates (ms): pos="
-        << (int)m_telPosMs << " mot=" << (int)m_telMotionMs
-        << " saf=" << (int)m_telSafetyMs << " chr=" << (int)m_telChronoMs
-        << " occ=" << (int)m_telOccMs << Console::endl;
+    Console::info("JetsonBridge") << "Attached. Tel rates (ms): aggr="
+        << (int)m_telAggrMs << " occ=" << (int)m_telOccMs << Console::endl;
 }
 
 FLASHMEM void JetsonBridge::enable() {
@@ -115,61 +110,48 @@ FLASHMEM void JetsonBridge::run() {
         --_tqCount;
     }
 
-    // ── Per-channel telemetry push ──────────────────────────────────────────
+    // ── Aggregated telemetry push ─────────────────────────────────────────
+    // Single T:a frame combines pos + motion + safety + chrono at one rate.
+    // Format:
+    //   T:a px py theta R tx ty dist feed safety chrono   (moving)
+    //   T:a px py theta I feed safety chrono              (idle)
+    // Reduces ~25 frames/sec → 10 frames/sec (+ occupancy separate).
     unsigned long now = millis();
-    char _tb[80];  // compact telemetry buffer
+    char _tb[128];  // aggregated telemetry buffer
 
-    if (m_telPos && now - m_lastTelPushMs >= m_telPosMs) {
-        Vec3 p = motion.estimatedPosition();
-        snprintf(_tb, sizeof(_tb), "T:p %d %d %d",
-                 (int)p.x, (int)p.y, (int)(p.c * 1000));
-        _pushFrame(_tb);
-        m_lastTelPushMs = now;
-    }
+    // Safety on-change: force an immediate aggregated push
+    bool safetyNow     = safety.obstacleDetected();
+    bool safetyChanged = (safetyNow != m_lastSafetyState);
+    if (safetyChanged) m_lastSafetyState = safetyNow;
 
-    if (m_telMotion && now - m_lastTelPushMs >= m_telMotionMs) {
-        // Reuse m_lastTelPushMs for motion too (same fast channel)
-    }
-    // Motion: pushed alongside pos for simplicity — separate timer not needed
-    // since both share the fast rate.  Only push if state changed or moving.
-    {
-        static unsigned long _lastMotionMs = 0;
-        if (m_telMotion && now - _lastMotionMs >= m_telMotionMs) {
+    bool aggrDue = (now - m_lastAggrPushMs >= m_telAggrMs);
+
+    if (aggrDue || safetyChanged) {
+        // At least one enabled channel must be active to justify the frame
+        if (m_telPos || m_telMotion || m_telSafety || m_telChrono) {
+            Vec3 p = motion.estimatedPosition();
+            int  safetyVal = safetyNow ? 1 : 0;
+            unsigned long chronoVal = chrono.getElapsedTime();
+            int feed = (int)(motion.getFeedrate() * 100);
+
             if (motion.isMoving()) {
                 Vec3 t = motion.getAbsTarget();
-                snprintf(_tb, sizeof(_tb), "T:m R %d %d %d %d",
+                snprintf(_tb, sizeof(_tb), "T:a %d %d %d R %d %d %d %d %d %lu",
+                         (int)p.x, (int)p.y, (int)(p.c * 1000),
                          (int)t.x, (int)t.y,
                          (int)motion.getTargetDistance(),
-                         (int)(motion.getFeedrate() * 100));
+                         feed, safetyVal, chronoVal);
             } else {
-                snprintf(_tb, sizeof(_tb), "T:m I %d",
-                         (int)(motion.getFeedrate() * 100));
+                snprintf(_tb, sizeof(_tb), "T:a %d %d %d I %d %d %lu",
+                         (int)p.x, (int)p.y, (int)(p.c * 1000),
+                         feed, safetyVal, chronoVal);
             }
             _pushFrame(_tb);
-            _lastMotionMs = now;
+            m_lastAggrPushMs = now;
         }
     }
 
-    // Safety: at configured rate + on-change
-    {
-        bool safetyNow = safety.obstacleDetected();
-        bool changed   = (safetyNow != m_lastSafetyState);
-        if (m_telSafety && (changed || now - m_lastSafetyPushMs >= m_telSafetyMs)) {
-            snprintf(_tb, sizeof(_tb), "T:s %d", safetyNow ? 1 : 0);
-            _pushFrame(_tb);
-            m_lastSafetyState   = safetyNow;
-            m_lastSafetyPushMs  = now;
-        }
-    }
-
-    // Chrono: slow rate (1 Hz default)
-    if (m_telChrono && now - m_lastChronoPushMs >= m_telChronoMs) {
-        snprintf(_tb, sizeof(_tb), "T:c %lu", (unsigned long)chrono.getElapsedTime());
-        _pushFrame(_tb);
-        m_lastChronoPushMs = now;
-    }
-
-    // Occupancy map: own rate
+    // Occupancy map: own rate (separate, variable-size frame)
     if (now - m_lastOccPushMs >= m_telOccMs) {
         pushOccupancy();
         m_lastOccPushMs = now;

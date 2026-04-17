@@ -89,8 +89,12 @@ function pinCoordsEdited() {
   if (lastState) render(lastState);
 }
 
+let _goInFlight = false;
+
 function pinGoHere() {
   if (!_mapPin) return;
+  if (_goInFlight) { showToast('Motion in progress…'); return; }
+  _goInFlight = true;
   const currentThetaDeg = lastState?.robot ? lastState.robot.theta * 180 / Math.PI : null;
   const pinTheta = _mapPin.theta ?? 0;
   const rotationChanged = currentThetaDeg == null || Math.abs(pinTheta - currentThetaDeg) > 2.0;
@@ -104,7 +108,8 @@ function pinGoHere() {
       ? `(${_mapPin.x}, ${_mapPin.y}, ${pinTheta.toFixed(1)}°)`
       : `(${_mapPin.x}, ${_mapPin.y})`;
     showToast(d.ok ? `Go → ${tag}` : `Error: ${d.res}`);
-  }).catch(() => showToast('Request failed'));
+  }).catch(() => showToast('Request failed'))
+    .finally(() => { _goInFlight = false; });
 }
 
 function pinSetPos() {

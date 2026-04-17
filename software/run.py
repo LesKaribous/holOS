@@ -434,26 +434,42 @@ def api_exec():
         return jsonify({'ok': False, 'res': str(e)}), 500
 
 
+_go_lock = threading.Lock()
+
 @app.route('/api/go', methods=['POST'])
 def api_go():
     """Move to (x, y) via the active brain's motion service (uses pathfinder if enabled).
     Optional 'theta' parameter (degrees, table frame 0=East): if provided, a goAlign
-    command is issued so the robot reaches the target with that final heading."""
+    command is issued so the robot reaches the target with that final heading.
+
+    A threading lock prevents concurrent motion requests from cascading.
+    If a go() is already in progress, the new request cancels the running
+    motion (via fire('cancel')), waits for the lock, then executes."""
     data = request.get_json(force=True) or {}
     try:
         x = float(data['x'])
         y = float(data['y'])
     except (KeyError, ValueError) as e:
         return jsonify({'ok': False, 'res': f'bad params: {e}'}), 400
+
+    # If a motion is already in progress, cancel it so we don't queue up
+    if _go_lock.locked():
+        try:
+            b = _active_brain()
+            b.motion.cancel()
+        except Exception:
+            pass
+
     try:
-        b = _active_brain()
-        theta = data.get('theta', None)
-        if theta is not None:
-            b.motion.go_heading(x, y, float(theta))
-        else:
-            b.motion.go(x, y)
-        ok = b.motion.was_successful()
-        return jsonify({'ok': ok, 'res': 'ok' if ok else 'failed'})
+        with _go_lock:
+            b = _active_brain()
+            theta = data.get('theta', None)
+            if theta is not None:
+                b.motion.go_heading(x, y, float(theta))
+            else:
+                b.motion.go(x, y)
+            ok = b.motion.was_successful()
+            return jsonify({'ok': ok, 'res': 'ok' if ok else 'failed'})
     except Exception as e:
         return jsonify({'ok': False, 'res': str(e)}), 500
 
@@ -465,13 +481,21 @@ def api_go_traj():
     waypoints = data.get('waypoints', [])
     if not waypoints:
         return jsonify({'ok': False, 'res': 'no waypoints'}), 400
+
+    if _go_lock.locked():
+        try:
+            _active_brain().motion.cancel()
+        except Exception:
+            pass
+
     try:
-        b = _active_brain()
-        for i, wp in enumerate(waypoints):
-            b.motion.go(float(wp['x']), float(wp['y']))
-            if not b.motion.was_successful():
-                return jsonify({'ok': False, 'res': f'waypoint {i+1} failed'})
-        return jsonify({'ok': True, 'res': 'ok'})
+        with _go_lock:
+            b = _active_brain()
+            for i, wp in enumerate(waypoints):
+                b.motion.go(float(wp['x']), float(wp['y']))
+                if not b.motion.was_successful():
+                    return jsonify({'ok': False, 'res': f'waypoint {i+1} failed'})
+            return jsonify({'ok': True, 'res': 'ok'})
     except Exception as e:
         return jsonify({'ok': False, 'res': str(e)}), 500
 

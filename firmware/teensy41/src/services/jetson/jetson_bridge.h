@@ -161,23 +161,19 @@ private:
     int    m_motionRequestId    = -1;
 
     unsigned long m_lastHeartbeatMs    = 0;
-    unsigned long m_lastTelPushMs      = 0;
+    unsigned long m_lastAggrPushMs     = 0;   // Aggregated frame timer
     unsigned long m_lastOccPushMs      = 0;
-    unsigned long m_lastSafetyPushMs   = 0;
-    unsigned long m_lastChronoPushMs   = 0;
     bool          m_lastSafetyState    = false;  // for on-change detection
 
     unsigned long m_heartbeatTimeoutMs = 5000;  // PR-3: tunable, default 5s for strategy mode
 
     // ── Telemetry rates (ms) — loaded from RuntimeConfig at init ──────────
-    // Defaults match previous behaviour; override via /config.cfg on SD:
-    //   tel.pos_ms=100   tel.motion_ms=100   tel.safety_ms=500
-    //   tel.chrono_ms=1000   tel.occ_ms=500
-    unsigned long m_telPosMs     = 100;   // Position: 10 Hz
-    unsigned long m_telMotionMs  = 100;   // Motion:   10 Hz
-    unsigned long m_telSafetyMs  = 500;   // Safety:    2 Hz (+ on-change)
-    unsigned long m_telChronoMs  = 1000;  // Chrono:    1 Hz
-    unsigned long m_telOccMs     = 500;   // Occupancy: 2 Hz
+    // tel.aggr_ms : aggregated frame rate (pos+motion+safety+chrono in one frame)
+    // tel.occ_ms  : occupancy map rate (separate, variable-size frame)
+    // Override via /config.cfg on SD:
+    //   tel.aggr_ms=100   tel.occ_ms=500
+    unsigned long m_telAggrMs    = 100;   // Aggregated: 10 Hz (pos+motion+safety+chrono)
+    unsigned long m_telOccMs     = 500;   // Occupancy:  2 Hz (separate frame)
 
     // Fallback registry
     fallback_fn m_fallbacks[5] = {};

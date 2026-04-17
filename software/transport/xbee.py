@@ -388,6 +388,57 @@ class XBeeTransport(Transport):
         if kind == 'tel':
             ttype = id_or_type
             #print(f"[Transport] Received telemetry type={ttype} data={data}")
+
+            # ── Aggregated frame decomposition ────────────────────────────
+            # T:a px py theta R tx ty dist feed safety chrono  (moving)
+            # T:a px py theta I feed safety chrono             (idle)
+            # Decompose into individual subscriber calls for p, m, s, c.
+            if ttype == 'a':
+                try:
+                    parts = data.split()
+                    if len(parts) >= 4:
+                        pos_data = f"{parts[0]} {parts[1]} {parts[2]}"
+                        state = parts[3]  # 'R' or 'I'
+                        if state == 'R' and len(parts) >= 10:
+                            # px py theta R tx ty dist feed safety chrono
+                            motion_data  = f"R {parts[4]} {parts[5]} {parts[6]} {parts[7]}"
+                            safety_data  = parts[8]
+                            chrono_data  = parts[9]
+                        elif state == 'I' and len(parts) >= 7:
+                            # px py theta I feed safety chrono
+                            motion_data  = f"I {parts[4]}"
+                            safety_data  = parts[5]
+                            chrono_data  = parts[6]
+                        else:
+                            motion_data = safety_data = chrono_data = None
+
+                        # Dispatch to individual type subscribers
+                        for cb in self._tel_subs.get('p', []):
+                            try: cb(pos_data)
+                            except Exception as e:
+                                print(f"[Transport] Telemetry callback error (p): {e}")
+                        if motion_data is not None:
+                            for cb in self._tel_subs.get('m', []):
+                                try: cb(motion_data)
+                                except Exception as e:
+                                    print(f"[Transport] Telemetry callback error (m): {e}")
+                            for cb in self._tel_subs.get('s', []):
+                                try: cb(safety_data)
+                                except Exception as e:
+                                    print(f"[Transport] Telemetry callback error (s): {e}")
+                            for cb in self._tel_subs.get('c', []):
+                                try: cb(chrono_data)
+                                except Exception as e:
+                                    print(f"[Transport] Telemetry callback error (c): {e}")
+                except Exception as e:
+                    print(f"[Transport] Aggregated telemetry parse error: {e}")
+                # Also dispatch to 'a' subscribers if anyone listens directly
+                for cb in self._tel_subs.get('a', []):
+                    try: cb(data)
+                    except Exception as e:
+                        print(f"[Transport] Telemetry callback error (a): {e}")
+                return
+
             # Handle motion done internally.
             # Firmware sends "DONE:ok,dur=…,dist=…,stall=0" (with stats appended),
             # so we must use startswith(), NOT ==, to detect a successful DONE.

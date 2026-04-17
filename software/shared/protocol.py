@@ -17,11 +17,19 @@ Protocol (mirrors src/services/intercom/):
       TEL:<type>:<data>|<crc8>\n   (telemetry push, no reply needed)
 
 Telemetry types (Teensy → Jetson):
-  TEL:pos:<x>,<y>,<theta>         — robot position update
-  TEL:motion:<state>              — IDLE | RUNNING | PAUSED | DONE:ok | DONE:fail
-  TEL:safety:<0|1>                — obstacle detected
-  TEL:chrono:<elapsed_ms>         — match timer
-  TEL:occ:<hex_encoded_map>       — occupancy map bytes
+  T:a px py theta R tx ty dist feed safety chrono  — aggregated (moving)
+  T:a px py theta I feed safety chrono             — aggregated (idle)
+       Combines pos+motion+safety+chrono at tel.aggr_ms rate (default 10Hz).
+       theta in mrad, feed in centipercent, chrono in ms.
+       Python transport decomposes into 'p','m','s','c' subscriber calls.
+  T:m DONE:ok|fail,dur=…,dist=…,stall=0|1         — motion completion (separate)
+  T:od gx,gy;gx,gy;…                              — sparse occupancy map
+  T:mask 11110                                     — telemetry channel mask
+  T:cal key=val key=val …                          — calibration report
+  (Legacy) TEL:pos:<x>,<y>,<theta>                 — position (deprecated)
+  (Legacy) TEL:motion:<state>                      — motion state (deprecated)
+  (Legacy) TEL:safety:<0|1>                        — obstacle detected (deprecated)
+  (Legacy) TEL:chrono:<elapsed_ms>                 — match timer (deprecated)
 
 Commands (Jetson → Teensy, content field of requests):
   hb                              — heartbeat (reply: "ok")
