@@ -109,6 +109,25 @@ FLASHMEM bool PositionController::isStalled() const {
     return m_stalledFlag && !isCanceling();
 }
 
+FLASHMEM void PositionController::snapAxisTarget(int axis, float value) {
+    if (axis == 0) {
+        target.x    = value;
+        newTarget.x = value;
+        position.x  = value;
+        target_velocity.x = 0.0f;
+        vx_controller.reset();
+        // Clear X stall so it doesn't re-trigger
+        m_stall.config.velCmdMinMmS = m_stall.config.velCmdMinMmS;  // no-op, but reset accum:
+    } else if (axis == 1) {
+        target.y    = value;
+        newTarget.y = value;
+        position.y  = value;
+        target_velocity.y = 0.0f;
+        vy_controller.reset();
+    }
+    Console::info("PosCtrl") << "Snap axis " << axis << " → " << (int)value << Console::endl;
+}
+
 
 // ============================================================
 //  onUpdate — sous-fonctions

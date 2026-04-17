@@ -64,6 +64,14 @@ public:
     // true si le stall a été détecté (et move non en cours d'annulation)
     bool isStalled() const;
 
+    // Reset the stall flag (used by border snap after correcting position)
+    void clearStalledFlag() { m_stalledFlag = false; }
+
+    // Border snap: set the PID target on one axis to a known value.
+    // This zeros the position error on that axis so the PID stops pushing.
+    // axis: 0=X, 1=Y.  Also resets the velocity on that axis.
+    void snapAxisTarget(int axis, float value);
+
     // Accès au détecteur de blocage (config + stats)
     StallDetector&       stall()       { return m_stall; }
     const StallDetector& stall() const { return m_stall; }

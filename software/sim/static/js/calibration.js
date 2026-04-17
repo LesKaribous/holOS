@@ -532,6 +532,39 @@ function stallPushParams() {
   });
 }
 
+// ── Global motion protection toggles ─────────────────────────────────────────
+function motionProtectionToggle() {
+  const snap = document.getElementById('chk-border-snap').checked ? 1 : 0;
+  const coll = document.getElementById('chk-collision').checked  ? 1 : 0;
+  const statusEl = document.getElementById('protection-status');
+
+  const promises = [
+    fetch('/api/settings', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ key: 'motion.border_snap', value: snap }),
+    }),
+    fetch('/api/settings', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ key: 'motion.collision', value: coll }),
+    }),
+  ];
+
+  Promise.all(promises)
+    .then(rs => Promise.all(rs.map(r => r.json())))
+    .then(ds => {
+      const ok = ds.every(d => d.ok && d.pushed);
+      statusEl.textContent = ok ? '✓ envoyé' : '⚠ erreur push';
+      statusEl.style.color = ok ? '#22c55e' : '#c0392b';
+      setTimeout(() => { statusEl.textContent = ''; }, 3000);
+    })
+    .catch(() => {
+      statusEl.textContent = '⚠ erreur réseau';
+      statusEl.style.color = '#c0392b';
+    });
+}
+
 // ── View activation ────────────────────────────────────────────────────────────
 function onCalibViewActivated() {
   calibInit();

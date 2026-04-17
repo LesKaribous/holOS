@@ -1350,6 +1350,22 @@
             <div id="stall-probe-error" class="hidden" style="margin-top:10px;color:#c0392b;font-size:12px">
             </div>
 
+            <!-- Global motion protection toggles -->
+            <div style="margin-top:14px;padding:10px;background:var(--surface2);border-radius:6px">
+              <div style="font-size:13px;font-weight:600;margin-bottom:8px">🛡 Protection globale</div>
+              <div style="display:flex;gap:16px;align-items:center;flex-wrap:wrap">
+                <label style="display:flex;align-items:center;gap:6px;font-size:12px;cursor:pointer">
+                  <input type="checkbox" id="chk-border-snap" onchange="motionProtectionToggle()">
+                  <span>Border Snap <span style="color:var(--text-dim)">(corrige position sur bordure)</span></span>
+                </label>
+                <label style="display:flex;align-items:center;gap:6px;font-size:12px;cursor:pointer">
+                  <input type="checkbox" id="chk-collision" onchange="motionProtectionToggle()">
+                  <span>Collision Cancel <span style="color:var(--text-dim)">(annule si objet)</span></span>
+                </label>
+                <span id="protection-status" style="font-size:11px;color:var(--text-dim)"></span>
+              </div>
+            </div>
+
             <!-- Stall tuning parameters -->
             <details style="margin-top:12px">
               <summary style="cursor:pointer;font-size:13px;font-weight:600;color:var(--text-dim)">⚙ Paramètres stall detection</summary>

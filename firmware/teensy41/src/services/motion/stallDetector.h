@@ -77,6 +77,17 @@ public:
     bool isStalledRot() const { return m_stats.stalledRot; }
     bool isStalledAny() const { return m_stats.stalledX || m_stats.stalledY || m_stats.stalledRot; }
 
+    // Clear stall state on a single axis (after border snap) to prevent re-trigger.
+    // Also recomputes velTriggered so the legacy displacement check doesn't re-fire.
+    void clearStalledX() {
+        m_stats.stalledX = false; m_velStallAccumX = 0.0f;
+        m_stats.velTriggered = m_stats.stalledX || m_stats.stalledY || m_stats.stalledRot;
+    }
+    void clearStalledY() {
+        m_stats.stalledY = false; m_velStallAccumY = 0.0f;
+        m_stats.velTriggered = m_stats.stalledX || m_stats.stalledY || m_stats.stalledRot;
+    }
+
     static float shortestAngleDiff(float a, float b);
 
 private:

@@ -83,14 +83,96 @@ FLASHMEM void Motion::onRunning() {
         return;
     }
 
-    // Stall → cancel si l'option est active
+    // Stall handling — three modes (checked in priority order):
+    //
+    //  1) borderSnap: if stalled near a table border → snap position to the
+    //     known wall coordinate on that axis, zero PID error, and let the
+    //     move continue on remaining axes.  If stalled far from any border
+    //     (object collision) → cancel.
+    //
+    //  2) cancelOnStall: cancel the move immediately.
+    //
+    //  3) Neither: stall flag is set but the move continues (legacy).
+    //
     if (current_move_cruised && m_activeOpts.stallEnabled && cruise_controller.isStalled()) {
-        if (m_activeOpts.cancelOnStall) {
+
+        if (m_activeOpts.borderSnap) {
+            auto& stall = cruise_controller.stall();
+            Vec3 pos = estimatedPosition();
+
+            // Conservative margin — covers all robot faces (max offset ~137 mm)
+            constexpr float BORDER_MARGIN = 150.0f;
+
+            bool stalledX = stall.isStalledX();
+            bool stalledY = stall.isStalledY();
+            bool handledX = false, handledY = false;
+
+            if (stalledX) {
+                bool nearXmin = pos.x < BORDER_MARGIN;
+                bool nearXmax = pos.x > (TABLE_SIZE_X - BORDER_MARGIN);
+                if (nearXmin || nearXmax) {
+                    float snapX = nearXmin ? BORDER_MARGIN : (TABLE_SIZE_X - BORDER_MARGIN);
+                    // Correct the localisation on X
+                    Vec3 corrected = pos;
+                    corrected.x = snapX;
+                    localisation.setPosition(corrected);
+                    _position.x = snapX;
+                    // Zero PID error on X so it stops pushing
+                    cruise_controller.snapAxisTarget(0, snapX);
+                    // Clear stall accumulator so it doesn't re-trigger
+                    stall.clearStalledX();
+                    handledX = true;
+                    Console::info("Motion") << "Border snap X → " << (int)snapX
+                                            << (nearXmin ? " (Xmin)" : " (Xmax)") << Console::endl;
+                } else {
+                    // Object collision far from border
+                    Console::warn("Motion") << "Stall X far from border (x="
+                                            << (int)pos.x << ") — canceling" << Console::endl;
+                    clearWaypoints();
+                    cruise_controller.cancel();
+                    return;
+                }
+            }
+
+            if (stalledY) {
+                bool nearYmin = pos.y < BORDER_MARGIN;
+                bool nearYmax = pos.y > (TABLE_SIZE_Y - BORDER_MARGIN);
+                if (nearYmin || nearYmax) {
+                    float snapY = nearYmin ? BORDER_MARGIN : (TABLE_SIZE_Y - BORDER_MARGIN);
+                    Vec3 corrected = localisation.getPosition();
+                    corrected.y = snapY;
+                    localisation.setPosition(corrected);
+                    _position.y = snapY;
+                    cruise_controller.snapAxisTarget(1, snapY);
+                    // Clear stall accumulator so it doesn't re-trigger
+                    stall.clearStalledY();
+                    handledY = true;
+                    Console::info("Motion") << "Border snap Y → " << (int)snapY
+                                            << (nearYmin ? " (Ymin)" : " (Ymax)") << Console::endl;
+                } else {
+                    Console::warn("Motion") << "Stall Y far from border (y="
+                                            << (int)pos.y << ") — canceling" << Console::endl;
+                    clearWaypoints();
+                    cruise_controller.cancel();
+                    return;
+                }
+            }
+
+            // If we snapped at least one axis, clear the top-level stall flag
+            // so the PID can continue on remaining axes without re-entering
+            // this block on the very next cycle.
+            if (handledX || handledY) {
+                cruise_controller.clearStalledFlag();
+                // Fall through to normal hasFinished() check below.
+            }
+
+        } else if (m_activeOpts.cancelOnStall) {
             Console::warn("Motion") << "Stall detected — canceling" << Console::endl;
             clearWaypoints();
             cruise_controller.cancel();
+            return;
         }
-        return;
+        // else: stall detected but no action requested (legacy)
     }
 
     // Pass-through : enchaîner si suffisamment proche du waypoint intermédiaire
@@ -227,7 +309,9 @@ void Motion::control() {
 // ============================================================
 
 FLASHMEM Motion& Motion::noStall() {
-    m_pendingOpts.stallEnabled = false;
+    m_pendingOpts.stallEnabled  = false;
+    m_pendingOpts.cancelOnStall = false;
+    m_pendingOpts.borderSnap    = false;
     return *this;
 }
 
@@ -238,6 +322,13 @@ FLASHMEM Motion& Motion::withStall(bool on) {
 
 FLASHMEM Motion& Motion::cancelOnStall(bool on) {
     m_pendingOpts.cancelOnStall = on;
+    return *this;
+}
+
+FLASHMEM Motion& Motion::withBorderSnap(bool on) {
+    m_pendingOpts.borderSnap    = on;
+    m_pendingOpts.stallEnabled  = on;   // borderSnap implies stall detection
+    m_pendingOpts.cancelOnStall = on;   // and cancel-on-stall behavior
     return *this;
 }
 
@@ -423,7 +514,7 @@ FLASHMEM Motion& Motion::move(Vec3 target) {
 // startWaypoint() : installe les options du waypoint, puis lance move().
 FLASHMEM void Motion::startWaypoint(const Waypoint& wp) {
     m_activeOpts  = wp.opts;
-    m_pendingOpts = MoveOptions{};  // reset aux defaults
+    m_pendingOpts = MoveOptions::withGlobalDefaults();  // reset aux defaults
     move(wp.target);
 }
 

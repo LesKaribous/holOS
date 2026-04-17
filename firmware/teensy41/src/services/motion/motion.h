@@ -8,6 +8,8 @@
 #include "services/motion/controller/stepperController.h"
 #include "services/motion/stepper.h"
 
+#include "config/runtime_config.h"
+
 #include <Wire.h>
 #include <SPI.h>
 
@@ -60,8 +62,23 @@ public:
     struct MoveOptions {
         bool  stallEnabled     = false;   // active la stall detection
         bool  cancelOnStall    = false;   // annule le move si stall détecté
-        bool  optimizeRotation = true;   // minimise la rotation (stepper mode)
-        float feedrate         = -1.0f;  // -1 → utilise le feedrate global
+        bool  borderSnap       = false;   // border-aware stall: snap to wall + per-axis complete
+        bool  optimizeRotation = true;    // minimise la rotation (stepper mode)
+        float feedrate         = -1.0f;   // -1 → utilise le feedrate global
+
+        /// Build a MoveOptions with global defaults from RuntimeConfig:
+        ///   motion.border_snap   (0/1, default 0) — enables borderSnap + stall
+        ///   motion.collision     (0/1, default 0) — enables cancelOnStall + stall
+        /// Explicit fluent calls (noStall, withBorderSnap...) override these.
+        static MoveOptions withGlobalDefaults() {
+            MoveOptions o;
+            bool snap  = RuntimeConfig::getInt("motion.border_snap", 0) != 0;
+            bool coll  = RuntimeConfig::getInt("motion.collision",   0) != 0;
+            o.borderSnap    = snap;
+            o.cancelOnStall = coll || snap;  // borderSnap implies cancelOnStall
+            o.stallEnabled  = snap || coll;  // either feature needs stall detection
+            return o;
+        }
     };
 
     // ============================================================
@@ -115,6 +132,7 @@ public:
     Motion& noStall();                      // désactive stall detection
     Motion& withStall(bool on = true);      // contrôle fin de la stall detection
     Motion& cancelOnStall(bool on = true);  // annule si stall détecté
+    Motion& withBorderSnap(bool on = true); // border-aware stall: snap to wall + per-axis complete
     Motion& withOptimization(bool on = true);
     Motion& feedrate(float f);
 
