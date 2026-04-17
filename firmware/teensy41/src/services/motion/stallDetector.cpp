@@ -17,6 +17,14 @@ void StallDetector::begin(const Vec3& startPos, const Vec3& target) {
     m_velStallAccumX   = 0.0f;
     m_velStallAccumY   = 0.0f;
     m_velStallAccumRot = 0.0f;
+
+    // Reset stagnation accumulators
+    m_stagLastX  = startPos.x;
+    m_stagLastY  = startPos.y;
+    m_stagAccumX = 0.0f;
+    m_stagAccumY = 0.0f;
+    m_stagWindowAccumX = 0.0f;
+    m_stagWindowAccumY = 0.0f;
 }
 
 void StallDetector::reset() {
@@ -28,6 +36,12 @@ void StallDetector::reset() {
     m_velStallAccumX   = 0.0f;
     m_velStallAccumY   = 0.0f;
     m_velStallAccumRot = 0.0f;
+    m_stagLastX  = 0.0f;
+    m_stagLastY  = 0.0f;
+    m_stagAccumX = 0.0f;
+    m_stagAccumY = 0.0f;
+    m_stagWindowAccumX = 0.0f;
+    m_stagWindowAccumY = 0.0f;
 }
 
 // ============================================================
@@ -51,7 +65,7 @@ void StallDetector::updateVelocity(const Vec3& cmdVel, const Vec3& otosVel, floa
         m_velStallAccumX += dt;
     } else {
         m_velStallAccumX = 0.0f;
-        m_stats.stalledX = false;
+        // Don't clear stalledX here — stagnation may have set it
     }
 
     // Y axis
@@ -61,7 +75,6 @@ void StallDetector::updateVelocity(const Vec3& cmdVel, const Vec3& otosVel, floa
         m_velStallAccumY += dt;
     } else {
         m_velStallAccumY = 0.0f;
-        m_stats.stalledY = false;
     }
 
     // Rotation
@@ -102,6 +115,75 @@ void StallDetector::updateVelocity(const Vec3& cmdVel, const Vec3& otosVel, floa
 }
 
 // ============================================================
+//  Position stagnation detection (called at PID rate ~500 Hz)
+//
+//  Per-axis: every STAG_SNAPSHOT_PERIOD, check if position has
+//  moved more than stagMoveMm since last snapshot.
+//    - If NOT moved AND remaining error > stagErrorMm:
+//      accumulate stagnation time.
+//    - If moved: reset accumulator.
+//
+//  When accumulated stagnation time exceeds stagTimeS → stalled.
+//
+//  This catches low-speed stalls where the velocity mismatch
+//  detector fails because commanded velocity is below its threshold.
+// ============================================================
+
+void StallDetector::updateStagnation(const Vec3& pos, const Vec3& target, float dt) {
+    // ── X axis ──
+    m_stagWindowAccumX += dt;
+    if (m_stagWindowAccumX >= STAG_SNAPSHOT_PERIOD) {
+        float deltaX = fabsf(pos.x - m_stagLastX);
+        float errorX = fabsf(target.x - pos.x);
+        m_stagLastX = pos.x;
+        m_stagWindowAccumX = 0.0f;
+
+        if (deltaX < config.stagMoveMm && errorX > config.stagErrorMm) {
+            m_stagAccumX += STAG_SNAPSHOT_PERIOD;
+        } else {
+            m_stagAccumX = 0.0f;
+        }
+
+        if (m_stagAccumX >= config.stagTimeS && !m_stats.stalledX) {
+            m_stats.stalledX = true;
+            m_stats.velTriggered = true;  // so legacy displacement also sees it
+            Console::warn("StallDetector")
+                << "Stagnation stall X: pos=" << (int)pos.x
+                << " target=" << (int)target.x
+                << " error=" << (int)errorX << "mm"
+                << " stag=" << (int)(m_stagAccumX * 1000) << "ms"
+                << Console::endl;
+        }
+    }
+
+    // ── Y axis ──
+    m_stagWindowAccumY += dt;
+    if (m_stagWindowAccumY >= STAG_SNAPSHOT_PERIOD) {
+        float deltaY = fabsf(pos.y - m_stagLastY);
+        float errorY = fabsf(target.y - pos.y);
+        m_stagLastY = pos.y;
+        m_stagWindowAccumY = 0.0f;
+
+        if (deltaY < config.stagMoveMm && errorY > config.stagErrorMm) {
+            m_stagAccumY += STAG_SNAPSHOT_PERIOD;
+        } else {
+            m_stagAccumY = 0.0f;
+        }
+
+        if (m_stagAccumY >= config.stagTimeS && !m_stats.stalledY) {
+            m_stats.stalledY = true;
+            m_stats.velTriggered = true;
+            Console::warn("StallDetector")
+                << "Stagnation stall Y: pos=" << (int)pos.y
+                << " target=" << (int)target.y
+                << " error=" << (int)errorY << "mm"
+                << " stag=" << (int)(m_stagAccumY * 1000) << "ms"
+                << Console::endl;
+        }
+    }
+}
+
+// ============================================================
 //  Legacy displacement-based detection (called at slow rate)
 // ============================================================
 
@@ -133,7 +215,7 @@ bool StallDetector::update(const Vec3& currentPos, uint32_t elapsedMs) {
 
     m_lastPos = currentPos;
 
-    // Also check velocity-based stall (faster detection)
+    // Also check velocity-based or stagnation-based stall (faster detection)
     bool velStall = m_stats.velTriggered;
 
     if (transStall || angStall || velStall) {

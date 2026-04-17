@@ -82,6 +82,10 @@ FLASHMEM void PositionController::start() {
     sc.velStallTimeS  = RuntimeConfig::getFloat("stall.vel_time",     sc.velStallTimeS);
     sc.velRotMinRadS  = RuntimeConfig::getFloat("stall.vel_rot_min",  sc.velRotMinRadS);
     sc.velRotMaxRadS  = RuntimeConfig::getFloat("stall.vel_rot_max",  sc.velRotMaxRadS);
+    // Position stagnation (catches low-speed stalls)
+    sc.stagMoveMm     = RuntimeConfig::getFloat("stall.stag_move_mm",  sc.stagMoveMm);
+    sc.stagTimeS      = RuntimeConfig::getFloat("stall.stag_time",     sc.stagTimeS);
+    sc.stagErrorMm    = RuntimeConfig::getFloat("stall.stag_error_mm", sc.stagErrorMm);
 
     // Snapshot de départ pour le stall detector
     Vec3 startPos = localisation.getPosition();
@@ -254,7 +258,11 @@ void PositionController::onUpdate() {
         Vec3 otosWorld = localisation.getVelocity();  // world frame
         m_stall.updateVelocity(final_vel, otosWorld, dt);
 
-        // Either velocity-based or displacement-based stall sets the flag
+        // Position stagnation: catches low-speed stalls where velocity
+        // mismatch fails (cmdVel below threshold on short moves).
+        m_stall.updateStagnation(position, target, dt);
+
+        // Either velocity-based, stagnation, or displacement-based stall sets the flag
         if (m_stall.isStalledAny()) {
             m_stalledFlag = true;
         }

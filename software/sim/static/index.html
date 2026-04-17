@@ -1396,6 +1396,20 @@
                   <input type="number" id="stall-vel-rot-max" class="calib-input" value="0.1" min="0.01" max="1.0" step="0.01" style="width:65px"
                          title="Vitesse rotation OTOS en-dessous = pas de rotation">
                 </label>
+                <!-- Position stagnation (catches low-speed stalls) -->
+                <div style="grid-column:1/-1;font-weight:600;margin-top:8px;color:var(--accent)">Stagnation position (basse vitesse ~400 ms)</div>
+                <label class="calib-lbl" style="display:flex;align-items:center;gap:4px">Move min (mm)
+                  <input type="number" id="stall-stag-move-mm" class="calib-input" value="1.5" min="0.5" max="10" step="0.5" style="width:65px"
+                         title="Mouvement minimum par fenetre de 100ms pour ne pas etre considere stagne">
+                </label>
+                <label class="calib-lbl" style="display:flex;align-items:center;gap:4px">Duree stag (s)
+                  <input type="number" id="stall-stag-time" class="calib-input" value="0.40" min="0.10" max="3.0" step="0.05" style="width:65px"
+                         title="Duree de stagnation pour trigger le stall">
+                </label>
+                <label class="calib-lbl" style="display:flex;align-items:center;gap:4px">Erreur min (mm)
+                  <input type="number" id="stall-stag-error-mm" class="calib-input" value="3.0" min="1" max="50" step="1" style="width:65px"
+                         title="Erreur PID minimum pour considerer un stall (ignore le bruit de settling)">
+                </label>
                 <!-- Displacement-based (legacy) -->
                 <div style="grid-column:1/-1;font-weight:600;margin-top:8px;color:var(--accent)">Displacement (legacy, lent ~1.5 s)</div>
                 <label class="calib-lbl" style="display:flex;align-items:center;gap:4px">Délai (ms)

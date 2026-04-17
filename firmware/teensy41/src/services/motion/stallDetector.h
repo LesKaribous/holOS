@@ -3,22 +3,27 @@
 #include "config/settings.h"
 
 // ============================================================
-//  StallDetector — velocity-based + displacement stall detection
-//
-//  Two complementary methods:
+//  StallDetector — three complementary stall detection methods
 //
 //  1) Sliding-window displacement (legacy):
 //     Checks if robot has moved enough in a given time window.
 //     Robust but slow to trigger (needs DELAY_MS + PERIOD_MS).
 //
-//  2) Velocity mismatch (new):
+//  2) Velocity mismatch:
 //     Compares commanded velocity to OTOS-measured velocity.
 //     Fast response: triggers within ~200ms of wall contact.
 //     Works per-axis: if robot hits Y wall, only Y stalls.
+//     Limitation: misses low-speed stalls where cmdVel < threshold.
+//
+//  3) Position stagnation:
+//     Tracks per-axis position change over a time window.
+//     If position doesn't move while PID error remains → stall.
+//     Catches low-speed stalls that velocity mismatch misses.
 //
 //  Usage:
 //    m_stall.begin(startPos, target);
 //    m_stall.updateVelocity(cmdVel, otosVel, dt);  // called at PID rate
+//    m_stall.updateStagnation(pos, target, dt);     // called at PID rate
 //    if (m_stall.update(pos, elapsedMs)) { … }     // called at slow rate
 //    auto s = m_stall.getStats();
 //
@@ -40,12 +45,17 @@ public:
         float    targetTransMm  = Settings::Motion::Stall::TARGET_TRANS_MM;
         float    targetAngleRad = Settings::Motion::Stall::TARGET_ANGLE_RAD;
 
-        // Velocity mismatch (new)
+        // Velocity mismatch
         float    velCmdMinMmS   = 30.0f;   // minimum commanded speed to consider (mm/s)
         float    velOtosMaxMmS  = 10.0f;   // OTOS speed below this = "not moving" (mm/s)
         float    velStallTimeS  = 0.20f;   // sustained mismatch duration to trigger (s)
         float    velRotMinRadS  = 0.3f;    // minimum commanded rot speed (rad/s)
         float    velRotMaxRadS  = 0.1f;    // OTOS rot speed below this = "not turning" (rad/s)
+
+        // Position stagnation — catches low-speed stalls
+        float    stagMoveMm     = 1.5f;    // position must move at least this much per window
+        float    stagTimeS      = 0.40f;   // stagnation duration to trigger stall (s)
+        float    stagErrorMm    = 3.0f;    // minimum PID error to consider (ignore settling noise)
     };
 
     // ---- Move statistics ----
@@ -68,6 +78,7 @@ public:
     void  begin(const Vec3& startPos, const Vec3& target);
     bool  update(const Vec3& currentPos, uint32_t elapsedMs);  // legacy displacement check
     void  updateVelocity(const Vec3& cmdVel, const Vec3& otosVel, float dt);  // velocity mismatch
+    void  updateStagnation(const Vec3& pos, const Vec3& target, float dt);    // position stagnation
     void  reset();
     Stats getStats() const { return m_stats; }
 
@@ -80,11 +91,11 @@ public:
     // Clear stall state on a single axis (after border snap) to prevent re-trigger.
     // Also recomputes velTriggered so the legacy displacement check doesn't re-fire.
     void clearStalledX() {
-        m_stats.stalledX = false; m_velStallAccumX = 0.0f;
+        m_stats.stalledX = false; m_velStallAccumX = 0.0f; m_stagAccumX = 0.0f;
         m_stats.velTriggered = m_stats.stalledX || m_stats.stalledY || m_stats.stalledRot;
     }
     void clearStalledY() {
-        m_stats.stalledY = false; m_velStallAccumY = 0.0f;
+        m_stats.stalledY = false; m_velStallAccumY = 0.0f; m_stagAccumY = 0.0f;
         m_stats.velTriggered = m_stats.stalledX || m_stats.stalledY || m_stats.stalledRot;
     }
 
@@ -101,4 +112,13 @@ private:
     float m_velStallAccumX   = 0.0f;
     float m_velStallAccumY   = 0.0f;
     float m_velStallAccumRot = 0.0f;
+
+    // Position stagnation accumulators
+    float m_stagLastX  = 0.0f;   // snapshot position at start of current window
+    float m_stagLastY  = 0.0f;
+    float m_stagAccumX = 0.0f;   // time spent stagnating on X
+    float m_stagAccumY = 0.0f;
+    float m_stagWindowAccumX = 0.0f;  // time since last snapshot (X)
+    float m_stagWindowAccumY = 0.0f;
+    static constexpr float STAG_SNAPSHOT_PERIOD = 0.10f;  // re-snapshot every 100ms
 };
