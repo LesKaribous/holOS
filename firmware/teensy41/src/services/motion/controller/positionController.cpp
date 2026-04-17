@@ -1,5 +1,6 @@
 #include "positionController.h"
 #include "config/settings.h"
+#include "config/runtime_config.h"
 #include "os/console.h"
 #include "services/localisation/localisation.h"
 #include <algorithm>
@@ -62,6 +63,25 @@ FLASHMEM void PositionController::start() {
     controller.enable();
 
     if (!(newTarget == target)) target = newTarget;
+
+    // ── Load stall detector tuning from RuntimeConfig (set via cfg_set) ──
+    // Only overrides values that have been explicitly set; others keep defaults.
+    // Keys: stall.delay_ms, stall.period_ms, stall.trans_mm, stall.angle_rad,
+    //       stall.vel_cmd_min, stall.vel_otos_max, stall.vel_time,
+    //       stall.vel_rot_min, stall.vel_rot_max,
+    //       stall.target_trans_mm, stall.target_angle_rad
+    auto& sc = m_stall.config;
+    sc.delayMs        = RuntimeConfig::getInt  ("stall.delay_ms",     sc.delayMs);
+    sc.periodMs       = RuntimeConfig::getInt  ("stall.period_ms",    sc.periodMs);
+    sc.transDispMm    = RuntimeConfig::getFloat("stall.trans_mm",     sc.transDispMm);
+    sc.angleDispRad   = RuntimeConfig::getFloat("stall.angle_rad",    sc.angleDispRad);
+    sc.targetTransMm  = RuntimeConfig::getFloat("stall.target_trans_mm",  sc.targetTransMm);
+    sc.targetAngleRad = RuntimeConfig::getFloat("stall.target_angle_rad", sc.targetAngleRad);
+    sc.velCmdMinMmS   = RuntimeConfig::getFloat("stall.vel_cmd_min",  sc.velCmdMinMmS);
+    sc.velOtosMaxMmS  = RuntimeConfig::getFloat("stall.vel_otos_max", sc.velOtosMaxMmS);
+    sc.velStallTimeS  = RuntimeConfig::getFloat("stall.vel_time",     sc.velStallTimeS);
+    sc.velRotMinRadS  = RuntimeConfig::getFloat("stall.vel_rot_min",  sc.velRotMinRadS);
+    sc.velRotMaxRadS  = RuntimeConfig::getFloat("stall.vel_rot_max",  sc.velRotMaxRadS);
 
     // Snapshot de départ pour le stall detector
     Vec3 startPos = localisation.getPosition();

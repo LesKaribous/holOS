@@ -489,6 +489,49 @@ function stallProbeStart() {
   });
 }
 
+// ── Stall detection parameter tuning ──────────────────────────────────────────
+function stallPushParams() {
+  const params = [
+    { id: 'stall-vel-cmd-min',  key: 'stall.vel_cmd_min'  },
+    { id: 'stall-vel-otos-max', key: 'stall.vel_otos_max' },
+    { id: 'stall-vel-time',     key: 'stall.vel_time'     },
+    { id: 'stall-vel-rot-min',  key: 'stall.vel_rot_min'  },
+    { id: 'stall-vel-rot-max',  key: 'stall.vel_rot_max'  },
+    { id: 'stall-delay-ms',     key: 'stall.delay_ms'     },
+    { id: 'stall-period-ms',    key: 'stall.period_ms'    },
+    { id: 'stall-trans-mm',     key: 'stall.trans_mm'     },
+    { id: 'stall-angle-rad',    key: 'stall.angle_rad'    },
+  ];
+
+  const statusEl = document.getElementById('stall-params-status');
+  let sent = 0, failed = 0;
+
+  const promises = params.map(p => {
+    const el = document.getElementById(p.id);
+    if (!el) return Promise.resolve();
+    const val = el.value;
+    return fetch('/api/settings', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ key: p.key, value: val }),
+    })
+    .then(r => r.json())
+    .then(d => { if (d.ok && d.pushed) sent++; else failed++; })
+    .catch(() => { failed++; });
+  });
+
+  Promise.all(promises).then(() => {
+    if (failed === 0) {
+      statusEl.textContent = `✓ ${sent} paramètres envoyés`;
+      statusEl.style.color = '#22c55e';
+    } else {
+      statusEl.textContent = `⚠ ${sent} envoyés, ${failed} échoués`;
+      statusEl.style.color = '#c0392b';
+    }
+    setTimeout(() => { statusEl.textContent = ''; }, 4000);
+  });
+}
+
 // ── View activation ────────────────────────────────────────────────────────────
 function onCalibViewActivated() {
   calibInit();
