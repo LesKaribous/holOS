@@ -206,7 +206,8 @@ def run_mission():
     safety.enable()
     motion.set_feedrate(1.0)
 
-    planner = Planner(chrono, log)
+    planner = Planner(chrono, log,
+                      safety_check=lambda: safety.obstacle_detected())
     planner.set_safety_margin_ms(5000)
 
     # ── Mission definitions — mirrors firmware match() ──────────────────────
@@ -215,15 +216,17 @@ def run_mission():
     # If zone occupied → skip, try another mission.
 
     # Stock A — highest priority, infinite retries (keep trying if zone occupied)
+    # store_A is non-cancelable: robot carries objects after collect
     m = planner.add_mission("stock_A", priority=10, score=150)
     m.add_step("collect_A", Timing.COLLECT_STOCK_A, block_collect_A, is_zone_A_free)
-    m.add_step("store_A",   Timing.STORE_STOCK_A,   block_store_A)
+    m.add_step("store_A",   Timing.STORE_STOCK_A,   block_store_A, cancelable=False)
     m.set_max_retries(-1)   # infinite — never abandon, keep retrying
 
     # Stock B — infinite retries
+    # store_B is non-cancelable: robot carries objects after collect
     m = planner.add_mission("stock_B", priority=8, score=150)
     m.add_step("collect_B", Timing.COLLECT_STOCK_B, block_collect_B, is_zone_B_free)
-    m.add_step("store_B",   Timing.STORE_STOCK_B,   block_store_B)
+    m.add_step("store_B",   Timing.STORE_STOCK_B,   block_store_B, cancelable=False)
     m.set_max_retries(-1)   # infinite
 
     # Thermometer — requires stock_B to be done first, infinite retries

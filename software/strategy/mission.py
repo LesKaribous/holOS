@@ -42,6 +42,7 @@ class Step:
     estimated_ms: int  = 0
     action:       Optional[Callable[[], BlockResult]] = None
     feasible:     Optional[Callable[[], bool]]        = None
+    cancelable:   bool = True   # False = point of no return (robot carries object)
 
 
 # ── Mission ──────────────────────────────────────────────────────────────────
@@ -80,9 +81,10 @@ class Mission:
 
     def add_step(self, name: str, estimated_ms: int,
                  action: Callable[[], BlockResult],
-                 feasible: Optional[Callable[[], bool]] = None) -> 'Mission':
+                 feasible: Optional[Callable[[], bool]] = None,
+                 cancelable: bool = True) -> 'Mission':
         if len(self.steps) < self.MAX_STEPS:
-            self.steps.append(Step(name, estimated_ms, action, feasible))
+            self.steps.append(Step(name, estimated_ms, action, feasible, cancelable))
         return self
 
     def set_max_retries(self, n: int) -> 'Mission':
@@ -139,17 +141,23 @@ class Planner:
     MAX_MISSIONS    = 16
     IDLE_WAIT_S     = 0.5
 
+    SAFETY_ABORT_S  = 8.0   # abandon cancelable step if safety blocks > 8s
+
     def __init__(self, chrono, log: Optional[Callable[[str], None]] = None,
-                 stop_check: Optional[Callable[[], bool]] = None):
+                 stop_check: Optional[Callable[[], bool]] = None,
+                 safety_check: Optional[Callable[[], bool]] = None):
         """
-        chrono     — object with .time_left_s() method
-        log        — logging function
-        stop_check — callable returning True when match is stopped
-                     (mirrors os.getState() == OS::STOPPED)
+        chrono       — object with .time_left_s() method
+        log          — logging function
+        stop_check   — callable returning True when match is stopped
+                       (mirrors os.getState() == OS::STOPPED)
+        safety_check — callable returning True when an obstacle is detected
+                       (mirrors safety.obstacleDetected())
         """
-        self._chrono     = chrono
-        self._log        = log or print
-        self._stop_check = stop_check or (lambda: False)
+        self._chrono       = chrono
+        self._log          = log or print
+        self._stop_check   = stop_check or (lambda: False)
+        self._safety_check = safety_check  # None = no safety abort
         self._missions:  List[Mission] = []
         self._by_name:   Dict[str, Mission] = {}
         self._safety_margin_ms = 5000
@@ -288,6 +296,27 @@ class Planner:
                 return False
 
             step = mission.steps[mission.current_step]
+
+            # ── Safety wait / abort between steps ───────────────────
+            # If safety is blocking before we start a step, wait.
+            # If the step is cancelable and the timeout expires, abort
+            # this mission so the Planner can try another one.
+            if self._safety_check and self._safety_check():
+                safety_start = time.time()
+                tag = "" if step.cancelable else " (non-cancelable)"
+                self._log(f"[Planner]   [{step.name}] safety blocking — waiting{tag}")
+
+                while self._safety_check():
+                    if self._stop_check():
+                        return False
+                    if step.cancelable and (time.time() - safety_start) >= self.SAFETY_ABORT_S:
+                        self._log(f"[Planner]   [{step.name}] safety timeout "
+                                  f"({self.SAFETY_ABORT_S:.0f}s) — abort mission")
+                        return False
+                    time.sleep(0.1)
+
+                self._log(f"[Planner]   [{step.name}] safety cleared after "
+                          f"{time.time() - safety_start:.1f}s")
 
             # Step-level feasibility check
             if step.feasible is not None and not step.feasible():

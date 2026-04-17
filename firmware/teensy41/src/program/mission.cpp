@@ -1,6 +1,8 @@
 #include "mission.h"
 #include "os/console.h"
 #include "os/os.h"
+#include "services/safety/safety.h"
+#include "services/motion/motion.h"
 #include <Arduino.h>
 #include <cstring>
 
@@ -13,16 +15,18 @@ extern void waitMs(unsigned long time);
 
 FLASHMEM Mission& Mission::addStep(const char* name, uint32_t estimatedMs,
                                     Block::ActionFn action,
-                                    Block::FeasibleFn feasible) {
+                                    Block::FeasibleFn feasible,
+                                    bool cancelable) {
     if (m_stepCount >= MAX_STEPS) {
         Console::error("Mission") << "Max steps atteint (" << MAX_STEPS << ")" << Console::endl;
         return *this;
     }
-    Step& s      = m_steps[m_stepCount++];
+    Step& s       = m_steps[m_stepCount++];
     s.name        = name;
     s.estimatedMs = estimatedMs;
     s.action      = action;
     s.feasible    = feasible;
+    s.cancelable  = cancelable;
     return *this;
 }
 
@@ -60,6 +64,11 @@ FLASHMEM bool Mission::canRetry() const {
 FLASHMEM bool Mission::isCooledDown() const {
     if (m_lastAttemptMs == 0) return true;
     return (millis() - m_lastAttemptMs) >= RETRY_COOLDOWN_MS;
+}
+
+FLASHMEM bool Mission::isCurrentStepCancelable() const {
+    if (m_currentStep >= m_stepCount) return true;
+    return m_steps[m_currentStep].cancelable;
 }
 
 FLASHMEM bool Mission::depsSatisfied() const {
@@ -104,6 +113,11 @@ FLASHMEM Planner& Planner::setTimeProvider(uint32_t (*fn)()) {
 
 FLASHMEM Planner& Planner::setSafetyMargin(uint32_t ms) {
     m_safetyMs = ms;
+    return *this;
+}
+
+FLASHMEM Planner& Planner::setSafetyAbortMs(uint32_t ms) {
+    m_safetyAbortMs = ms;
     return *this;
 }
 
@@ -230,11 +244,45 @@ FLASHMEM void Planner::executeMission(Mission& m) {
 
         Step& step = m.m_steps[i];
 
+        // ── Safety wait / abort between steps ───────────────────
+        // If safety is blocking before we start a step, wait up to
+        // safetyAbortMs.  If the step is cancelable and the timeout
+        // expires, abort this mission so the Planner can try another.
+        if (safety.obstacleDetected()) {
+            uint32_t safetyStart = millis();
+            Console::warn("Planner")
+                << "  [" << step.name << "] safety bloque — attente"
+                << (step.cancelable ? "" : " (non-annulable)")
+                << Console::endl;
+
+            while (safety.obstacleDetected()) {
+                if (os.getState() == OS::STOPPED) {
+                    m.m_state = MissionState::ABANDONED;
+                    return;
+                }
+                // Cancelable step: abort if safety blocks too long
+                if (step.cancelable && (millis() - safetyStart) >= m_safetyAbortMs) {
+                    Console::warn("Planner")
+                        << "  [" << step.name << "] safety timeout ("
+                        << (int)(m_safetyAbortMs / 1000) << "s) — abandon mission"
+                        << Console::endl;
+                    motion.cancel();
+                    m.m_state = MissionState::FAILED;
+                    return;
+                }
+                waitMs(100);   // pump OS services while waiting
+            }
+
+            Console::info("Planner")
+                << "  [" << step.name << "] safety liberee apres "
+                << (int)((millis() - safetyStart) / 1000) << "s"
+                << Console::endl;
+        }
+
         // ── Per-step feasibility ────────────────────────────────
         if (step.feasible && !step.feasible()) {
             Console::warn("Planner")
                 << "  [" << step.name << "] infaisable — mission suspendue" << Console::endl;
-            // Ne PAS incrémenter retries (c'est temporaire, pas un échec)
             m.m_state = MissionState::FAILED;
             return;
         }
@@ -259,7 +307,6 @@ FLASHMEM void Planner::executeMission(Mission& m) {
         uint32_t elapsed   = millis() - stepStart;
 
         if (result == BlockResult::FAILED) {
-            // Si l'OS est stoppé (match end), c'est un abort, pas un vrai fail
             if (os.getState() == OS::STOPPED) {
                 Console::info("Planner")
                     << "  [" << step.name << "] aborted (OS stopped)" << Console::endl;

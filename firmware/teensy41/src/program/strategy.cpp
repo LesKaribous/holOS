@@ -222,7 +222,8 @@ FLASHMEM void match() {
             long t = chrono.getTimeLeft();
             return (t > 0) ? (uint32_t)t : 0u;
         })
-        .setSafetyMargin(5000);  // Ne pas démarrer si < 5s restantes
+        .setSafetyMargin(5000)   // Ne pas démarrer si < 5s restantes
+        .setSafetyAbortMs(8000); // Abandonner si safety bloque > 8s (sauf step non-annulable)
 
     // ── Définition des missions ──────────────────────────────
     //  Chaque mission = objectif complet.
@@ -230,15 +231,19 @@ FLASHMEM void match() {
     //  Si un step fail → retry la mission plus tard (infini = jamais abandonner).
     //  Si zone occupée → skip, essayer une autre mission.
     //  Dépendances : thermo_set ne démarre qu'après stock_B DONE.
+    //
+    //  cancelable = false → point de non-retour (robot porte un objet).
+    //  Le Planner attend indéfiniment si safety bloque pendant un step
+    //  non-annulable, plutôt que d'abandonner la mission.
 
     { Mission& m = planner.addMission("stock_A", 10, 150);
       m.addStep("collect_A", Timing::COLLECT_STOCK_A, blockCollectA, isZoneAFree);
-      m.addStep("store_A",   Timing::STORE_STOCK_A,   blockStoreA);
+      m.addStep("store_A",   Timing::STORE_STOCK_A,   blockStoreA, nullptr, false);  // non-annulable : robot porte un objet
       m.setMaxRetries(Mission::INFINITE_RETRIES); }
 
     Mission& stockB = planner.addMission("stock_B", 8, 150);
     stockB.addStep("collect_B", Timing::COLLECT_STOCK_B, blockCollectB, isZoneBFree);
-    stockB.addStep("store_B",   Timing::STORE_STOCK_B,   blockStoreB);
+    stockB.addStep("store_B",   Timing::STORE_STOCK_B,   blockStoreB, nullptr, false);  // non-annulable : robot porte un objet
     stockB.setMaxRetries(Mission::INFINITE_RETRIES);
 
     { Mission& m = planner.addMission("thermo_set", 10, 150);

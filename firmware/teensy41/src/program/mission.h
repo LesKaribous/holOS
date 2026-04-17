@@ -93,6 +93,7 @@ struct Step {
     uint32_t         estimatedMs = 0;
     Block::ActionFn  action      = nullptr;
     Block::FeasibleFn feasible   = nullptr;   // check faisabilité (nullptr = toujours OK)
+    bool             cancelable  = true;      // false = point de non-retour (robot porte un objet)
 };
 
 
@@ -125,9 +126,12 @@ public:
     // ---- Builder API ----
 
     /// Ajoute un step à la mission.
+    /// cancelable = true  → le Planner peut abandonner ce step si safety bloque trop longtemps
+    /// cancelable = false → point de non-retour (robot porte un objet), on attend safety
     Mission& addStep(const char* name, uint32_t estimatedMs,
                      Block::ActionFn action,
-                     Block::FeasibleFn feasible = nullptr);
+                     Block::FeasibleFn feasible = nullptr,
+                     bool cancelable = true);
 
     /// Check de faisabilité au niveau mission (avant de commencer).
     Mission& setFeasible(Block::FeasibleFn fn);
@@ -159,6 +163,9 @@ public:
 
     /// Toutes les dépendances sont-elles satisfaites ?
     bool depsSatisfied() const;
+
+    /// Le step courant est-il annulable (ou c'est un point de non-retour) ?
+    bool isCurrentStepCancelable() const;
 
 private:
     friend class Planner;
@@ -199,6 +206,7 @@ public:
     static constexpr uint8_t  MAX_MISSIONS          = 16;
     static constexpr uint32_t IDLE_WAIT_MS           = 500;
     static constexpr uint32_t DEFAULT_SAFETY_MARGIN  = 3000;
+    static constexpr uint32_t DEFAULT_SAFETY_ABORT_MS = 8000;  // abandon mission si safety bloque > 8s
 
     Planner() = default;
 
@@ -215,6 +223,10 @@ public:
 
     /// Marge de sécurité avant fin de match (défaut 3000ms).
     Planner& setSafetyMargin(uint32_t ms);
+
+    /// Durée max de blocage safety avant abandon de la mission courante (défaut 8s).
+    /// Si le step courant est non-annulable, le timeout est ignoré.
+    Planner& setSafetyAbortMs(uint32_t ms);
 
     // ---- Exécution ----
 
@@ -244,6 +256,7 @@ private:
     uint8_t    m_count      = 0;
     uint16_t   m_score      = 0;
     uint32_t   m_startMs    = 0;
-    uint32_t   m_safetyMs   = DEFAULT_SAFETY_MARGIN;
+    uint32_t   m_safetyMs      = DEFAULT_SAFETY_MARGIN;
+    uint32_t   m_safetyAbortMs = DEFAULT_SAFETY_ABORT_MS;
     uint32_t (*m_timeProvider)() = nullptr;
 };
