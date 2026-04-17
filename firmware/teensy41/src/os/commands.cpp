@@ -418,11 +418,11 @@ FLASHMEM void command_stall_probe(const args_t& args) {
         return;
     }
 
-    // Save & configure
+    // Save & configure — stall probe REQUIRES cruise mode (PID + OTOS)
+    // so do NOT disable it, unlike the open-loop probe wizard.
     float prevFeedrate = motion.getFeedrate();
     bool  wasAbsolute  = motion.isAbsolute();
 
-    motion.disableCruiseMode();
     motion.setFeedrate(0.20f);    // slow for stall calibration
 
     // 1) Align face toward wall
@@ -461,7 +461,6 @@ FLASHMEM void command_stall_probe(const args_t& args) {
     // Restore
     if (wasAbsolute) motion.setAbsolute();
     motion.setFeedrate(prevFeedrate);
-    motion.enableCruiseMode();
 
     // 6) Report corrected position + stall stats
     Vec3 finalPos = motion.estimatedPosition();
