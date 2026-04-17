@@ -1,74 +1,24 @@
 #pragma once
 /**
- * sd_card.h — SD card utility module for holOS (Teensy 4.1 built-in slot).
+ * sd_card.h — DEPRECATED — SD card support has been removed.
  *
- * Usage
- * -----
- *   // In onRobotBoot() — before calibration commands are registered:
- *   SDCard::init();
- *   SDCard::loadCalibration();   // restore last saved profile
+ * Settings and calibration are now persisted holOS-side (Python JSON store)
+ * and pushed to firmware via cfg_set on every connect.
  *
- *   // From calibration commands:
- *   SDCard::saveCalibration();
- *   SDCard::loadCalibration();
- *
- * File format
- * -----------
- *   /calibration.cfg  — Calibration::toString() key=value string, one line.
- *   e.g. "cx=1.089,cy=-1.089,cr=0.831,ha=1.0,hb=1.0,hc=1.0,ol=0.9714,oa=1.0"
- *
- * Notes
- * -----
- *   - Uses BUILTIN_SDCARD (Teensy 4.1 built-in micro-SD slot, pin 254).
- *   - Not a Service — no polling loop needed; purely on-demand I/O.
- *   - All public functions are safe to call even if SD is not present
- *     (they return false and log an error).
+ * This file is kept as an empty stub so that any stale #include does not
+ * break the build.  All functions are no-ops.
  */
 
 #include <Arduino.h>
 
 namespace SDCard {
-
-    /// Initialise the SD card.  Call once during boot.
-    /// Returns true if the card was found and mounted successfully.
-    bool init();
-
-    /// True if the SD card was successfully initialised.
-    bool isReady();
-
-    // ── Generic helpers ──────────────────────────────────────────────────────
-
-    /// Write `content` (null-terminated string) to `path`.
-    /// Overwrites existing file.  Returns true on success.
-    bool save(const char* path, const char* content);
-
-    /// Read up to `bufSize-1` bytes from `path` into `buf`.
-    /// Null-terminates the result.  Returns true if data was read.
-    bool load(const char* path, char* buf, size_t bufSize);
-
-    // ── Calibration helpers ──────────────────────────────────────────────────
-
-    /// Serialize Calibration::Current + OtosLinear/OtosAngular to
-    /// "/calibration.cfg".  Returns true on success.
-    bool saveCalibration();
-
-    /// Load "/calibration.cfg" and apply via Calibration::fromString().
-    /// Returns true if at least one key was applied.
-    bool loadCalibration();
-
-    // ── Sequential write session ─────────────────────────────────────────────
-    // Used by MissionController to write /mission_fallback.cfg line by line.
-    // SD.h types (File) are kept out of the public interface — only sd_card.cpp
-    // includes <SD.h> directly.
-
-    /// Open `path` for writing (truncates existing file).
-    /// Returns true if the file was opened successfully.
-    bool openWrite(const char* path);
-
-    /// Append a line of text (adds '\n'). Returns false if no session is open.
-    bool appendLine(const char* line);
-
-    /// Close the current write session. Returns false if no session was open.
-    bool closeWrite();
-
-}  // namespace SDCard
+    inline bool init()       { return false; }
+    inline bool isReady()    { return false; }
+    inline bool save(const char*, const char*)           { return false; }
+    inline bool load(const char*, char*, size_t)         { return false; }
+    inline bool saveCalibration()                        { return false; }
+    inline bool loadCalibration()                        { return false; }
+    inline bool openWrite(const char*)                   { return false; }
+    inline bool appendLine(const char*)                  { return false; }
+    inline bool closeWrite()                             { return false; }
+}

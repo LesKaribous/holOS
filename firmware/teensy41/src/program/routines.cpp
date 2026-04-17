@@ -3,8 +3,6 @@
 #include "config/env.h"
 #include "config/calibration.h"
 #include "config/runtime_config.h"
-#include "services/sd/sd_card.h"
-#include "services/mission/mission_controller.h"
 #include "strategy.h"
 #include "block_registry.h"
 #include "config/poi.h"
@@ -234,17 +232,11 @@ FLASHMEM void onRobotBoot() {
     os.attachService(&safety); ihm.addBootProgress(10);
     safety.disable();
 
-    ihm.drawBootProgress("Linking SD card...");
-    SDCard::init(); ihm.addBootProgress(5);
-    // Load runtime config from SD (actuator limits, motion params, etc.)
-    RuntimeConfig::load(); ihm.addBootProgress(1);
-    // Restore calibration from SD (if card present and file exists)
-    SDCard::loadCalibration(); ihm.addBootProgress(3);
+    // Runtime config starts empty — holOS pushes settings via cfg_set on connect
+    ihm.addBootProgress(10);
     // Init PCA9685 pump/EV driver early so pump is ready for match start
     ihm.drawBootProgress("Init pump driver...");
     initPump(); ihm.addBootProgress(1);
-    // Load mission fallback strategy from SD (if available)
-    MissionController::load(); ihm.addBootProgress(1);
 
     motion.engage();
     ihm.drawBootProgress("Linking Localisation...");

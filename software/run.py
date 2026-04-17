@@ -55,7 +55,7 @@ STRATEGY_DIR = os.path.join(_HERE, 'strategy')
 MACROS_FILE    = os.path.join(STRATEGY_DIR, 'macros.json')
 MISSIONS_FILE  = os.path.join(STRATEGY_DIR, 'missions.json')
 OBJECTS_FILE   = os.path.join(STRATEGY_DIR, 'objects.json')
-FALLBACK_PATH  = '/mission_fallback.cfg'   # path on Teensy SD card
+FALLBACK_PATH  = '/mission_fallback.cfg'   # legacy — SD removed
 if _HERE not in sys.path:
     sys.path.insert(0, _HERE)
 
@@ -70,6 +70,7 @@ from shared.config import (
     HW_THETA_OFFSET_DEG,
 )
 from shared.occupancy  import OccupancyGrid
+from shared.settings   import SettingsStore
 from shared.pathfinder import Pathfinder
 from sim.physics   import RobotPhysics
 from sim.world     import GameObjects
@@ -102,6 +103,10 @@ game_objs = GameObjects()
 
 # Auto-load persisted static occupancy map
 occupancy.load_static(_STATIC_OCC_PATH)
+
+# ── Settings store (replaces firmware SD card) ───────────────────────────────
+_SETTINGS_PATH = os.path.join(_HERE, 'data', 'settings.json')
+settings_store = SettingsStore(_SETTINGS_PATH, log=lambda msg: print(f"  {msg}"))
 
 bridge    = SimBridge(robot, occupancy, pathfinder, game_objs)
 transport = VirtualTransport()
@@ -561,6 +566,84 @@ def api_act_seq_del(name):
     return jsonify({'ok': True})
 
 
+# ── Settings API ──────────────────────────────────────────────────────────────
+
+@app.route('/api/settings', methods=['GET'])
+def api_settings_get():
+    """Return all holOS-side settings."""
+    return jsonify({'ok': True, 'settings': settings_store.all()})
+
+
+@app.route('/api/settings', methods=['POST'])
+def api_settings_set():
+    """
+    Set a config key-value pair.  Saves holOS-side and pushes to firmware.
+    Returns a 'calibration_warning' flag if the key is a calibration value.
+    """
+    data = request.get_json(force=True)
+    key   = data.get('key', '').strip()
+    value = str(data.get('value', '')).strip()
+    if not key:
+        return jsonify({'ok': False, 'error': 'missing key'}), 400
+
+    # Save holOS-side
+    settings_store.set(key, value)
+
+    # Push to firmware if connected
+    pushed = False
+    if _hw_transport and _hw_transport.is_connected:
+        try:
+            ok, _ = _hw_transport.execute(f"cfg_set({key},{value})", timeout_ms=2000)
+            pushed = ok
+        except Exception:
+            pass
+
+    # Calibration change warning
+    is_calib = settings_store.is_calibration_key(key)
+    resp = {'ok': True, 'pushed': pushed, 'calibration_warning': is_calib}
+    if is_calib:
+        resp['warning'] = (
+            "Valeur de calibration modifiée ! "
+            "Pensez à sauvegarder via 'Save Settings' pour que les valeurs "
+            "soient restaurées automatiquement au prochain démarrage."
+        )
+    return jsonify(resp)
+
+
+@app.route('/api/settings/pull', methods=['POST'])
+def api_settings_pull():
+    """Pull current config from firmware into holOS settings store."""
+    if not _calib_connected():
+        return jsonify({'ok': False, 'error': 'not connected'}), 503
+    ok = settings_store.pull_from_firmware(_hw_transport)
+    return jsonify({'ok': ok, 'settings': settings_store.all()})
+
+
+@app.route('/api/settings/push', methods=['POST'])
+def api_settings_push():
+    """Push all holOS settings to firmware."""
+    if not _calib_connected():
+        return jsonify({'ok': False, 'error': 'not connected'}), 503
+    n = settings_store.push_all(_hw_transport)
+    return jsonify({'ok': True, 'pushed': n})
+
+
+# ── Settings push helper ──────────────────────────────────────────────────────
+
+def _push_settings_to_firmware(t):
+    """Push all holOS-side settings to firmware via cfg_set on connect."""
+    if settings_store.count() == 0:
+        return
+    def _push():
+        try:
+            n = settings_store.push_all(t)
+            brain.log(f"[Settings] Pushed {n} settings to firmware")
+        except Exception as e:
+            print(f"  [Settings] Push error: {e}")
+    # Run in background so we don't block the connect handler
+    threading.Thread(target=_push, daemon=True).start()
+
+
 # ── Calibration API ───────────────────────────────────────────────────────────
 
 def _calib_connected():
@@ -616,22 +699,21 @@ def api_calib_set():
 
 @app.route('/api/calibration/save', methods=['POST'])
 def api_calib_save():
-    """Save calibration to SD card on the robot."""
-    if not _calib_connected():
-        return jsonify({'ok': False, 'error': 'not connected'}), 503
-    _calib_fire('calib_save')
-    return jsonify({'ok': True})
+    """Save calibration values holOS-side (settings.json)."""
+    # Pull current config from firmware and persist locally
+    if _calib_connected():
+        settings_store.pull_from_firmware(_hw_transport)
+    return jsonify({'ok': True, 'msg': 'Calibration saved holOS-side'})
 
 @app.route('/api/calibration/load', methods=['POST'])
 def api_calib_load():
-    """Load calibration from SD card and refresh local cache via calib_status."""
+    """Push saved settings from holOS to firmware and refresh local cache."""
     if not _calib_connected():
         return jsonify({'ok': False, 'error': 'not connected'}), 503
     try:
-        ok, res = _hw_transport.execute('calib_load', timeout_ms=5000)
-        # Try to parse the status string if it came back in the response
-        _try_parse_calib_response(res)
-        return jsonify({'ok': ok, 'calib': dict(_calib)})
+        # Push all saved settings to firmware (includes servo limits etc.)
+        n = settings_store.push_all(_hw_transport)
+        return jsonify({'ok': True, 'pushed': n, 'calib': dict(_calib)})
     except Exception as e:
         return jsonify({'ok': False, 'error': str(e)}), 500
 
@@ -1109,8 +1191,9 @@ def _generate_fallback_cfg(missions: list, macros: list) -> str:
 @app.route('/api/missions/deploy-sd', methods=['POST'])
 def api_missions_deploy_sd():
     """
-    Generate the fallback strategy and write it to the Teensy SD card.
-    Sends 'mission_write_sd <content>' (chunked) to firmware.
+    Generate the fallback strategy and push it to firmware memory.
+    (SD card removed — writes to firmware in-memory buffer via
+    mission_sd_open/line/close protocol, which now stores in RAM.)
     Returns the generated text so the UI can preview it.
     """
     if not _calib_connected():
@@ -1120,13 +1203,12 @@ def api_missions_deploy_sd():
     macros   = _load_missions_macros()
     cfg      = _generate_fallback_cfg(missions, macros)
 
-    # Write to SD via firmware command (multi-line → send line by line)
+    # Write to firmware in-memory via the legacy protocol (SD removed, now RAM-based)
     try:
         ok1, _ = _hw_transport.execute('mission_sd_open', timeout_ms=3000)
         if not ok1:
             return jsonify({'ok': False, 'error': 'mission_sd_open failed'}), 500
         for line in cfg.splitlines():
-            # Escape any special characters if needed
             escaped = line.replace('"', '\\"')
             ok2, _ = _hw_transport.execute(f'mission_sd_line {escaped}', timeout_ms=2000)
             if not ok2:
@@ -1820,6 +1902,8 @@ def _do_connect(port: str):
                         # disconnect/reconnect cycles keep updating the UI.
                         _hw_transport.on_connect(_on_hw_reconnect)
                         _hw_transport.on_disconnect(_on_hw_disconnect)
+                        # Push holOS-side settings to firmware on reconnect
+                        _push_settings_to_firmware(_hw_transport)
                 except Exception as e:
                     print(f"  [holOS] Reconnect rebuild error: {e}")
                 socketio.emit('serial_status', {
@@ -1833,6 +1917,9 @@ def _do_connect(port: str):
                 print(f"  [holOS] Reconnected — {_saved_label}")
 
             t.on_connect(_on_hw_reconnect)
+
+            # Push holOS-side settings to firmware on first connect
+            _push_settings_to_firmware(t)
 
             socketio.emit('serial_status', {
                 'ok': True, 'msg': f'Connected — {transport_label}',

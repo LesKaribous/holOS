@@ -346,7 +346,7 @@ FLASHMEM void JetsonBridge::handleRequest(Request& req) {
         return;
     }
 
-    // ── Runtime config (SD card) — handled directly, NOT via interpreter ──────
+    // ── Runtime config (in-memory) — handled directly, NOT via interpreter ────
     // These bypass os.execute() so that (a) the reply carries the actual data
     // instead of a generic "ok", and (b) dotted config keys like "servo.CA.0.min"
     // are never mangled by the expression evaluator.
@@ -371,18 +371,6 @@ FLASHMEM void JetsonBridge::handleRequest(Request& req) {
         } else {
             req.reply("err:bad_args");
         }
-        return;
-    }
-
-    if (cmd == "cfg_save") {
-        bool ok = RuntimeConfig::save();
-        req.reply(ok ? "ok" : "err:save_failed");
-        return;
-    }
-
-    if (cmd == "cfg_load") {
-        RuntimeConfig::load();
-        req.reply("ok");
         return;
     }
 

@@ -1,34 +1,21 @@
 #pragma once
 /**
- * runtime_config.h — Key-value runtime configuration stored on SD card.
+ * runtime_config.h — Key-value runtime configuration (in-memory).
  *
  * Provides a lightweight key=value store that is:
- *   - Loaded from /config.cfg on SD at boot (after SDCard::init())
- *   - Modifiable at runtime via commands (cfg_set, cfg_save, cfg_list)
- *   - Saved back to SD on demand
+ *   - Populated at runtime by holOS via cfg_set commands over the bridge
+ *   - Modifiable at runtime via commands (cfg_set, cfg_list)
+ *   - NOT persisted on-board — holOS is the source of truth for settings
  *
  * Values are stored as strings internally. Typed getters (getInt, getFloat)
  * parse on read and fall back to a caller-supplied default.
  *
  * Maximum capacity: 32 entries (fits actuator limits + headroom for future use).
- *
- * File format (/config.cfg):
- *   # comment lines ignored
- *   key=value
- *   servo.CA.0.min=110
- *   servo.CA.0.max=170
- *   motion.max_speed=2800
  */
 
 #include <Arduino.h>
 
 namespace RuntimeConfig {
-
-    /// Load /config.cfg from SD card.  Safe to call if SD is not ready (no-op).
-    void load();
-
-    /// Save all current key=value pairs to /config.cfg on SD.
-    bool save();
 
     /// Get a string value by key, or `defaultVal` if not found.
     const char* getString(const char* key, const char* defaultVal = "");

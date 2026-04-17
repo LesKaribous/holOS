@@ -112,20 +112,6 @@ SUITES: Dict[str, dict] = {
              'desc': 'Déconnexion simulée → reconnexion → sync cohérent'},
         ],
     },
-    'sdcard': {
-        'label': 'Carte SD',
-        'icon':  '💾',
-        'tests': [
-            {'id': 'sd_cfg_load',     'name': 'Chargement config',
-             'desc': 'cfg_load → ok (fichier présent ou absent)'},
-            {'id': 'sd_cfg_roundtrip','name': 'Écriture / lecture config',
-             'desc': 'cfg_set + cfg_save + cfg_load + vérification valeur'},
-            {'id': 'sd_cfg_list',     'name': 'Listage config',
-             'desc': 'cfg_list → réponse non-vide après set'},
-            {'id': 'sd_cfg_integrity','name': 'Intégrité config',
-             'desc': 'Écriture de 5 clés, sauvegarde, rechargement, toutes les clés préservées'},
-        ],
-    },
     'actuators_hw': {
         'label': 'Actionneurs',
         'icon':  '🦾',
@@ -907,69 +893,6 @@ class HardwareTestRunner:
                 f'pos=({x_after:.0f},{y_after:.0f}) Δ=({dx:.0f},{dy:.0f}) mm')
 
     # ─────────────────────────────────────────────────────────────────────────
-    # SD CARD tests
-    # ─────────────────────────────────────────────────────────────────────────
-
-    def _test_sd_cfg_load(self) -> str:
-        """cfg_load returns ok (whether config file exists or not)."""
-        ok, res = self._exec_raw('cfg_load', timeout_ms=3_000)
-        assert ok, f'cfg_load a échoué: {res}'
-        return f'cfg_load OK: {res}'
-
-    def _test_sd_cfg_roundtrip(self) -> str:
-        """Write a key, save to SD, reload, verify value is preserved."""
-        test_key   = 'test.hw.val'
-        test_value = '42'
-
-        # Set a test key
-        self._exec(f'cfg_set({test_key},{test_value})', timeout_ms=2_000)
-        # Save to SD
-        self._exec('cfg_save', timeout_ms=3_000)
-        # Reload from SD (clears in-memory store first)
-        self._exec('cfg_load', timeout_ms=3_000)
-        # Read back via cfg_list and verify
-        ok, raw = self._exec_raw('cfg_list', timeout_ms=2_000)
-        assert ok, f'cfg_list a échoué: {raw}'
-        assert test_key in raw, \
-            f'Clé {test_key!r} absente après roundtrip: {raw!r}'
-        assert test_value in raw, \
-            f'Valeur {test_value!r} absente après roundtrip: {raw!r}'
-        # Clean up: remove test key by setting empty, save
-        self._exec_raw(f'cfg_set({test_key},)', timeout_ms=2_000)
-        self._exec_raw('cfg_save', timeout_ms=3_000)
-        return f'Roundtrip OK: {test_key}={test_value} préservé'
-
-    def _test_sd_cfg_list(self) -> str:
-        """cfg_list returns a non-empty response after setting a key."""
-        self._exec(f'cfg_set(test.list,hello)', timeout_ms=2_000)
-        ok, raw = self._exec_raw('cfg_list', timeout_ms=2_000)
-        assert ok, f'cfg_list a échoué: {raw}'
-        assert 'test.list' in raw, f'Clé test.list absente dans cfg_list: {raw!r}'
-        # Clean up
-        self._exec_raw(f'cfg_set(test.list,)', timeout_ms=2_000)
-        return f'cfg_list OK: {len(raw)} chars'
-
-    def _test_sd_cfg_integrity(self) -> str:
-        """Write 5 keys, save, reload, verify all 5 are preserved."""
-        keys = {f'test.int.k{i}': str(i * 11) for i in range(5)}
-
-        # Set all keys
-        for k, v in keys.items():
-            self._exec(f'cfg_set({k},{v})', timeout_ms=2_000)
-        # Save and reload
-        self._exec('cfg_save', timeout_ms=3_000)
-        self._exec('cfg_load', timeout_ms=3_000)
-        # Verify all keys present
-        ok, raw = self._exec_raw('cfg_list', timeout_ms=2_000)
-        assert ok, f'cfg_list a échoué: {raw}'
-        missing = [k for k in keys if k not in raw]
-        assert not missing, f'Clés manquantes après intégrité: {missing}'
-        # Clean up
-        for k in keys:
-            self._exec_raw(f'cfg_set({k},)', timeout_ms=2_000)
-        self._exec_raw('cfg_save', timeout_ms=3_000)
-        return f'Intégrité OK: 5/5 clés préservées'
-
     # ─────────────────────────────────────────────────────────────────────────
     # ACTUATORS (hardware) tests
     # ─────────────────────────────────────────────────────────────────────────

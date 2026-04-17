@@ -104,12 +104,12 @@ void command_goAround(const args_t& args);
 // Motion — APF obstacle avoidance
 void command_apf(const args_t& args);
 
-// Mission SD write session (called by holOS deploy-sd)
+// Mission fallback write (in-memory, SD removed)
 void command_mission_sd_open(const args_t& args);
 void command_mission_sd_line(const args_t& args);
 void command_mission_sd_close(const args_t& args);
 
-// Mission — execute SD fallback now (for testing)
+// Mission — execute fallback
 void command_mission_run(const args_t& args);
 void command_mission_abort(const args_t& args);
 
@@ -125,11 +125,9 @@ void command_loglevel(const args_t& args);
 void command_tel(const args_t& args);
 void command_logstatus(const args_t& args);
 
-// Runtime config (SD-backed key=value)
+// Runtime config (in-memory, managed by holOS)
 void command_cfg_list(const args_t& args);
 void command_cfg_set(const args_t& args);
-void command_cfg_save(const args_t& args);
-void command_cfg_load(const args_t& args);
 
 // Actuator info (structured for UI) & runtime limit adjustment
 void command_act_info(const args_t& args);

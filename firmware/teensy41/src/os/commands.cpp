@@ -2,7 +2,6 @@
 #include "config/env.h"
 #include "config/calibration.h"
 #include "config/runtime_config.h"
-#include "services/sd/sd_card.h"
 #include "services/localisation/localisation.h"
 #include "services/motion/motion.h"
 #include "services/mission/mission_controller.h"
@@ -95,14 +94,14 @@ FLASHMEM void registerCommands() {
     CommandHandler::registerCommand("aim(x,y)",                  "Update live pursuit target (LIVE_PURSUIT only)",  command_aim);
     CommandHandler::registerCommand("aim_heading(face|off)",     "Lock robot face on travel direction (A,AB,B,…,off)", command_aim_heading);
 
-    // Mission SD write session (used by holOS deploy-to-SD)
-    CommandHandler::registerCommand("mission_sd_open",           "Open /mission_fallback.cfg for writing",     command_mission_sd_open);
-    CommandHandler::registerCommand("mission_sd_line(text)",     "Append a line to the open mission file",    command_mission_sd_line);
-    CommandHandler::registerCommand("mission_sd_close",          "Close mission file and reload strategy",     command_mission_sd_close);
+    // Mission fallback write session (in-memory, SD removed)
+    CommandHandler::registerCommand("mission_sd_open",           "Open mission buffer for writing (in-memory)", command_mission_sd_open);
+    CommandHandler::registerCommand("mission_sd_line(text)",     "Append a line to mission buffer",             command_mission_sd_line);
+    CommandHandler::registerCommand("mission_sd_close",          "Close mission buffer and parse strategy",     command_mission_sd_close);
 
-    // Mission execution (test fallback from terminal / routine)
-    CommandHandler::registerCommand("mission_run",               "Execute SD fallback strategy now",          command_mission_run);
-    CommandHandler::registerCommand("mission_abort",             "Abort running fallback strategy",           command_mission_abort);
+    // Mission execution (test fallback)
+    CommandHandler::registerCommand("mission_run",               "Execute loaded fallback strategy now",        command_mission_run);
+    CommandHandler::registerCommand("mission_abort",             "Abort running fallback strategy",             command_mission_abort);
 
     // Log & telemetry control (useful without holOS, on plain serial terminal)
     CommandHandler::registerCommand("log(source,0|1)",           "Enable/disable a service log source",       command_log);
@@ -110,11 +109,9 @@ FLASHMEM void registerCommands() {
     CommandHandler::registerCommand("tel(channel,0|1)",          "Enable/disable a telemetry channel",        command_tel);
     CommandHandler::registerCommand("logstatus",                 "Print log level + source mask + tel state", command_logstatus);
 
-    // Runtime config (SD-backed key=value store)
+    // Runtime config (in-memory, managed by holOS)
     CommandHandler::registerCommand("cfg_list",                  "Print all runtime config entries",          command_cfg_list);
     CommandHandler::registerCommand("cfg_set(key,value)",        "Set a config value at runtime",             command_cfg_set);
-    CommandHandler::registerCommand("cfg_save",                  "Save runtime config to SD card",            command_cfg_save);
-    CommandHandler::registerCommand("cfg_load",                  "Reload runtime config from SD card",        command_cfg_load);
 
     // Actuator info (structured, for holOS UI)
     CommandHandler::registerCommand("act_info(side)",            "Print servo info (id,name,min,max,pos)",    command_act_info);
@@ -642,23 +639,18 @@ FLASHMEM void command_calib_status(const args_t& args) {
     char buf[256];
     Calibration::toString(buf, sizeof(buf));
     Console::info("Calib") << "Current profile: " << buf << Console::endl;
-    Console::info("Calib") << "SD ready: " << (SDCard::isReady() ? "yes" : "no") << Console::endl;
+    Console::info("Calib") << "(calibration managed by holOS)" << Console::endl;
 }
 
 FLASHMEM void command_calib_save(const args_t& args) {
-    if (!SDCard::isReady()) {
-        Console::error("Calib") << "SD not available — insert card and reboot" << Console::endl;
-        return;
-    }
-    SDCard::saveCalibration();
+    // SD card removed — calibration is persisted holOS-side.
+    // This command is kept for backward compatibility; it logs a reminder.
+    Console::warn("Calib") << "SD removed — calibration is saved by holOS, not on-board" << Console::endl;
 }
 
 FLASHMEM void command_calib_load(const args_t& args) {
-    if (!SDCard::isReady()) {
-        Console::error("Calib") << "SD not available" << Console::endl;
-        return;
-    }
-    SDCard::loadCalibration();
+    // SD card removed — calibration is pushed by holOS on connect via cfg_set.
+    Console::warn("Calib") << "SD removed — calibration is pushed by holOS on connect" << Console::endl;
 }
 
 FLASHMEM void command_calib_reset(const args_t& args) {
@@ -1036,43 +1028,37 @@ FLASHMEM void command_apf(const args_t& args) {
 //  Mission SD write commands
 // ─────────────────────────────────────────────────────────────────────────────
 
+// ─────────────────────────────────────────────────────────────────────────────
+//  Mission fallback commands (in-memory, SD removed)
+// ─────────────────────────────────────────────────────────────────────────────
+
 FLASHMEM void command_mission_sd_open(const args_t& args) {
-    if (!SDCard::isReady()) {
-        Console::error("Mission") << "SD not ready" << Console::endl;
-        return;
-    }
-    if (MissionController::sdOpen()) {
-        Console::info("Mission") << "SD write session opened" << Console::endl;
+    if (MissionController::memOpen()) {
+        Console::info("Mission") << "Memory write session opened" << Console::endl;
     } else {
-        Console::error("Mission") << "Failed to open mission file for writing" << Console::endl;
+        Console::error("Mission") << "Failed to open memory write session" << Console::endl;
     }
 }
 
 FLASHMEM void command_mission_sd_line(const args_t& args) {
-    // Reconstruct the raw line from args (could contain commas inside strings)
     String line = "";
     for (size_t i = 0; i < args.size(); i++) {
         if (i > 0) line += ",";
         line += args[i];
     }
-    // Trim leading/trailing whitespace
     line.trim();
-    if (!MissionController::sdAppendLine(line.c_str())) {
+    if (!MissionController::memAppendLine(line.c_str())) {
         Console::error("Mission") << "Write failed — did you call mission_sd_open first?" << Console::endl;
     }
 }
 
 FLASHMEM void command_mission_sd_close(const args_t& args) {
-    if (MissionController::sdClose()) {
-        Console::info("Mission") << "Strategy loaded from SD successfully" << Console::endl;
+    if (MissionController::memClose()) {
+        Console::info("Mission") << "Strategy parsed from memory successfully" << Console::endl;
     } else {
         Console::error("Mission") << "Close failed or no commands parsed" << Console::endl;
     }
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-//  Mission execution commands (for terminal testing + fallback registration)
-// ─────────────────────────────────────────────────────────────────────────────
 
 FLASHMEM void command_mission_run(const args_t& args) {
     if (!MissionController::isLoaded()) {
@@ -1225,13 +1211,8 @@ FLASHMEM void command_cfg_set(const args_t& args) {
         Console::error("Config") << "Failed to set " << key << Console::endl;
 }
 
-FLASHMEM void command_cfg_save(const args_t& args) {
-    RuntimeConfig::save();
-}
-
-FLASHMEM void command_cfg_load(const args_t& args) {
-    RuntimeConfig::load();
-}
+// cfg_save / cfg_load removed — SD card no longer used.
+// Settings are persisted holOS-side and pushed via cfg_set on connect.
 
 // ── Actuator info (structured for holOS UI) ──────────────────────────────────
 

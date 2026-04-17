@@ -1,5 +1,4 @@
 #include "runtime_config.h"
-#include "services/sd/sd_card.h"
 #include "os/console.h"
 #include <cstring>
 
@@ -10,7 +9,6 @@ namespace RuntimeConfig {
 static constexpr int MAX_ENTRIES  = 32;
 static constexpr int MAX_KEY_LEN  = 32;
 static constexpr int MAX_VAL_LEN  = 32;
-static constexpr const char* CONFIG_PATH = "/config.cfg";
 
 struct Entry {
     char key[MAX_KEY_LEN];
@@ -39,64 +37,6 @@ static int findFreeSlot() {
 }
 
 // ── Public API ───────────────────────────────────────────────────────────────
-
-void load() {
-    // Reset store
-    for (int i = 0; i < MAX_ENTRIES; i++) s_entries[i].used = false;
-    s_count = 0;
-
-    char buf[1024];
-    if (!SDCard::load(CONFIG_PATH, buf, sizeof(buf))) {
-        Console::info("Config") << "No config file on SD — using defaults" << Console::endl;
-        return;
-    }
-
-    // Parse line by line
-    char* line = strtok(buf, "\n\r");
-    while (line) {
-        // Skip comments and empty lines
-        while (*line == ' ' || *line == '\t') line++;
-        if (*line == '#' || *line == '\0') {
-            line = strtok(nullptr, "\n\r");
-            continue;
-        }
-
-        char* eq = strchr(line, '=');
-        if (eq) {
-            *eq = '\0';
-            const char* key = line;
-            const char* val = eq + 1;
-            // Trim trailing whitespace from key
-            char* end = eq - 1;
-            while (end > key && (*end == ' ' || *end == '\t')) { *end = '\0'; end--; }
-            set(key, val);
-        }
-        line = strtok(nullptr, "\n\r");
-    }
-
-    Console::success("Config") << "Loaded " << s_count << " entries from SD" << Console::endl;
-}
-
-bool save() {
-    // Build content string
-    char buf[1024];
-    int pos = 0;
-    pos += snprintf(buf + pos, sizeof(buf) - pos, "# holOS runtime config\n");
-
-    for (int i = 0; i < MAX_ENTRIES && pos < (int)sizeof(buf) - 64; i++) {
-        if (s_entries[i].used) {
-            pos += snprintf(buf + pos, sizeof(buf) - pos, "%s=%s\n",
-                            s_entries[i].key, s_entries[i].val);
-        }
-    }
-
-    bool ok = SDCard::save(CONFIG_PATH, buf);
-    if (ok)
-        Console::success("Config") << "Saved " << s_count << " entries to SD" << Console::endl;
-    else
-        Console::error("Config") << "Failed to save config to SD" << Console::endl;
-    return ok;
-}
 
 const char* getString(const char* key, const char* defaultVal) {
     int idx = findKey(key);
@@ -156,7 +96,7 @@ void printAll() {
             Console::info("Config") << "  " << s_entries[i].key << " = " << s_entries[i].val << Console::endl;
         }
     }
-    Console::info("Config") << "SD card: " << (SDCard::isReady() ? "OK" : "NOT READY") << Console::endl;
+    Console::info("Config") << "(in-memory only — managed by holOS)" << Console::endl;
 }
 
 int serialize(char* buf, int bufSize) {

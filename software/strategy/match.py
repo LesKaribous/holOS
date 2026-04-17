@@ -214,21 +214,30 @@ def run_mission():
     # Steps execute in sequence. If a step fails → retry later.
     # If zone occupied → skip, try another mission.
 
+    # Stock A — highest priority, infinite retries (keep trying if zone occupied)
     m = planner.add_mission("stock_A", priority=10, score=150)
     m.add_step("collect_A", Timing.COLLECT_STOCK_A, block_collect_A, is_zone_A_free)
     m.add_step("store_A",   Timing.STORE_STOCK_A,   block_store_A)
+    m.set_max_retries(-1)   # infinite — never abandon, keep retrying
 
+    # Stock B — infinite retries
     m = planner.add_mission("stock_B", priority=8, score=150)
     m.add_step("collect_B", Timing.COLLECT_STOCK_B, block_collect_B, is_zone_B_free)
     m.add_step("store_B",   Timing.STORE_STOCK_B,   block_store_B)
+    m.set_max_retries(-1)   # infinite
 
+    # Thermometer — requires stock_B to be done first, infinite retries
     m = planner.add_mission("thermo_set", priority=10, score=150)
     m.add_step("thermo_set", Timing.THERMO_SET, block_thermo_set, is_zone_thermo_free)
+    m.add_dependency("stock_B")
+    m.set_max_retries(-1)   # infinite
 
     # ── Run planner ─────────────────────────────────────────────────────────
     planner.run()
 
     # ── End-of-match — go to wait point ─────────────────────────────────────
+    # Planner exits when all missions are done/abandoned OR time runs out.
+    # Either way, go to the wait point for end-of-match positioning.
     log("[Match] Going to wait point")
     # TODO: use team color to pick wait_yellow vs wait_blue
     motion.go(POI.wait_yellow.x, POI.wait_yellow.y)

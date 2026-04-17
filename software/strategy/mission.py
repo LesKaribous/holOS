@@ -7,11 +7,13 @@ Architecture:
     Mission  — ordered sequence of Steps (collect → store = one mission)
     Step     — atomic action with optional feasibility check
 
-Retry logic:
-    - FAILED missions get a cooldown (RETRY_COOLDOWN_S) before re-attempt
-    - Feasibility failures do NOT count as retries
-    - Max retries per mission (DEFAULT_MAX_RETRIES)
+Features:
+    - Retry logic with configurable max_retries (-1 = infinite)
+    - Cooldown between retries (RETRY_COOLDOWN_S)
+    - Mission dependencies: require other missions to be DONE first
+    - Feasibility checks at step level (e.g. zone occupied)
     - DONE / ABANDONED missions are removed from candidates
+    - Planner exits early when all missions are terminal
 
 Identical API in sim and real modes.
 """
@@ -19,7 +21,7 @@ Identical API in sim and real modes.
 import time
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Callable, List, Optional
+from typing import Callable, Dict, List, Optional
 
 from shared.config import BlockResult
 
@@ -48,6 +50,16 @@ class Mission:
     """
     Ordered sequence of Steps.  If any step fails, the mission fails
     and may be retried later (resuming from the failed step).
+
+    Dependencies:
+        Use requires=["mission_name"] to declare that this mission cannot
+        start until the named missions are DONE.  Checked by the Planner
+        during selection (not counted as a retry if dependency not met).
+
+    Retries:
+        max_retries = 3   → up to 3 retries after failure
+        max_retries = -1  → infinite retries (never abandoned due to retries)
+        max_retries = 0   → no retries (abandoned on first failure)
     """
 
     MAX_STEPS          = 8
@@ -64,6 +76,7 @@ class Mission:
         self.max_retries = self.DEFAULT_MAX_RETRIES
         self.current_step = 0
         self._last_attempt_t: float = 0.0
+        self.requires: List[str] = []  # names of missions that must be DONE first
 
     def add_step(self, name: str, estimated_ms: int,
                  action: Callable[[], BlockResult],
@@ -73,7 +86,13 @@ class Mission:
         return self
 
     def set_max_retries(self, n: int) -> 'Mission':
+        """Set max retries. -1 = infinite retries."""
         self.max_retries = n
+        return self
+
+    def add_dependency(self, *mission_names: str) -> 'Mission':
+        """Add dependency: this mission won't start until all named missions are DONE."""
+        self.requires.extend(mission_names)
         return self
 
     def total_estimated_ms(self) -> int:
@@ -95,6 +114,9 @@ class Mission:
         return (time.time() - self._last_attempt_t) < self.RETRY_COOLDOWN_S
 
     def can_retry(self) -> bool:
+        """True if the mission can be retried. -1 = infinite retries."""
+        if self.max_retries < 0:
+            return True  # infinite
         return self.retries < self.max_retries
 
     def mark_failed(self) -> None:
@@ -129,6 +151,7 @@ class Planner:
         self._log        = log or print
         self._stop_check = stop_check or (lambda: False)
         self._missions:  List[Mission] = []
+        self._by_name:   Dict[str, Mission] = {}
         self._safety_margin_ms = 5000
 
         # Stats
@@ -140,11 +163,26 @@ class Planner:
         m = Mission(name, priority, score)
         if len(self._missions) < self.MAX_MISSIONS:
             self._missions.append(m)
+            self._by_name[name] = m
         return m
+
+    def get_mission(self, name: str) -> Optional[Mission]:
+        """Look up a mission by name (for dependency checks)."""
+        return self._by_name.get(name)
 
     def set_safety_margin_ms(self, ms: int) -> 'Planner':
         self._safety_margin_ms = ms
         return self
+
+    # ── Dependency check ────────────────────────────────────────────────────
+
+    def _deps_satisfied(self, mission: Mission) -> bool:
+        """True if all required missions are DONE."""
+        for dep_name in mission.requires:
+            dep = self._by_name.get(dep_name)
+            if dep is None or dep.state != MissionState.DONE:
+                return False
+        return True
 
     # ── Core loop ────────────────────────────────────────────────────────────
 
@@ -161,14 +199,32 @@ class Planner:
 
             mission = self._select_next(time_left_ms)
             if mission is None:
-                # No eligible mission — wait and retry
+                # No eligible mission — check if we should exit early
                 all_terminal = all(
                     m.state in (MissionState.DONE, MissionState.ABANDONED)
                     for m in self._missions
                 )
                 if all_terminal:
-                    self._log("[Planner] All missions terminal — exiting")
+                    self._log("[Planner] All missions terminal — exiting early")
                     break
+
+                # Check if any non-terminal mission could ever become eligible:
+                # - Not on cooldown OR will come off cooldown
+                # - Has retries left OR is pending
+                # - Dependencies could still be satisfied
+                any_hope = False
+                for m in self._missions:
+                    if m.state in (MissionState.DONE, MissionState.ABANDONED):
+                        continue
+                    if m.state == MissionState.FAILED and not m.can_retry():
+                        continue
+                    any_hope = True
+                    break
+
+                if not any_hope:
+                    self._log("[Planner] No viable missions remaining — exiting early")
+                    break
+
                 time.sleep(self.IDLE_WAIT_S)
                 continue
 
@@ -196,8 +252,10 @@ class Planner:
                     self._log(f"[Planner] ✗ {mission.name} ABANDONED "
                               f"(max retries {mission.max_retries})")
                 else:
+                    retry_str = (f"{mission.retries}/∞" if mission.max_retries < 0
+                                 else f"{mission.retries}/{mission.max_retries}")
                     self._log(f"[Planner] ✗ {mission.name} FAILED "
-                              f"(retry {mission.retries}/{mission.max_retries} "
+                              f"(retry {retry_str} "
                               f"in {Mission.RETRY_COOLDOWN_S:.0f}s)")
 
         self._log(f"[Planner] Finished — score={self.total_score} "
@@ -219,6 +277,9 @@ class Planner:
                 continue
             # Skip if not enough time
             if m.total_estimated_ms() + self._safety_margin_ms > time_left_ms:
+                continue
+            # Skip if dependencies not met
+            if not self._deps_satisfied(m):
                 continue
             # Check feasibility (current step)
             if not m.is_feasible():
