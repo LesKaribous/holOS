@@ -417,6 +417,11 @@ class XBeeTransport(Transport):
                             try: cb(pos_data)
                             except Exception as e:
                                 print(f"[Transport] Telemetry callback error (p): {e}")
+                        # Legacy 'pos' alias (services/safety.py, tests, holos_cli)
+                        for cb in self._tel_subs.get('pos', []):
+                            try: cb(pos_data)
+                            except Exception as e:
+                                print(f"[Transport] Telemetry callback error (pos): {e}")
                         if motion_data is not None:
                             for cb in self._tel_subs.get('m', []):
                                 try: cb(motion_data)
@@ -437,6 +442,11 @@ class XBeeTransport(Transport):
                                 try: cb(safety_data)
                                 except Exception as e:
                                     print(f"[Transport] Telemetry callback error (s): {e}")
+                            # Legacy 'safety' alias (services/safety.py subscribes to 'safety')
+                            for cb in self._tel_subs.get('safety', []):
+                                try: cb(safety_data)
+                                except Exception as e:
+                                    print(f"[Transport] Telemetry callback error (safety): {e}")
                             for cb in self._tel_subs.get('c', []):
                                 try: cb(chrono_data)
                                 except Exception as e:
@@ -469,13 +479,22 @@ class XBeeTransport(Transport):
                     cb(data)
                 except Exception as e:
                     print(f"[Transport] Telemetry callback error: {e}")
-            # Legacy alias: 'm' → 'motion' (tests subscribe to 'motion')
+            # Legacy aliases — subscribers may use short or long names
             if ttype == 'm':
                 for cb in self._tel_subs.get('motion', []):
-                    try:
-                        cb(data)
+                    try: cb(data)
                     except Exception as e:
                         print(f"[Transport] Telemetry callback error (motion): {e}")
+            elif ttype == 'p':
+                for cb in self._tel_subs.get('pos', []):
+                    try: cb(data)
+                    except Exception as e:
+                        print(f"[Transport] Telemetry callback error (pos): {e}")
+            elif ttype == 's':
+                for cb in self._tel_subs.get('safety', []):
+                    try: cb(data)
+                    except Exception as e:
+                        print(f"[Transport] Telemetry callback error (safety): {e}")
             return
 
         if kind == 'request':
