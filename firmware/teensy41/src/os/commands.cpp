@@ -810,26 +810,12 @@ FLASHMEM void command_calib_move_open(const args_t& args) {
     // Fire the move. `async` pushes the job onto the OS stack and blocks in
     // os.execute() which internally calls os.run() until the job is no longer
     // pending. Services keep ticking during the move.
+    //
+    // NOTE: do NOT add a hasFinished() loop after this line.
+    // Motion::complete() resets the stepper controller, so hasFinished()
+    // returns false even though the move is done. The `async` macro already
+    // blocks until the Job exits pending state — that is the correct signal.
     async motion.noStall().goPolar(heading_deg, dist);
-
-    // Belt-and-braces timeout. At 30% feedrate we're looking at ~100 mm/s
-    // worst case, so 1500 mm max / 100 mm/s = 15 s. Add 5 s fuse.
-    unsigned long t0 = millis();
-    constexpr unsigned long TIMEOUT_MS = 20000UL;
-    while (!motion.hasFinished() && (millis() - t0) < TIMEOUT_MS) {
-        os.run();       // keep services alive
-        yield();
-    }
-    if (!motion.hasFinished()) {
-        Console::error("Calib") << "Motion timeout — forcing cancel" << Console::endl;
-        motion.cancel();
-        // Give the cancel a chance to unwind
-        unsigned long tc = millis();
-        while (!motion.hasFinished() && (millis() - tc) < 2000UL) {
-            os.run();
-            yield();
-        }
-    }
 
     // Restore configuration
     motion.setFeedrate(prevFeedrate);
@@ -882,23 +868,11 @@ FLASHMEM void command_calib_turn_open(const args_t& args) {
     // withOptimization(false) forbids the planner from taking the short way
     // around — important for calibration where we want the commanded angle
     // to be executed literally (e.g. 360° should mean a full turn).
+    //
+    // NOTE: `async` blocks until the Job exits pending state. No hasFinished()
+    // loop needed — Motion::complete() resets controllers, making hasFinished()
+    // return false even though the move is done.
     async motion.noStall().withOptimization(false).turn(angle_deg);
-
-    unsigned long t0 = millis();
-    constexpr unsigned long TIMEOUT_MS = 20000UL;
-    while (!motion.hasFinished() && (millis() - t0) < TIMEOUT_MS) {
-        os.run();
-        yield();
-    }
-    if (!motion.hasFinished()) {
-        Console::error("Calib") << "Turn timeout — forcing cancel" << Console::endl;
-        motion.cancel();
-        unsigned long tc = millis();
-        while (!motion.hasFinished() && (millis() - tc) < 2000UL) {
-            os.run();
-            yield();
-        }
-    }
 
     motion.setFeedrate(prevFeedrate);
     motion.enableCruiseMode();
