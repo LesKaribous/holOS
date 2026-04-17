@@ -1832,7 +1832,13 @@
 <!-- ── Floating mini-map (shown when not in Map view) ───────────────────── -->
 <div id="mini-map-wrap" title="Click to open full map">
   <canvas id="mini-canvas" width="270" height="180"></canvas>
+  <button id="btn-mini-map-hide" title="Masquer la minimap"
+          onclick="event.stopPropagation(); toggleMiniMap(false);"
+          style="position:absolute;top:4px;right:4px;background:rgba(0,0,0,.5);color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:14px;line-height:1;padding:2px 6px;">✕</button>
 </div>
+<button id="btn-mini-map-show" class="hidden" title="Afficher la minimap"
+        onclick="toggleMiniMap(true)"
+        style="position:fixed;bottom:18px;right:18px;z-index:150;background:var(--surface2,#2c3e50);color:var(--text,#ecf0f1);border:1px solid rgba(26,82,118,.5);border-radius:6px;cursor:pointer;font-size:12px;padding:6px 10px;box-shadow:0 2px 8px rgba(0,0,0,.2);">🗺 Map</button>
 
 <!-- ── Toast ─────────────────────────────────────────────────────────────── -->
 <div id="reload-toast" class="hidden"></div>

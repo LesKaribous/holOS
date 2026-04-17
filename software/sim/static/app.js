@@ -247,7 +247,7 @@ function switchView(name, btn) {
   }
 
   const miniWrap = document.getElementById('mini-map-wrap');
-  if (miniWrap) miniWrap.style.display = (name === 'map') ? 'none' : 'block';
+  if (miniWrap) miniWrap.style.display = (name === 'map' || _miniMapHidden) ? 'none' : 'block';
 
   if (name === 'map') {
     requestAnimationFrame(() => requestAnimationFrame(resizeCanvas));
@@ -280,6 +280,23 @@ document.getElementById('mini-map-wrap').addEventListener('click', () => {
   const mapBtn = document.querySelector('[data-view=map]');
   if (mapBtn) switchView('map', mapBtn);
 });
+
+// Toggle mini-map visibility
+let _miniMapHidden = false;
+function toggleMiniMap(show) {
+  _miniMapHidden = !show;
+  const wrap = document.getElementById('mini-map-wrap');
+  const btn  = document.getElementById('btn-mini-map-show');
+  if (show) {
+    // Only show if not on map view
+    const onMap = document.querySelector('.view.active')?.id === 'view-map';
+    wrap.style.display = onMap ? 'none' : 'block';
+    btn.classList.add('hidden');
+  } else {
+    wrap.style.display = 'none';
+    btn.classList.remove('hidden');
+  }
+}
 
 // Close panels when clicking elsewhere
 document.addEventListener('click', e => {
