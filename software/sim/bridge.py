@@ -332,6 +332,26 @@ class SimBridge:
             resolve_cb(uid, True, "ok")
             return
 
+        # ── Pursuit / aim ─────────────────────────────────────────────────
+        # LIVE_PURSUIT mode: Python sends aim(x,y) at ~20 Hz to steer the
+        # robot towards a moving "carrot" along the A* path. In sim we
+        # simply update the physics target each tick — no pending cb needed.
+        if cmd.startswith("aim("):
+            x, y = _parse_xy(cmd[4:-1])
+            with self._lock:
+                self._robot.target_pos = Vec2(x, y)
+                if self._motion_state != _MS.RUNNING:
+                    self._motion_state = _MS.RUNNING
+                    self._robot.is_rotating = False
+            resolve_cb(uid, True, "ok")
+            return
+
+        if cmd.startswith("motion_mode("):
+            # 0 = waypoint, 1 = pursuit. No physics change needed in sim —
+            # aim() / go() handle it. Just acknowledge.
+            resolve_cb(uid, True, "ok")
+            return
+
         # ── Safety ────────────────────────────────────────────────────────
         if cmd == "enable(SAFETY)":
             self._safety_enabled = True
