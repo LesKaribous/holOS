@@ -309,8 +309,9 @@ FLASHMEM void onRobotBoot() {
     ihm.drawBootProgress("Linking terminal...");
     os.attachService(&terminal); ihm.addBootProgress(10);
 
+    // Vision is handled entirely by holOS on the Jetson — TwinVision does not run.
     ihm.drawBootProgress("Linking vision...");
-    os.attachService(&vision); ihm.addBootProgress(10);
+    ihm.addBootProgress(10);
 
     ihm.drawBootProgress("Registering Commands...");
     registerCommands(); ihm.addBootProgress(5);

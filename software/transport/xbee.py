@@ -144,10 +144,10 @@ class XBeeTransport(Transport):
 
     def _cleanup(self) -> None:
         """Stop reader/heartbeat threads and close the serial port unconditionally."""
-        self._running    = False
-        self._connected  = False
-        self._heartbeat_ok = False
-        self._bridge_type  = None
+        self._running       = False
+        self._connected     = False
+        self._heartbeat_ok  = False
+        self._bridge_type   = None
         # Release any pending execute() calls so they don't hang
         with self._lock:
             for evt in self._pending.values():
@@ -443,27 +443,46 @@ class XBeeTransport(Transport):
         )
         self._hb_thread.start()
 
-    _HB_MAX_FAILURES = 3  # Disconnect after N consecutive failures
+    _HB_MAX_FAILURES = 5  # Disconnect after N consecutive failures
+    # Heartbeat timeout (ms) — also sent to firmware as hb(ms) so its watchdog
+    # is tuned to the same window.  XBee radio RTT is ~100–300 ms; 5 s is safe.
+    _HB_TIMEOUT_MS = 5000
 
     def _heartbeat_loop(self) -> None:
         consecutive_fails = 0
+        first_hb = True
         while self._running and self._connected:
             try:
                 # Skip heartbeat while a motion command is in progress —
-                # the Teensy is busy and we don't want the heartbeat timeout
-                # to trigger a false disconnection while waiting for DONE.
-                if not self._waiting_motion:
-                    ok, _ = self.execute("hb", timeout_ms=2000)
-                    self._heartbeat_ok = ok
-                    if ok:
-                        consecutive_fails = 0
-                    elif self._connected:
-                        consecutive_fails += 1
-                        print(f"[Transport] Heartbeat failed ({consecutive_fails}/{self._HB_MAX_FAILURES})")
-                        if consecutive_fails >= self._HB_MAX_FAILURES:
-                            print("[Transport] Too many heartbeat failures — connection lost")
-                            self.disconnect()
-                            return
+                # the Teensy is busy and we don't want a false disconnection.
+                if self._waiting_motion:
+                    time.sleep(HEARTBEAT_INTERVAL_S)
+                    continue
+
+                # On first heartbeat send hb(ms) so firmware watchdog timeout
+                # matches ours.  Subsequent beats use bare "hb" (shorter frame).
+                cmd = f"hb({self._HB_TIMEOUT_MS * self._HB_MAX_FAILURES})" if first_hb else "hb"
+                ok, resp = self.execute(cmd, timeout_ms=self._HB_TIMEOUT_MS)
+                first_hb = False
+                self._heartbeat_ok = ok
+                if ok:
+                    if consecutive_fails > 0:
+                        msg = f"[hb] ok (recovered after {consecutive_fails} fail(s))"
+                        for cb in self._tel_subs.get('_raw', []):
+                            try: cb(msg)
+                            except Exception: pass
+                    consecutive_fails = 0
+                elif self._connected:
+                    consecutive_fails += 1
+                    msg = f"[hb] FAIL {consecutive_fails}/{self._HB_MAX_FAILURES} — resp={resp!r}"
+                    print(f"[Transport] Heartbeat failed ({consecutive_fails}/{self._HB_MAX_FAILURES}): {resp!r}")
+                    for cb in self._tel_subs.get('_raw', []):
+                        try: cb(msg)
+                        except Exception: pass
+                    if consecutive_fails >= self._HB_MAX_FAILURES:
+                        print("[Transport] Too many heartbeat failures — connection lost")
+                        self.disconnect()
+                        return
             except Exception:
                 pass
             time.sleep(HEARTBEAT_INTERVAL_S)
