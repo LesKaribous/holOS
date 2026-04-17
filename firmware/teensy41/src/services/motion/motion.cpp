@@ -322,6 +322,7 @@ FLASHMEM Motion& Motion::withStall(bool on) {
 
 FLASHMEM Motion& Motion::cancelOnStall(bool on) {
     m_pendingOpts.cancelOnStall = on;
+    if (on) m_pendingOpts.stallEnabled = true;  // cancelling on stall requires stall detection
     return *this;
 }
 
