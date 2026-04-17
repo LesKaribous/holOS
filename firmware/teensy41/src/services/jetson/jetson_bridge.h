@@ -134,6 +134,12 @@ private:
     // FW-006: only push TEL:mask when dirty
     bool   m_maskDirty          = true;   ///< Push mask on first telemetry cycle
 
+    // Deferred calibration report push — set by handleRequest after a calib
+    // command's async completes, drained by run() on the next service tick.
+    // Avoids pushing T:cal from deep inside the _readPort → handleRequest
+    // call stack where buffer re-entrance and stack depth are problematic.
+    bool   m_calibReportPending = false;
+
     // ── Bridge source tracking ──────────────────────────────────────────────────
     // Updated at runtime: set to USB when a ping or framed request arrives on
     // either BRIDGE_USB or BRIDGE_XBEE. Drives _pushFrame() routing.

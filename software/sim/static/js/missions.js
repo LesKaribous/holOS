@@ -1,4 +1,4 @@
-// js/missions.js — Mission CRUD, approach picker, SD fallback deploy
+// js/missions.js — Mission CRUD, approach picker, firmware fallback deploy
 // Depends on: socket, macros, cppBlocks, poiData, STEP_DEFS,
 //   showToast, escHtml, switchView, runCppBlock
 
@@ -247,7 +247,7 @@ function missionRunOnRobot() {
   })();
 }
 
-// ── SD Fallback preview / deploy ───────────────────────────────────────────
+// ── Firmware Fallback preview / deploy ─────────────────────────────────────
 function missionPreviewFallback() {
   if (activeMissionIdx >= 0) syncActiveMissionFromUI();
   fetch('/api/missions/preview-fallback', { method: 'POST' })
@@ -266,17 +266,17 @@ function missionCloseFallbackPreview() {
   if (overlay) overlay.style.display = 'none';
 }
 
-function missionDeploySD() {
+function missionDeployFirmware() {
   if (activeMissionIdx >= 0) syncActiveMissionFromUI();
   const status = document.getElementById('mission-deploy-status');
   if (status) status.textContent = '⏳ Écriture…';
-  const btn1 = document.getElementById('btn-deploy-sd');
+  const btn1 = document.getElementById('btn-deploy-fw');
   const btn2 = document.getElementById('btn-deploy-from-preview');
   [btn1, btn2].forEach(b => b && (b.disabled = true));
-  fetch('/api/missions/deploy-sd', { method: 'POST' })
+  fetch('/api/missions/deploy-firmware', { method: 'POST' })
     .then(r => r.json())
     .then(d => {
-      const msg = d.ok ? `✓ ${d.lines} lignes écrites sur SD` : `✗ ${d.error}`;
+      const msg = d.ok ? `✓ ${d.lines} lignes déployées vers firmware` : `✗ ${d.error}`;
       if (status) status.textContent = msg;
       showToast(msg);
     }).catch(e => { if (status) status.textContent = '✗ ' + e; })

@@ -684,12 +684,12 @@
           <div id="mission-list" class="file-list"></div>
         </div>
 
-        <!-- SD Fallback panel -->
+        <!-- Firmware Fallback panel -->
         <div class="sidebar-section" style="border-top:1px solid var(--surface3);padding-top:8px">
-          <div class="sidebar-header" style="font-size:11px">SD Fallback</div>
+          <div class="sidebar-header" style="font-size:11px">Fallback firmware</div>
           <div style="display:flex;flex-direction:column;gap:5px;padding:0 6px 8px">
             <button class="btn btn-sm" onclick="missionPreviewFallback()" title="Preview the fallback.cfg that would be written">👁 Prévisualiser</button>
-            <button class="btn btn-sm green" id="btn-deploy-sd" onclick="missionDeploySD()" title="Write strategy to Teensy SD card">💾 Sauvegarder sur SD</button>
+            <button class="btn btn-sm green" id="btn-deploy-fw" onclick="missionDeployFirmware()" title="Écrire la stratégie dans la RAM du firmware">💾 Déployer vers firmware</button>
             <span class="sidebar-hint" id="mission-deploy-status"></span>
           </div>
         </div>
@@ -773,7 +773,7 @@
             <input id="mission-enabled" type="checkbox" checked
                    onchange="syncMissionEnabled()">
             <span style="font-size:11px;color:var(--text-dim);margin-left:6px">
-              Les missions désactivées sont ignorées dans la stratégie et le fallback SD.</span>
+              Les missions désactivées sont ignorées dans la stratégie et le fallback firmware.</span>
           </div>
 
         </div><!-- /mission-editor -->
@@ -787,8 +787,8 @@
                     border-bottom:1px solid var(--surface3);flex-shrink:0">
           <span style="flex:1;font-size:13px;font-weight:600">Aperçu — mission_fallback.cfg</span>
           <button class="btn-tiny" onclick="missionCloseFallbackPreview()">✕ Fermer</button>
-          <button class="btn btn-sm green" id="btn-deploy-from-preview" onclick="missionDeploySD()"
-                  title="Écrire sur la carte SD du Teensy">💾 Sauvegarder sur SD</button>
+          <button class="btn btn-sm green" id="btn-deploy-from-preview" onclick="missionDeployFirmware()"
+                  title="Écrire dans la RAM du firmware">💾 Déployer vers firmware</button>
         </div>
         <pre id="mission-fallback-text" style="
             flex:1;overflow:auto;margin:0;padding:14px;
@@ -1119,9 +1119,16 @@
         <div class="calib-toolbar">
           <button class="btn btn-sm green" id="btn-calib-apply-all" onclick="calibApplyAll()">⚡ Appliquer tout</button>
           <button class="btn btn-sm"       onclick="calibReset()">↺ Reset défauts</button>
-          <button class="btn btn-sm"       onclick="calibSave()" title="Sauvegarder sur carte SD">💾 Sauvegarder SD</button>
-          <button class="btn btn-sm"       onclick="calibLoad()" title="Charger depuis carte SD">📂 Charger SD</button>
+          <button class="btn btn-sm"       onclick="calibSave()" title="Sauvegarder sur le serveur holOS">💾 Sauvegarder</button>
+          <button class="btn btn-sm"       onclick="calibLoad()" title="Charger depuis le serveur et pousser vers firmware">📂 Charger</button>
           <span class="calib-toolbar-hint" id="calib-status-msg"></span>
+        </div>
+        <div style="background:var(--surface2);border-radius:6px;padding:8px 12px;margin-bottom:10px;font-size:11px;color:var(--text-dim);line-height:1.4">
+          <strong>Info :</strong> Les paramètres sont stockés sur le serveur holOS (settings.json) et poussés
+          vers le firmware à chaque connexion. Les valeurs Cartésiennes et Holonomes sont appliquées en RAM
+          firmware — elles persistent tant que le robot est allumé. Pour les rendre permanentes, il faut
+          mettre à jour les valeurs par défaut dans <code>calibration.h</code> et re-flasher.
+          Les scalaires OTOS sont poussés au capteur à chaque connexion.
         </div>
 
         <div class="calib-grid">
@@ -1260,6 +1267,46 @@
 
             <div id="calib-wiz-error" class="calib-measure-result hidden"
                  style="margin-top:10px; color:#c0392b"></div>
+          </div>
+
+          <!-- ── Recalage (wall probe) ────────────────────────────────── -->
+          <div class="calib-card calib-card-wide">
+            <div class="calib-card-title">Recalage — sonde murale
+              <span class="calib-card-hint">Le robot se cale contre un mur pour corriger sa position absolue</span>
+            </div>
+            <div class="calib-measure-desc">
+              Le robot aligne la face choisie vers le mur, avance lentement jusqu'au
+              contact (détection de stall), puis corrige sa position X ou Y en fonction
+              de la coordonnée connue du mur. Utile avant chaque match pour annuler
+              la dérive OTOS.
+            </div>
+
+            <div class="calib-row" style="margin-top:8px; gap:8px; flex-wrap:wrap">
+              <label class="calib-lbl">Mur</label>
+              <select id="probe-wall" class="calib-input" style="width:auto">
+                <option value="SOUTH">SOUTH (Y+, fond)</option>
+                <option value="NORTH">NORTH (Y-, bord)</option>
+                <option value="EAST">EAST (X+, droite)</option>
+                <option value="WEST">WEST (X-, gauche)</option>
+              </select>
+              <label class="calib-lbl">Face robot</label>
+              <select id="probe-face" class="calib-input" style="width:auto">
+                <option value="BC">BC (arrière)</option>
+                <option value="A">A (avant / BAU)</option>
+                <option value="AB">AB (hugger)</option>
+                <option value="CA">CA (manipulateur)</option>
+                <option value="B">B (écran)</option>
+                <option value="C">C (tirette)</option>
+              </select>
+              <label class="calib-lbl">Dégagement (mm)</label>
+              <input type="number" id="probe-clearance" class="calib-input" value="100" min="0" max="500" step="10" style="width:70px">
+              <button class="btn btn-sm green" id="btn-probe-start" onclick="probeStart()">⚡ Lancer</button>
+            </div>
+
+            <div id="probe-result" class="hidden" style="margin-top:10px;padding:8px;background:var(--surface2);border-radius:4px;font-family:monospace;font-size:12px">
+            </div>
+            <div id="probe-error" class="hidden" style="margin-top:10px;color:#c0392b;font-size:12px">
+            </div>
           </div>
 
         </div><!-- /calib-grid -->

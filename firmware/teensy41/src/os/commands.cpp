@@ -31,6 +31,7 @@ FLASHMEM void registerCommands() {
     CommandHandler::registerCommand("resume", "Resume motion", command_resume);
     CommandHandler::registerCommand("cancel", "Cancel motion", command_cancel);
     CommandHandler::registerCommand("probe(tableCompass, side)", "Probe border", command_probe);
+    CommandHandler::registerCommand("probe_open(wall,face)", "Probe border and report via T:cal", command_probe_open);
     CommandHandler::registerCommand("sleep", "Put motion to sleep", command_sleep);
     CommandHandler::registerCommand("wake", "Wake up motion", command_wake);
     CommandHandler::registerCommand("align(side,angle)", "Align to a specific side and angle", command_align);
@@ -264,6 +265,64 @@ FLASHMEM void command_probe(const args_t &args){
 
     probeBorder(tc, rc, 100);
 
+}
+
+/**
+ * probe_open(wall, face) — wall probe with telemetry report.
+ *
+ * Same as probe() but reports the corrected position via g_lastCalibReport
+ * so the Jetson bridge can push it as a T:cal frame.
+ *
+ * Args:
+ *   wall : NORTH | SOUTH | EAST | WEST (table direction)
+ *   face : A | AB | B | BC | C | CA (robot side facing the wall)
+ *
+ * The robot aligns the specified face toward the wall, approaches slowly,
+ * detects contact via stall, corrects position, and backs off.
+ *
+ * Report: kind=probe wall=<W> face=<F> x=<mm> y=<mm> theta=<rad>
+ */
+FLASHMEM void command_probe_open(const args_t& args) {
+    if (args.size() < 2) {
+        snprintf(g_lastCalibReport, sizeof(g_lastCalibReport),
+                 "kind=error msg=usage:probe_open(wall,face)");
+        return;
+    }
+
+    String wallStr = args[0];
+    String faceStr = args[1];
+
+    // Parse clearance (optional 3rd arg, default 100mm)
+    float clearance = 100.0f;
+    if (args.size() >= 3) clearance = args[2].toFloat();
+
+    TableCompass tc = TableCompass::NORTH;
+    if      (wallStr.equalsIgnoreCase("NORTH")) tc = TableCompass::NORTH;
+    else if (wallStr.equalsIgnoreCase("SOUTH")) tc = TableCompass::SOUTH;
+    else if (wallStr.equalsIgnoreCase("EAST"))  tc = TableCompass::EAST;
+    else if (wallStr.equalsIgnoreCase("WEST"))  tc = TableCompass::WEST;
+    else {
+        snprintf(g_lastCalibReport, sizeof(g_lastCalibReport),
+                 "kind=error msg=invalid_wall_%s", wallStr.c_str());
+        return;
+    }
+
+    if (!validCompassString(faceStr)) {
+        snprintf(g_lastCalibReport, sizeof(g_lastCalibReport),
+                 "kind=error msg=invalid_face_%s", faceStr.c_str());
+        return;
+    }
+    RobotCompass rc = compassFromString(faceStr);
+
+    // Execute the probe (blocking — align, approach, stall, correct, back off)
+    probeBorder(tc, rc, clearance);
+
+    // Report corrected position
+    Vec3 pos = motion.estimatedPosition();
+    snprintf(g_lastCalibReport, sizeof(g_lastCalibReport),
+             "kind=probe wall=%s face=%s x=%.1f y=%.1f theta=%.4f",
+             wallStr.c_str(), faceStr.c_str(), pos.x, pos.y, pos.c);
+    Console::info("Probe") << g_lastCalibReport << Console::endl;
 }
 
 // Motion — pass-through waypoint (used in chained via(x,y);go(x,y) commands)

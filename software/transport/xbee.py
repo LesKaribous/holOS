@@ -259,6 +259,9 @@ class XBeeTransport(Transport):
         a dedicated telemetry frame with the key=value report. This method
         performs the full round-trip and returns (ok, payload_or_error_str).
 
+        If the T:cal frame is lost (e.g. serial buffer issues), falls back to
+        polling the report via the 'get_calib_report' command.
+
         Timeouts are hard — on expiry we fire 'cancel' to stop any in-flight
         motion so the wizard can recover without a T41 reboot.
         """
@@ -276,16 +279,25 @@ class XBeeTransport(Transport):
             return (False, res)
 
         finished = self._calib_evt.wait(timeout=calib_timeout_ms / 1000.0)
-        if not finished:
-            # Telemetry never arrived — cancel any in-flight move so the user
-            # can retry immediately instead of rebooting the T41.
-            print("[Transport] calib telemetry timeout — firing cancel")
-            self.fire("cancel")
-            return (False, "calib_telemetry_timeout")
+        if finished:
+            with self._lock:
+                payload = self._calib_payload
+            return (True, payload)
 
-        with self._lock:
-            payload = self._calib_payload
-        return (True, payload)
+        # T:cal frame never arrived — try polling the report directly.
+        # The firmware may have completed the command but the telemetry frame
+        # was lost due to serial buffer issues or re-entrance.
+        print("[Transport] calib T:cal timeout — polling get_calib_report")
+        poll_ok, poll_res = self.execute("get_calib_report", timeout_ms=3000)
+        if poll_ok and poll_res and poll_res != "empty":
+            print(f"[Transport] calib report recovered via poll: {poll_res[:60]}...")
+            return (True, poll_res)
+
+        # Truly lost — cancel any in-flight move so the user
+        # can retry immediately instead of rebooting the T41.
+        print("[Transport] calib telemetry timeout — firing cancel")
+        self.fire("cancel")
+        return (False, "calib_telemetry_timeout")
 
     def fire(self, cmd: str) -> None:
         """Send a fire-and-forget command (framed, no reply awaited).

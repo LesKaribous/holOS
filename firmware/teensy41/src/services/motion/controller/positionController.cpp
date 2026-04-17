@@ -208,6 +208,19 @@ void PositionController::onUpdate() {
 
     // ---- Stall detection ----
     if (m_stallEnabled) {
+        // Velocity-based stall: compare PID commanded velocity (world frame)
+        // to OTOS measured velocity (world frame, before robot-frame rotation).
+        // Note: 'velocity' was already rotated to robot frame above,
+        // so we re-fetch from localisation for world-frame comparison.
+        Vec3 otosWorld = localisation.getVelocity();  // world frame
+        m_stall.updateVelocity(final_vel, otosWorld, dt);
+
+        // Either velocity-based or displacement-based stall sets the flag
+        if (m_stall.isStalledAny()) {
+            m_stalledFlag = true;
+        }
+
+        // Displacement-based stall (legacy, slower but catches edge cases)
         uint32_t elapsed = (uint32_t)(millis() - moveStart);
         if (m_stall.update(position, elapsed)) {
             m_stalledFlag = true;

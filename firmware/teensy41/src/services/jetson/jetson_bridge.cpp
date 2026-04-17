@@ -98,6 +98,17 @@ FLASHMEM void JetsonBridge::run() {
     // if nothing is connected it costs nothing (available() returns 0).
     _readBridgeSerial();
 
+    // Deferred calibration report — push T:cal frame from a clean context
+    // (not nested inside _readPort → handleRequest → async).
+    if (m_calibReportPending) {
+        m_calibReportPending = false;
+        const char* rep = getLastCalibReport();
+        char calBuf[240];
+        snprintf(calBuf, sizeof(calBuf), "T:cal %s",
+                 (rep && rep[0]) ? rep : "kind=error msg=no_report");
+        _pushFrame(calBuf);
+    }
+
     _checkWatchdog();
 
     // JB-1: Drain ring buffer every run() call (was: every 10ms timer)
@@ -235,6 +246,13 @@ FLASHMEM void JetsonBridge::handleRequest(Request& req) {
         char buf[128];
         snprintf(buf, sizeof(buf), "%s,%.1f,%.1f,%.2f", mstate, pos.x, pos.y, pos.c);
         req.reply(buf);
+        return;
+    }
+
+    // ── Poll last calibration report (fallback if T:cal was lost) ──────────────
+    if (cmd == "get_calib_report") {
+        const char* rep = getLastCalibReport();
+        req.reply((rep && rep[0]) ? rep : "empty");
         return;
     }
 
@@ -505,7 +523,8 @@ FLASHMEM void JetsonBridge::handleRequest(Request& req) {
     // Interpreter/Program machinery to avoid re-entrancy issues with the
     // shared os.script member), then push the report as a 'T:cal' frame.
     if (lastCmd.startsWith("calib_move_open(") ||
-        lastCmd.startsWith("calib_turn_open(")) {
+        lastCmd.startsWith("calib_turn_open(") ||
+        lastCmd.startsWith("probe_open(")) {
         // Immediate ACK — Python unblocks its reply wait at once.
         req.reply("ok");
 
@@ -523,18 +542,17 @@ FLASHMEM void JetsonBridge::handleRequest(Request& req) {
             // motion, keeping services alive through nested os.run().
             if (lastCmd.startsWith("calib_move_open(")) {
                 command_calib_move_open(args);
-            } else {
+            } else if (lastCmd.startsWith("calib_turn_open(")) {
                 command_calib_turn_open(args);
+            } else if (lastCmd.startsWith("probe_open(")) {
+                command_probe_open(args);
             }
         }
 
-        // Push the calibration report as a dedicated telemetry channel.
-        // Frame format: "T:cal <key>=<val> <key>=<val> ..."
-        const char* rep = getLastCalibReport();
-        char buf[240];
-        snprintf(buf, sizeof(buf), "T:cal %s",
-                 (rep && rep[0]) ? rep : "kind=error msg=no_report");
-        _pushFrame(buf);
+        // Defer the T:cal push to run() — pushing from here would happen
+        // deep inside _readPort → handleRequest after a long async, where
+        // stack depth and buffer re-entrance make it unreliable.
+        m_calibReportPending = true;
         return;
     }
 
@@ -775,6 +793,11 @@ FLASHMEM void JetsonBridge::_readPort(Stream& port, char* buf, uint16_t& bufLen)
                     String content = String(sep + 1);   // single unavoidable alloc
                     *sep    = ':';   // restore (good practice)
                     *crcSep = '|';
+
+                    // Reset bufLen BEFORE handleRequest — if the handler blocks
+                    // (e.g. calib async), _readPort may be called re-entrantly
+                    // and must start with a clean buffer.
+                    bufLen = 0;
 
                     m_bridgeSource = BridgeSource::USB;
                     Request req(id, content.c_str(), BridgeSource::USB);

@@ -91,9 +91,13 @@ void command_calib_otos_angular(const args_t& args);
 void command_calib_move_open(const args_t& args);
 void command_calib_turn_open(const args_t& args);
 
-// Last calibration report payload (populated by calib_move_open / calib_turn_open).
+// Probe: wall probing for position recalibration (recalage)
+void command_probe_open(const args_t& args);
+
+// Last calibration report payload (populated by calib_move_open / calib_turn_open / probe_open).
 // Format: "kind=move cmd=... axis=... dx=... dy=... dth=... od=..."
 //      or "kind=turn cmd_deg=... dth_rad=... od_deg=..."
+//      or "kind=probe wall=... face=... x=... y=... theta=..."
 //      or "kind=error msg=..."
 // Empty string if no calibration command has run yet.
 const char* getLastCalibReport();

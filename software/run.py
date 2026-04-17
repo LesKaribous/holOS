@@ -876,6 +876,59 @@ def api_calib_open_turn():
         return jsonify({'ok': False, 'error': str(e)}), 500
 
 
+@app.route('/api/calibration/probe', methods=['POST'])
+def api_calib_probe():
+    """Wall probe (recalage) — move robot to a wall and correct position.
+
+    Body: { wall: 'NORTH'|'SOUTH'|'EAST'|'WEST', face: 'A'|'AB'|'B'|'BC'|'C'|'CA',
+            clearance?: float (mm, default 100) }
+    Returns: { ok, wall, face, x, y, theta, raw }
+
+    The robot aligns the specified face toward the wall, approaches slowly,
+    detects contact via stall, corrects its absolute position to the known
+    wall coordinate, then backs off by `clearance` mm.
+    """
+    if not _calib_connected():
+        return jsonify({'ok': False, 'error': 'not connected'}), 503
+    data = request.get_json(force=True) or {}
+    wall = str(data.get('wall', '')).upper()
+    face = str(data.get('face', '')).upper()
+    clearance = float(data.get('clearance', 100))
+
+    if wall not in ('NORTH', 'SOUTH', 'EAST', 'WEST'):
+        return jsonify({'ok': False, 'error': f"wall must be NORTH/SOUTH/EAST/WEST, got '{wall}'"}), 400
+    if face not in ('A', 'AB', 'B', 'BC', 'C', 'CA'):
+        return jsonify({'ok': False, 'error': f"face must be A/AB/B/BC/C/CA, got '{face}'"}), 400
+
+    try:
+        ok, res = _hw_transport.execute_calib(
+            f'probe_open({wall},{face},{clearance:.0f})',
+            ack_timeout_ms=3000, calib_timeout_ms=45000)
+        parsed = _parse_calib_report(res)
+        kind = parsed.get('kind')
+        if not ok:
+            return jsonify({'ok': False,
+                            'error': f'transport error — raw={res!r}',
+                            'raw': res})
+        if kind == 'error':
+            return jsonify({'ok': False, 'error': _calib_error_from_raw(res), 'raw': res})
+        if kind != 'probe':
+            return jsonify({'ok': False,
+                            'error': f'unexpected reply (kind={kind!r}) — raw={res!r}',
+                            'raw': res})
+        return jsonify({
+            'ok':    True,
+            'wall':  parsed.get('wall', wall),
+            'face':  parsed.get('face', face),
+            'x':     parsed.get('x', 0.0),
+            'y':     parsed.get('y', 0.0),
+            'theta': parsed.get('theta', 0.0),
+            'raw':   res,
+        })
+    except Exception as e:
+        return jsonify({'ok': False, 'error': str(e)}), 500
+
+
 @app.route('/api/calibration/compute', methods=['POST'])
 def api_calib_compute():
     """Stateless: compute suggested calibration values from a measured move.
@@ -1202,12 +1255,12 @@ def _generate_fallback_cfg(missions: list, macros: list) -> str:
     return '\n'.join(lines) + '\n'
 
 
-@app.route('/api/missions/deploy-sd', methods=['POST'])
-def api_missions_deploy_sd():
+@app.route('/api/missions/deploy-firmware', methods=['POST'])
+@app.route('/api/missions/deploy-sd', methods=['POST'])  # legacy alias
+def api_missions_deploy_firmware():
     """
     Generate the fallback strategy and push it to firmware memory.
-    (SD card removed — writes to firmware in-memory buffer via
-    mission_sd_open/line/close protocol, which now stores in RAM.)
+    Writes to firmware in-memory buffer via mission_sd_open/line/close protocol.
     Returns the generated text so the UI can preview it.
     """
     if not _calib_connected():

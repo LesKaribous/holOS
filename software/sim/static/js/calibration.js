@@ -175,11 +175,11 @@ function calibApplyAll() {
   });
 }
 
-// ── SD card operations ─────────────────────────────────────────────────────────
+// ── Server-side save / load operations ─────────────────────────────────────────
 function calibSave() {
   fetch('/api/calibration/save', { method: 'POST' })
     .then(r => r.json())
-    .then(d => _calibStatusMsg(d.ok ? '💾 Sauvegardé sur SD' : '✗ Erreur: ' + d.error));
+    .then(d => _calibStatusMsg(d.ok ? '💾 Sauvegardé (serveur)' : '✗ Erreur: ' + d.error));
 }
 
 function calibLoad() {
@@ -192,7 +192,7 @@ function calibLoad() {
           _calibDirty = {};
           calibRefreshInputs();
         }
-        _calibStatusMsg('📂 Chargé depuis SD');
+        _calibStatusMsg('📂 Chargé et poussé vers firmware');
       } else {
         _calibStatusMsg('✗ Erreur: ' + d.error);
       }
@@ -354,7 +354,7 @@ function calibWizApply() {
     if (d.ok) {
       _calibData = Object.assign(_calibData, d.calib || {});
       calibRefreshInputs();
-      _calibStatusMsg('✓ Calibration appliquée — pensez à sauver sur SD');
+      _calibStatusMsg('✓ Calibration appliquée — pensez à sauvegarder');
       calibWizCancel();
     } else {
       _calibWizShowError(d.error || 'Application échouée');
@@ -375,6 +375,60 @@ function _calibStatusMsg(msg) {
   el.textContent = msg;
   clearTimeout(_calibStatusTimer);
   _calibStatusTimer = setTimeout(() => { el.textContent = ''; }, 5000);
+}
+
+// ── Probe / Recalage ──────────────────────────────────────────────────────────
+function probeStart() {
+  const wall      = document.getElementById('probe-wall').value;
+  const face      = document.getElementById('probe-face').value;
+  const clearance = parseFloat(document.getElementById('probe-clearance').value) || 100;
+
+  const btn = document.getElementById('btn-probe-start');
+  const resEl = document.getElementById('probe-result');
+  const errEl = document.getElementById('probe-error');
+  resEl.classList.add('hidden');
+  errEl.classList.add('hidden');
+  btn.disabled = true;
+  btn.textContent = '⏳ Approche...';
+
+  const abort   = new AbortController();
+  const abortMs = 50000;
+  const abortId = setTimeout(() => abort.abort(), abortMs);
+  const resetBtn = () => { btn.disabled = false; btn.textContent = '⚡ Lancer'; };
+
+  fetch('/api/calibration/probe', {
+    method: 'POST',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ wall, face, clearance }),
+    signal: abort.signal,
+  })
+  .then(r => r.json())
+  .then(d => {
+    clearTimeout(abortId);
+    resetBtn();
+    if (!d.ok) {
+      errEl.textContent = '✗ ' + (d.error || 'Probe failed');
+      errEl.classList.remove('hidden');
+      return;
+    }
+    const thetaDeg = (d.theta * 180 / Math.PI).toFixed(1);
+    resEl.innerHTML =
+      `<strong>Position corrigée</strong><br>` +
+      `X = ${parseFloat(d.x).toFixed(1)} mm &nbsp; Y = ${parseFloat(d.y).toFixed(1)} mm &nbsp; θ = ${thetaDeg}°<br>` +
+      `<span style="color:var(--text-dim)">Mur: ${d.wall} &nbsp; Face: ${d.face}</span>`;
+    resEl.classList.remove('hidden');
+    _calibStatusMsg(`✓ Recalage ${wall} terminé`);
+  })
+  .catch(e => {
+    clearTimeout(abortId);
+    resetBtn();
+    if (e.name === 'AbortError') {
+      errEl.textContent = `✗ Timeout (${abortMs/1000}s). Le robot est peut-être bloqué.`;
+    } else {
+      errEl.textContent = '✗ ' + e.message;
+    }
+    errEl.classList.remove('hidden');
+  });
 }
 
 // ── View activation ────────────────────────────────────────────────────────────
