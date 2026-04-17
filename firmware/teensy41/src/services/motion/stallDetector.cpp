@@ -104,6 +104,7 @@ void StallDetector::updateVelocity(const Vec3& cmdVel, const Vec3& otosVel, floa
 
     if (newStall && !m_stats.velTriggered) {
         m_stats.velTriggered = true;
+        m_stats.triggered    = true;   // unified flag for collectStats()
         Console::warn("StallDetector")
             << "Velocity stall: X=" << (m_stats.stalledX ? "STALL" : "ok")
             << " Y=" << (m_stats.stalledY ? "STALL" : "ok")
@@ -147,6 +148,7 @@ void StallDetector::updateStagnation(const Vec3& pos, const Vec3& target, float 
         if (m_stagAccumX >= config.stagTimeS && !m_stats.stalledX) {
             m_stats.stalledX = true;
             m_stats.velTriggered = true;  // so legacy displacement also sees it
+            m_stats.triggered    = true;  // unified flag for collectStats()
             Console::warn("StallDetector")
                 << "Stagnation stall X: pos=" << (int)pos.x
                 << " target=" << (int)target.x
@@ -173,6 +175,7 @@ void StallDetector::updateStagnation(const Vec3& pos, const Vec3& target, float 
         if (m_stagAccumY >= config.stagTimeS && !m_stats.stalledY) {
             m_stats.stalledY = true;
             m_stats.velTriggered = true;
+            m_stats.triggered    = true;   // unified flag for collectStats()
             Console::warn("StallDetector")
                 << "Stagnation stall Y: pos=" << (int)pos.y
                 << " target=" << (int)target.y
