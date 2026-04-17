@@ -125,9 +125,11 @@ static BlockResult blockStoreB() {
 }
 
 static BlockResult thermometer_set() {
-    async motion.goAlign(POI::thermometer_hot_yellow, RobotCompass::C, getCompassOrientation(TableCompass::WEST));
+    async motion.goAlign(POI::thermometer_hot_yellow, RobotCompass::C, getCompassOrientation(TableCompass::WEST)).withStall();
     actuators.getActuatorGroup(RobotCompass::CA).moveServoToPose((int)ServoIDs::GRABBER_RIGHT, (int) ManipulatorPose::DROP, 100);
-    async motion.go(POI::thermometer_target_yellow);
+
+    
+    async motion.go(POI::thermometer_target_yellow).withStall();
     actuators.getActuatorGroup(RobotCompass::CA).moveServoToPose((int)ServoIDs::GRABBER_RIGHT, (int) ManipulatorPose::STORE, 100);
 
     return motion.wasSuccessful() ? BlockResult::SUCCESS : BlockResult::FAILED;
@@ -239,7 +241,19 @@ FLASHMEM void match() {
     { Mission& m = planner.addMission("thermo_set", 10, 150);
       m.addStep("thermo_set", Timing::THERMO_SET, thermometer_set, isZoneThermoFree); }
 
+    
+
     planner.run();
+    
+    if(ihm.isColor(Settings::BLUE)) {
+        async motion.go(POI::wait_blue);
+    } else {
+        async motion.go(POI::wait_yellow);
+    }
+
+    if(Chrono.getTimeLeft() > 5000) {
+        waitMs(chrono.getTimeLeft() - 4500);
+    }
 
     chrono.onMatchNearlyFinished();
     chrono.onMatchFinished();

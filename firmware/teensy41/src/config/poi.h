@@ -18,6 +18,9 @@ namespace POI{
     const Vec2 thermometer_target_yellow = Vec2(700,1840);
     const Vec2 thermometer_target_blue = Vec2(2300,1840);
 
+    const Vec2 wait_yellow = Vec2(1150,850);
+    const Vec2 wait_blue = Vec2(1850,850);
+
     // ------------------------------------------
     // Garde Manger - Pantry
     const Vec2 pantry_01 = Vec2(1250,550);
