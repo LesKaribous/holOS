@@ -246,9 +246,9 @@ FLASHMEM void match() {
     planner.run();
     
     if(ihm.isColor(Settings::BLUE)) {
-        async motion.go(POI::wait_blue);
+        async motion.go(POI::wait_blue).withStall();
     } else {
-        async motion.go(POI::wait_yellow);
+        async motion.go(POI::wait_yellow).withStall();
     }
 
     if(Chrono.getTimeLeft() > 5000) {
