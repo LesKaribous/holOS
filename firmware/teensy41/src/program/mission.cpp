@@ -210,7 +210,6 @@ FLASHMEM Mission* Planner::selectNext() {
 FLASHMEM void Planner::executeMission(Mission& m) {
     m.m_lastAttemptMs = millis();
 
-    const char* retryStr = (m.m_maxRetries == Mission::INFINITE_RETRIES) ? "inf" : "";
     Console::info("Planner")
         << "[" << m.m_name << "] "
         << "step " << (int)(m.m_currentStep + 1) << "/" << (int)m.m_stepCount

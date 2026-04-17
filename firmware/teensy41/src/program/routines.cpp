@@ -3,6 +3,7 @@
 #include "config/env.h"
 #include "config/calibration.h"
 #include "config/runtime_config.h"
+#include "services/mission/mission_controller.h"
 #include "strategy.h"
 #include "block_registry.h"
 #include "config/poi.h"

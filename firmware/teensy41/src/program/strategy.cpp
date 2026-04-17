@@ -256,7 +256,7 @@ FLASHMEM void match() {
         async motion.go(POI::wait_yellow).withStall();
     }
 
-    if(Chrono.getTimeLeft() > 5000) {
+    if(chrono.getTimeLeft() > 5000) {
         waitMs(chrono.getTimeLeft() - 4500);
     }
 
@@ -530,4 +530,11 @@ FLASHMEM void stopPump(RobotCompass rc, uint16_t evPulseDuration, bool side){
     // inductance; simultaneously opening the EV adds an inrush current spike.
     // The combined voltage dip can trigger a Teensy brownout reset (= USB-CDC
     // "serial closed").  100 ms is enough for the transient to dissipate while
-    // keeping total stopPump() ti
+    // keeping total stopPump() time well within the 3 000 ms command timeout.
+    // IMPORTANT: use delay() NOT waitMs() — same reentrancy issue as startPump.
+    delay(100);
+
+    setOutput(evPin, true);    // Ouvrir l'EV
+    delay(evPulseDuration);    // Maintenir l'EV ouverte
+    setOutput(evPin, false);   // Fermer l'EV
+}
