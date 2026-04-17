@@ -122,13 +122,20 @@ class Brain:
             self.log(f"strategy/match.py load error:\n{traceback.format_exc()}")
             return False
 
-    def run_match(self) -> None:
-        """Start match strategy in a background thread."""
+    def run_match(self, on_done: Optional[Callable[[], None]] = None) -> None:
+        """Start match strategy in a background thread.
+
+        Args:
+            on_done: optional callback invoked (from the strategy thread) when
+                     the match finishes or errors out.  Use this to reset
+                     server-side match state and notify clients.
+        """
         if self._strategy_thread and self._strategy_thread.is_alive():
             self.log("Strategy already running")
             return
         if not self.load_strategy():
             return
+        self._on_match_done = on_done
         self._strategy_thread = threading.Thread(
             target=self._strategy_entry, daemon=True, name="strategy"
         )
@@ -149,6 +156,13 @@ class Brain:
             self._strategy_module.run_mission()
         except Exception:
             self.log(f"Strategy error:\n{traceback.format_exc()}")
+        finally:
+            cb = getattr(self, '_on_match_done', None)
+            if cb:
+                try:
+                    cb()
+                except Exception:
+                    self.log(f"on_match_done callback error:\n{traceback.format_exc()}")
 
     # ── Hot-reload watcher ────────────────────────────────────────────────────
 

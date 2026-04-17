@@ -154,6 +154,20 @@ _hw_serial_mode     = 'wired' # 'wired' | 'xbee'
 _match_running = False
 _match_paused  = False
 
+
+def _on_match_done():
+    """Callback fired when the strategy thread finishes (success or error).
+
+    Resets server-side state and notifies all clients so the Start button
+    returns to its idle state.  Safe to call from any thread — socketio.emit
+    is thread-safe.
+    """
+    global _match_running, _match_paused
+    _match_running = False
+    _match_paused  = False
+    brain.log('[MATCH] Strategy finished — resetting match state')
+    socketio.emit('match_state', {'running': False, 'paused': False})
+
 # ── Calibration state (Python-side cache) ─────────────────────────────────────
 # Mirrors Calibration::Current + OtosLinear/OtosAngular on the firmware.
 # Updated whenever the user sends a calibration command; reset to firmware
@@ -1594,10 +1608,7 @@ def on_run_strategy():
     _match_running = True
     _match_paused  = False
     socketio.emit('match_state', {'running': True, 'paused': False})
-    _active_brain().run_match()
-    _match_running = False
-    _match_paused  = False
-    socketio.emit('match_state', {'running': False, 'paused': False})
+    _active_brain().run_match(on_done=_on_match_done)
 
 
 @socketio.on('stop_strategy')
@@ -2341,9 +2352,26 @@ def on_match_start():
     h_ok, h_res = t.execute('health', timeout_ms=2000)
     if h_ok and 'strat=1' in (h_res or ''):
         brain.log('[MATCH] Remote strategy — starting Python brain')
-        _active_brain().run_match()
+        _active_brain().run_match(on_done=_on_match_done)
     else:
         brain.log('[MATCH] Internal strategy — C++ handles match autonomously')
+        # For strat=0 (C++ autonomous), the firmware runs the match.
+        # Watch chrono in a background thread to detect match end (~100 s).
+        def _watch_chrono():
+            global _match_running, _match_paused
+            while _match_running:
+                time.sleep(2.0)
+                try:
+                    elapsed = float(_hw_tel_data.get('chrono', '0') or '0')
+                except (ValueError, TypeError):
+                    elapsed = 0.0
+                if elapsed >= 99.5:
+                    _match_running = False
+                    _match_paused  = False
+                    brain.log('[MATCH] Chrono ≥ 100 s — match ended (C++ autonomous)')
+                    socketio.emit('match_state', {'running': False, 'paused': False})
+                    return
+        threading.Thread(target=_watch_chrono, daemon=True, name="chrono-watch").start()
 
 
 @socketio.on('match_stop')
@@ -2517,7 +2545,7 @@ def main():
             if args.auto_start and _hw_transport is not None and _hw_transport.is_connected:
                 time.sleep(0.5)
                 print("  [holOS] Auto-starting match strategy…")
-                _active_brain().run_match()
+                _active_brain().run_match(on_done=_on_match_done)
         socketio.start_background_task(_auto_connect)
 
     plat_tag = 'Jetson' if IS_JETSON else 'PC'
