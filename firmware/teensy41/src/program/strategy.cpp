@@ -39,15 +39,19 @@ static uint32_t freeStack() {
 // Offset commun factored
 static void collectStock(Vec2 target, TableCompass tc, RobotCompass rc) {
     constexpr float    APPROACH_OFFSET = 350.0f;
-    constexpr float    GRAB_OFFSET     = 210.0f;
+    constexpr float    GRAB_OFFSET     = 180.0f;
     constexpr uint32_t GRAB_DELAY_MS   = 1000;
 
     Vec2 approach = target - PolarVec(getCompassOrientation(tc) * DEG_TO_RAD, APPROACH_OFFSET).toVec2();
     Vec2 grab     = target - PolarVec(getCompassOrientation(tc) * DEG_TO_RAD, GRAB_OFFSET).toVec2();
 
+    float sidewiseoffset_dir = getCompassOrientation(RobotCompass::AB) - 90;
+    grab += PolarVec(sidewiseoffset_dir * DEG_TO_RAD, 50).toVec2(); // Offset latéral pour compenser la largeur du préhenseur
+
     actuators.grab(rc);
     async motion.goAlign(approach, rc, getCompassOrientation(tc));
-    async motion.goAlign(grab,     rc, getCompassOrientation(tc));
+    motion.cancelOnStall(true); // Le robot stack contre le mur
+    async motion.goAlign(grab,     rc, getCompassOrientation(tc)).withStall();
 
     actuators.moveElevator(rc, ElevatorPose::DOWN);
     waitMs(GRAB_DELAY_MS);
@@ -55,6 +59,7 @@ static void collectStock(Vec2 target, TableCompass tc, RobotCompass rc) {
     waitMs(GRAB_DELAY_MS);
     actuators.moveElevator(rc, ElevatorPose::STORE);
 
+    motion.cancelOnStall(false);
     safety.enable();
     motion.setFeedrate(1.0f);
     Console::info("Strategy") << "[collectStock] done      SP=" << String(freeStack()) << Console::endl;
@@ -63,15 +68,18 @@ static void collectStock(Vec2 target, TableCompass tc, RobotCompass rc) {
 // Offset commun factored
 static void storeStock(Vec2 target, TableCompass tc, RobotCompass rc) {
     constexpr float    APPROACH_OFFSET = 350.0f;
-    constexpr float    GRAB_OFFSET     = 210.0f;
+    constexpr float    GRAB_OFFSET     = 120.0f;
     constexpr uint32_t GRAB_DELAY_MS   = 1000;
 
     Vec2 approach = target - PolarVec(getCompassOrientation(tc) * DEG_TO_RAD, APPROACH_OFFSET).toVec2();
     Vec2 grab     = target - PolarVec(getCompassOrientation(tc) * DEG_TO_RAD, GRAB_OFFSET).toVec2();
+
     Vec2 grabrecal= target - PolarVec(getCompassOrientation(tc) * DEG_TO_RAD, GRAB_OFFSET-20).toVec2();
 
     async motion.goAlign(approach, rc, getCompassOrientation(tc));
-    async motion.goAlign(grab,     rc, getCompassOrientation(tc));
+    safety.disable();
+    motion.cancelOnStall(true); // Le robot stack contre le mur
+    async motion.goAlign(grab,     rc, getCompassOrientation(tc)).withStall();
 
     waitMs(GRAB_DELAY_MS);
     actuators.drop(rc);//release just enough
@@ -83,6 +91,7 @@ static void storeStock(Vec2 target, TableCompass tc, RobotCompass rc) {
     motion.setFeedrate(1.0f);
     async motion.goAlign(approach,     rc, getCompassOrientation(tc));
 
+    motion.cancelOnStall(false);
     safety.enable();
     motion.setFeedrate(1.0f);
     Console::info("Strategy") << "[storeStock] done      SP=" << String(freeStack()) << Console::endl;
@@ -104,13 +113,16 @@ static bool isColorUseful(ObjectColor color) {
     return true;
 }
 
+static bool pantryEmpty = false;
+
 static BlockResult blockCollectA() {
     collectStock(POI::stockYellow_01, TableCompass::WEST, RobotCompass::AB);
     return motion.wasSuccessful() ? BlockResult::SUCCESS : BlockResult::FAILED;
 }
 
 static BlockResult blockStoreA() {
-    storeStock(POI::pantry_03, TableCompass::WEST, RobotCompass::AB);
+    storeStock(POI::pantry_03 + pantryEmpty * Vec2(50,0), TableCompass::WEST, RobotCompass::AB);
+    pantryEmpty = true;
     return motion.wasSuccessful() ? BlockResult::SUCCESS : BlockResult::FAILED;
 }
 
@@ -120,18 +132,20 @@ static BlockResult blockCollectB() {
 }
 
 static BlockResult blockStoreB() {
-    storeStock(POI::pantry_04, TableCompass::EAST, RobotCompass::AB);
+    storeStock(POI::pantry_03 + pantryEmpty * Vec2(50,0), TableCompass::WEST, RobotCompass::AB);
+    pantryEmpty = true;
     return motion.wasSuccessful() ? BlockResult::SUCCESS : BlockResult::FAILED;
 }
 
 static BlockResult thermometer_set() {
+    motion.cancelOnStall(true);
     async motion.goAlign(POI::thermometer_hot_yellow, RobotCompass::C, getCompassOrientation(TableCompass::WEST)).withStall();
     actuators.getActuatorGroup(RobotCompass::CA).moveServoToPose((int)ServoIDs::GRABBER_RIGHT, (int) ManipulatorPose::DROP, 100);
 
     
     async motion.go(POI::thermometer_target_yellow).withStall();
     actuators.getActuatorGroup(RobotCompass::CA).moveServoToPose((int)ServoIDs::GRABBER_RIGHT, (int) ManipulatorPose::STORE, 100);
-
+    motion.cancelOnStall(false);
     return motion.wasSuccessful() ? BlockResult::SUCCESS : BlockResult::FAILED;
 }
 
@@ -254,9 +268,9 @@ FLASHMEM void match() {
     
 
     planner.run();
-    
+    Vec2 poi_y = Vec2(600,850);//TODO Remove
     if(ihm.isColor(Settings::BLUE)) {
-        async motion.go(POI::wait_blue).withStall();
+        async motion.go(poi_y /*POI::wait_blue*/).withStall();
     } else {
         async motion.go(POI::wait_yellow).withStall();
     }
@@ -277,7 +291,7 @@ FLASHMEM void waitMs(unsigned long time){
 FLASHMEM void recalage(){
     motion.engage();
     //motion.disableCruiseMode();
-    
+    motion.setFeedrate(0.3);
     waitMs(600);
 
     if(ihm.isColor(Settings::BLUE)){
