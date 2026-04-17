@@ -1,5 +1,5 @@
 #pragma once
-
+#include <Arduino.h>
 #include "pin.h"
 #include "utils/geometry.h"
 #include "os/debug/consoleLevel.h"
@@ -10,7 +10,7 @@
 #define INTERCOM_SERIAL   Serial1   // UART physique T4.1↔T4.0
 #define INTERCOM_BAUDRATE 31250
 
-#define OTOS_AUX_SERIAL Serial3
+#define OTOS_AUX_SERIAL Serial8
 
 // ── Bridge holOS / Jetson — auto-détection USB ↔ XBee ────────────────────────
 // Au boot, JetsonBridge écoute sur les deux ports :
@@ -22,7 +22,7 @@
 // buffer drain) fonctionne sans modification.
 //
 // Aucun #define de compilation nécessaire pour changer de mode.
-#include <Arduino.h>
+
 extern Stream* g_bridgeSerial;           // Defined in jetson_bridge.cpp
 #define BRIDGE_SERIAL    (*g_bridgeSerial)
 #define BRIDGE_USB       Serial          // USB-CDC — /dev/ttyACM0 / COMx
