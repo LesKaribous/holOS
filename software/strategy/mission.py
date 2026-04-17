@@ -199,32 +199,17 @@ class Planner:
 
             mission = self._select_next(time_left_ms)
             if mission is None:
-                # No eligible mission — check if we should exit early
+                # Nothing feasible right now — all terminal?
                 all_terminal = all(
                     m.state in (MissionState.DONE, MissionState.ABANDONED)
                     for m in self._missions
                 )
                 if all_terminal:
-                    self._log("[Planner] All missions terminal — exiting early")
+                    self._log("[Planner] All missions terminal — exiting")
                     break
 
-                # Check if any non-terminal mission could ever become eligible:
-                # - Not on cooldown OR will come off cooldown
-                # - Has retries left OR is pending
-                # - Dependencies could still be satisfied
-                any_hope = False
-                for m in self._missions:
-                    if m.state in (MissionState.DONE, MissionState.ABANDONED):
-                        continue
-                    if m.state == MissionState.FAILED and not m.can_retry():
-                        continue
-                    any_hope = True
-                    break
-
-                if not any_hope:
-                    self._log("[Planner] No viable missions remaining — exiting early")
-                    break
-
+                # Time remains and missions are non-terminal → wait and retry
+                # (cooldown, dependencies, zone occupied — can change)
                 time.sleep(self.IDLE_WAIT_S)
                 continue
 

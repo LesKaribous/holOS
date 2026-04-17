@@ -3,13 +3,20 @@
 
 // ============================================================
 //  Planner / Mission / Step — Planificateur de missions
-//  multi-étapes avec retry, cooldown et boucle continue.
+//  multi-étapes avec retry, cooldown, dépendances et boucle continue.
 //
 //  Concepts :
 //    Block       — action atomique (inchangé, pour BlockRegistry)
 //    Step        — une étape dans une Mission (action + feasibility)
 //    Mission     — séquence ordonnée de Steps formant un objectif
 //    Planner     — sélectionne et exécute des Missions en boucle
+//
+//  Nouveautés :
+//    - Dépendances : addDependency(&otherMission) — bloque tant que
+//      la mission requise n'est pas DONE
+//    - Retries infinis : setMaxRetries(INFINITE_RETRIES) — jamais abandonné
+//    - Sortie anticipée : si plus aucune mission n'est viable, le Planner
+//      quitte même s'il reste du temps
 //
 //  Usage :
 //      static Planner planner;
@@ -18,13 +25,18 @@
 //          .setTimeProvider([]() -> uint32_t { return chrono.getTimeLeft(); })
 //          .setSafetyMargin(5000);
 //
-//      { Mission& m = planner.addMission("stock_A", 10, 150);
-//        m.addStep("collect_A", 8000, blockCollectA, isZoneAFree);
-//        m.addStep("store_A",   8000, blockStoreA); }
+//      Mission& mA = planner.addMission("stock_A", 10, 150);
+//      mA.addStep("collect_A", 8000, blockCollectA, isZoneAFree);
+//      mA.addStep("store_A",   8000, blockStoreA);
+//      mA.setMaxRetries(Mission::INFINITE_RETRIES);
 //
-//      { Mission& m = planner.addMission("stock_B", 8, 80);
-//        m.addStep("collect_B", 6000, blockCollectB, isZoneBFree);
-//        m.addStep("store_B",   6000, blockStoreB); }
+//      Mission& mB = planner.addMission("stock_B", 8, 150);
+//      mB.addStep("collect_B", 6000, blockCollectB, isZoneBFree);
+//      mB.addStep("store_B",   6000, blockStoreB);
+//
+//      Mission& mT = planner.addMission("thermo", 10, 150);
+//      mT.addStep("thermo", 15000, blockThermo, isZoneThermoFree);
+//      mT.addDependency(mB);   // thermo requires stock_B DONE
 //
 //      planner.run();
 // ============================================================
@@ -103,7 +115,9 @@ enum class MissionState : uint8_t {
 class Mission {
 public:
     static constexpr uint8_t  MAX_STEPS          = 8;
+    static constexpr uint8_t  MAX_DEPENDENCIES   = 4;
     static constexpr uint8_t  DEFAULT_MAX_RETRIES = 3;
+    static constexpr uint8_t  INFINITE_RETRIES    = 255;  // sentinelle "jamais abandonner"
     static constexpr uint32_t RETRY_COOLDOWN_MS   = 3000;
 
     Mission() = default;
@@ -119,7 +133,12 @@ public:
     Mission& setFeasible(Block::FeasibleFn fn);
 
     /// Max retries avant abandon (défaut = 3).
+    /// Utiliser INFINITE_RETRIES (255) pour ne jamais abandonner.
     Mission& setMaxRetries(uint8_t n);
+
+    /// Ajoute une dépendance : cette mission ne peut pas démarrer
+    /// tant que `dep` n'est pas DONE.
+    Mission& addDependency(Mission& dep);
 
     // ---- Getters ----
 
@@ -138,6 +157,9 @@ public:
     /// Le cooldown après échec est-il écoulé ?
     bool isCooledDown() const;
 
+    /// Toutes les dépendances sont-elles satisfaites ?
+    bool depsSatisfied() const;
+
 private:
     friend class Planner;
 
@@ -154,6 +176,10 @@ private:
 
     MissionState m_state         = MissionState::PENDING;
     uint32_t     m_lastAttemptMs = 0;
+
+    // Dépendances : pointeurs vers les missions qui doivent être DONE
+    const Mission* m_deps[MAX_DEPENDENCIES] = {};
+    uint8_t        m_depCount = 0;
 };
 
 
@@ -165,6 +191,7 @@ private:
 //   2. Exécute ses steps séquentiellement
 //   3. Si FAIL → retry plus tard, essaie une autre
 //   4. Si toutes skippées → attend et re-check
+//   5. Si toutes les missions sont DONE/ABANDONED → sortie
 // ============================================================
 
 class Planner {
@@ -179,6 +206,9 @@ public:
 
     /// Ajoute une mission et retourne une référence pour y ajouter des steps.
     Mission& addMission(const char* name, uint8_t priority, uint16_t score);
+
+    /// Cherche une mission par nom (nullptr si non trouvée).
+    Mission* getMission(const char* name);
 
     /// Fournisseur de temps restant (ms). Sans provider → pas de contrainte temps.
     Planner& setTimeProvider(uint32_t (*fn)());
@@ -207,7 +237,7 @@ private:
     bool     canFitMission(const Mission& m) const;
     uint32_t remainingMs()                   const;
     void     executeMission(Mission& m);
-    bool     hasRetryable()                  const;
+    bool     allTerminal()                   const;
     void     logSummary()                    const;
 
     Mission    m_missions[MAX_MISSIONS];

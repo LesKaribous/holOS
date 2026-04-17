@@ -2,6 +2,7 @@
 #include "os/console.h"
 #include "os/os.h"
 #include <Arduino.h>
+#include <cstring>
 
 // Forward — defined in strategy.cpp (uses os.wait which pumps the OS loop)
 extern void waitMs(unsigned long time);
@@ -35,6 +36,15 @@ FLASHMEM Mission& Mission::setMaxRetries(uint8_t n) {
     return *this;
 }
 
+FLASHMEM Mission& Mission::addDependency(Mission& dep) {
+    if (m_depCount >= MAX_DEPENDENCIES) {
+        Console::error("Mission") << "Max dependencies atteint (" << MAX_DEPENDENCIES << ")" << Console::endl;
+        return *this;
+    }
+    m_deps[m_depCount++] = &dep;
+    return *this;
+}
+
 FLASHMEM uint32_t Mission::remainingEstimatedMs() const {
     uint32_t total = 0;
     for (uint8_t i = m_currentStep; i < m_stepCount; i++)
@@ -43,12 +53,21 @@ FLASHMEM uint32_t Mission::remainingEstimatedMs() const {
 }
 
 FLASHMEM bool Mission::canRetry() const {
+    if (m_maxRetries == INFINITE_RETRIES) return true;  // infini
     return (m_state == MissionState::FAILED) && (m_retries < m_maxRetries);
 }
 
 FLASHMEM bool Mission::isCooledDown() const {
     if (m_lastAttemptMs == 0) return true;
     return (millis() - m_lastAttemptMs) >= RETRY_COOLDOWN_MS;
+}
+
+FLASHMEM bool Mission::depsSatisfied() const {
+    for (uint8_t i = 0; i < m_depCount; i++) {
+        if (m_deps[i] && m_deps[i]->m_state != MissionState::DONE)
+            return false;
+    }
+    return true;
 }
 
 
@@ -68,6 +87,14 @@ FLASHMEM Mission& Planner::addMission(const char* name, uint8_t priority, uint16
     m.m_priority  = priority;
     m.m_score     = score;
     return m;
+}
+
+FLASHMEM Mission* Planner::getMission(const char* name) {
+    for (uint8_t i = 0; i < m_count; i++) {
+        if (strcmp(m_missions[i].m_name, name) == 0)
+            return &m_missions[i];
+    }
+    return nullptr;
 }
 
 FLASHMEM Planner& Planner::setTimeProvider(uint32_t (*fn)()) {
@@ -113,15 +140,15 @@ FLASHMEM void Planner::run() {
         Mission* m = selectNext();
 
         if (!m) {
-            // Rien de faisable maintenant — on a encore des missions retryables ?
-            if (hasRetryable()) {
-                // Attendre un peu : les zones peuvent se libérer, les cooldowns expirer
-                waitMs(IDLE_WAIT_MS);
-                continue;
+            // Rien de faisable maintenant — toutes terminales ?
+            if (allTerminal()) {
+                Console::info("Planner") << "Toutes les missions sont terminees." << Console::endl;
+                break;
             }
-            // Tout est DONE ou ABANDONED
-            Console::info("Planner") << "Plus de missions disponibles." << Console::endl;
-            break;
+            // Il reste du temps et des missions non terminales → attendre
+            // (cooldown, dépendances, zone occupée — ça peut changer)
+            waitMs(IDLE_WAIT_MS);
+            continue;
         }
 
         // ── Execute ─────────────────────────────────────────────
@@ -155,6 +182,10 @@ FLASHMEM Mission* Planner::selectNext() {
         if (!canFitMission(m))
             continue;
 
+        // Skip si dépendances non satisfaites
+        if (!m.depsSatisfied())
+            continue;
+
         // Mission-level feasibility
         if (m.m_feasible && !m.m_feasible())
             continue;
@@ -179,11 +210,13 @@ FLASHMEM Mission* Planner::selectNext() {
 FLASHMEM void Planner::executeMission(Mission& m) {
     m.m_lastAttemptMs = millis();
 
+    const char* retryStr = (m.m_maxRetries == Mission::INFINITE_RETRIES) ? "inf" : "";
     Console::info("Planner")
         << "[" << m.m_name << "] "
         << "step " << (int)(m.m_currentStep + 1) << "/" << (int)m.m_stepCount
         << "  prio=" << (int)m.m_priority
-        << "  retry=" << (int)m.m_retries << "/" << (int)m.m_maxRetries
+        << "  retry=" << (int)m.m_retries << "/"
+        << (m.m_maxRetries == Mission::INFINITE_RETRIES ? "inf" : String((int)m.m_maxRetries).c_str())
         << "  restant ~" << (int)(remainingMs() == UINT32_MAX ? 9999 : remainingMs() / 1000) << "s"
         << Console::endl;
 
@@ -216,8 +249,10 @@ FLASHMEM void Planner::executeMission(Mission& m) {
         if (!step.action) {
             Console::error("Planner") << "  [" << step.name << "] null action!" << Console::endl;
             m.m_retries++;
-            m.m_state = (m.m_retries >= m.m_maxRetries)
-                ? MissionState::ABANDONED : MissionState::FAILED;
+            if (m.m_maxRetries != Mission::INFINITE_RETRIES && m.m_retries >= m.m_maxRetries)
+                m.m_state = MissionState::ABANDONED;
+            else
+                m.m_state = MissionState::FAILED;
             return;
         }
 
@@ -236,8 +271,10 @@ FLASHMEM void Planner::executeMission(Mission& m) {
                 << "  [" << step.name << "] FAILED (" << (int)(elapsed / 1000) << "s)"
                 << Console::endl;
             m.m_retries++;
-            m.m_state = (m.m_retries >= m.m_maxRetries)
-                ? MissionState::ABANDONED : MissionState::FAILED;
+            if (m.m_maxRetries != Mission::INFINITE_RETRIES && m.m_retries >= m.m_maxRetries)
+                m.m_state = MissionState::ABANDONED;
+            else
+                m.m_state = MissionState::FAILED;
             return;
         }
 
@@ -276,13 +313,13 @@ FLASHMEM uint32_t Planner::remainingMs() const {
     return (t > 0) ? (uint32_t)t : 0u;
 }
 
-FLASHMEM bool Planner::hasRetryable() const {
+FLASHMEM bool Planner::allTerminal() const {
     for (uint8_t i = 0; i < m_count; i++) {
         const Mission& m = m_missions[i];
-        if (m.m_state == MissionState::PENDING) return true;
-        if (m.m_state == MissionState::FAILED && m.canRetry()) return true;
+        if (m.m_state != MissionState::DONE && m.m_state != MissionState::ABANDONED)
+            return false;
     }
-    return false;
+    return true;
 }
 
 
@@ -306,6 +343,8 @@ FLASHMEM void Planner::logSummary() const {
             << "  [" << tag << "] " << m.m_name
             << "  step " << (int)m.m_currentStep << "/" << (int)m.m_stepCount
             << "  retries=" << (int)m.m_retries
+            << (m.m_depCount > 0 ? "  deps=" : "")
+            << (m.m_depCount > 0 ? String((int)m.m_depCount).c_str() : "")
             << Console::endl;
     }
 
