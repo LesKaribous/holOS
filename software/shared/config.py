@@ -199,6 +199,16 @@ class POI:
     startBlue         = Vec2(2700, 1700)
     startBlue_ninja   = Vec2(2285, 100)
 
+    # ── Thermometer ──────────────────────────────────────────────────────────
+    thermometer_hot_yellow    = Vec2(200,  1840)
+    thermometer_hot_blue      = Vec2(2800, 1840)
+    thermometer_target_yellow = Vec2(700,  1840)
+    thermometer_target_blue   = Vec2(2300, 1840)
+
+    # ── Wait points (end-of-match holding) ─────────────────────────────────
+    wait_yellow = Vec2(1150, 850)
+    wait_blue   = Vec2(1850, 850)
+
     # ── Garde Manger (Pantry) — 10 shared points ────────────────────────────
     pantry_01 = Vec2(1250, 550)
     pantry_02 = Vec2(1750, 550)

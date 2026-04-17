@@ -3,6 +3,8 @@ strategy/match.py — Match strategy (HOT-RELOADABLE).
 ═══════════════════════════════════════════════════════════════════════════════
 CDR 2025 — Thème "Cooking"
 
+Mirrors firmware strategy.cpp — same missions, same actions, same order.
+
 Architecture headless : ce fichier tourne IDENTIQUEMENT
   - sur le vrai Jetson (via XBeeTransport)
   - dans le simulateur (via VirtualTransport)
@@ -13,200 +15,183 @@ Les globals sont injectés par brain.py :
     safety    — SafetyService   (enable, disable)
     chrono    — ChronoService   (time_left_s, is_running)
     occupancy — OccupancyService (is_zone_occupied)
+    actuators — ActuatorsService (grab, drop, store, move_elevator, …)
     log(msg)  — console / UI log
-
-Rappel API motion :
-    motion.go(x, y)                        → bloquant jusqu'à arrivée
-    motion.via(x1,y1).go(x2,y2)            → passage de via-point
-    motion.cancel_on_collide().go(x, y)    → annule si obstacle
-    motion.feedrate(0.7).go(x, y)          → vitesse réduite
-    motion.turn(angle_deg)                 → rotation absolue
-    motion.was_successful()  → bool
 ═══════════════════════════════════════════════════════════════════════════════
 """
 
 # ── Globals injectés ──────────────────────────────────────────────────────────
-# motion, vision, safety, chrono, occupancy, log
+# motion, vision, safety, chrono, occupancy, actuators, log
 
+import math
 import time
 from shared.config import (
-    POI, Vec2, ObjectColor, RobotCompass, BlockResult,
+    POI, Vec2, RobotCompass, TableCompass, ElevatorPose,
+    BlockResult, compass_deg, polar_vec,
 )
-from strategy.mission import Mission, Block
+from strategy.mission import Planner
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  Utilitaires
+#  Timing estimates (ms) — mirrors firmware Timing namespace
 # ─────────────────────────────────────────────────────────────────────────────
+
+class Timing:
+    COLLECT_STOCK_A = 8000
+    COLLECT_STOCK_B = 6000
+    STORE_STOCK_A   = 8000
+    STORE_STOCK_B   = 6000
+    THERMO_SET      = 15000
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Helpers — mirrors firmware collectStock / storeStock
+# ─────────────────────────────────────────────────────────────────────────────
+
+APPROACH_OFFSET = 350.0
+GRAB_OFFSET     = 210.0
+GRAB_DELAY_MS   = 1000
+ZONE_CHECK_RADIUS = 450.0
+
 
 def wait_ms(ms: int):
     time.sleep(ms / 1000.0)
 
 
-def is_food(color: ObjectColor) -> bool:
-    """On accepte toute couleur identifiable (l'objet est là)."""
-    return color not in (ObjectColor.UNKNOWN, ObjectColor.NONE)
-
-
-def move_safe(x: float, y: float, feedrate: float = 1.0) -> bool:
-    """Déplacement avec cancel_on_collide. Retourne True si succès."""
-    motion.cancel_on_collide().feedrate(feedrate).go(x, y)
-    return motion.was_successful()
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-#  Blocs de mission — Yellow team
-# ─────────────────────────────────────────────────────────────────────────────
-
-def block_stock_yellow_01() -> BlockResult:
+def collect_stock(target: Vec2, tc: TableCompass, rc: RobotCompass) -> BlockResult:
     """
-    Ramasser à stockYellow_01 (mur gauche, bas).
-    Approche frontale depuis la zone de départ.
+    Mirrors firmware collectStock().
+    Approach → goAlign → grab → elevator down → store → elevator store.
     """
-    log("→ stockYellow_01")
-    target = POI.stockYellow_01
-    approach = Vec2(target.x + 300, target.y)
+    tc_angle = compass_deg(tc)
+    offset_vec = polar_vec(tc_angle, 1.0)  # unit direction
+    approach = target - offset_vec * APPROACH_OFFSET
+    grab_pos = target - offset_vec * GRAB_OFFSET
 
-    if occupancy.is_zone_occupied(target, 400):
-        log("  Zone occupée — skip")
-        return BlockResult.FAILED
-
-    if not move_safe(approach.x, approach.y):
-        return BlockResult.FAILED
-
-    if not move_safe(target.x + 80, target.y, feedrate=0.55):
-        return BlockResult.FAILED
-
-    log("  stockYellow_01 ✓")
-    wait_ms(400)
-    return BlockResult.SUCCESS
-
-
-def block_stock_yellow_02() -> BlockResult:
-    """
-    Ramasser à stockYellow_02 (mur gauche, haut).
-    """
-    log("→ stockYellow_02")
-    target = POI.stockYellow_02
-    approach = Vec2(target.x + 350, target.y)
-
-    if occupancy.is_zone_occupied(target, 400):
-        log("  Zone occupée — skip")
-        return BlockResult.FAILED
-
-    # Via intermédiaire pour éviter les obstacles du centre
-    motion.cancel_on_collide().via(300, 1200).go(approach.x, approach.y)
+    actuators.grab(rc)
+    motion.go_align(approach, rc, tc_angle)
     if not motion.was_successful():
         return BlockResult.FAILED
 
-    if not move_safe(target.x + 80, target.y, feedrate=0.55):
+    motion.go_align(grab_pos, rc, tc_angle)
+    if not motion.was_successful():
         return BlockResult.FAILED
 
-    log("  stockYellow_02 ✓")
-    wait_ms(400)
+    actuators.move_elevator(rc, ElevatorPose.DOWN)
+    wait_ms(GRAB_DELAY_MS)
+    actuators.store(rc)
+    wait_ms(GRAB_DELAY_MS)
+    actuators.move_elevator(rc, ElevatorPose.STORE)
+
+    safety.enable()
+    motion.set_feedrate(1.0)
+    log("[collectStock] done")
     return BlockResult.SUCCESS
 
 
-def block_stock_yellow_04() -> BlockResult:
+def store_stock(target: Vec2, tc: TableCompass, rc: RobotCompass) -> BlockResult:
     """
-    Ramasser à stockYellow_04 (centre, zone partagée avec le garde-manger).
+    Mirrors firmware storeStock().
+    Approach → goAlign → drop → grab (open wide) → slow recal → retreat.
     """
-    log("→ stockYellow_04")
-    target = POI.stockYellow_04
-    approach = Vec2(target.x, target.y - 350)
+    tc_angle = compass_deg(tc)
+    offset_vec = polar_vec(tc_angle, 1.0)
+    approach  = target - offset_vec * APPROACH_OFFSET
+    grab_pos  = target - offset_vec * GRAB_OFFSET
+    grab_recal = target - offset_vec * (GRAB_OFFSET - 20)
 
-    if occupancy.is_zone_occupied(target, 450):
-        log("  Zone occupée — skip")
+    motion.go_align(approach, rc, tc_angle)
+    if not motion.was_successful():
         return BlockResult.FAILED
 
-    if not move_safe(approach.x, approach.y):
+    motion.go_align(grab_pos, rc, tc_angle)
+    if not motion.was_successful():
         return BlockResult.FAILED
 
-    if not move_safe(target.x, target.y - 80, feedrate=0.5):
-        return BlockResult.FAILED
+    wait_ms(GRAB_DELAY_MS)
+    actuators.drop(rc)     # release just enough
+    wait_ms(GRAB_DELAY_MS)
+    actuators.grab(rc)     # open wide
 
-    log("  stockYellow_04 ✓")
-    wait_ms(400)
+    motion.set_feedrate(0.3)
+    motion.go_align(grab_recal, rc, tc_angle)
+    motion.set_feedrate(1.0)
+    motion.go_align(approach, rc, tc_angle)
+
+    safety.enable()
+    motion.set_feedrate(1.0)
+    log("[storeStock] done")
     return BlockResult.SUCCESS
-
-
-def block_deposit_pantry_03() -> BlockResult:
-    """
-    Déposer dans le garde-manger pantry_03 (mur gauche, centre).
-    Point partagé — priorité si c'est le plus proche de notre stock.
-    """
-    log("→ Dépôt pantry_03")
-    target = POI.pantry_03
-    approach = Vec2(target.x + 400, target.y)
-
-    if not move_safe(approach.x, approach.y, feedrate=0.9):
-        return BlockResult.FAILED
-
-    if not move_safe(target.x + 120, target.y, feedrate=0.5):
-        return BlockResult.FAILED
-
-    log("  Dépôt pantry_03 ✓")
-    wait_ms(300)
-    return BlockResult.SUCCESS
-
-
-def block_deposit_pantry_04() -> BlockResult:
-    """
-    Déposer dans le garde-manger pantry_04 (côté jaune).
-    """
-    log("→ Dépôt pantry_04")
-    target = POI.pantry_04
-
-    if not move_safe(target.x, target.y - 350, feedrate=0.9):
-        return BlockResult.FAILED
-
-    if not move_safe(target.x, target.y - 120, feedrate=0.5):
-        return BlockResult.FAILED
-
-    log("  Dépôt pantry_04 ✓")
-    wait_ms(300)
-    return BlockResult.SUCCESS
-
-
-def block_deposit_fridge() -> BlockResult:
-    """
-    Déposer dans le frigo jaune FridgeYellow_01 (zone de score, haut).
-    Approche prudente car zone de bord de table.
-    """
-    log("→ Dépôt FridgeYellow_01")
-    target = POI.FridgeYellow_01
-    approach = Vec2(target.x, target.y - 300)
-
-    if not move_safe(approach.x, approach.y, feedrate=0.8):
-        return BlockResult.FAILED
-
-    if not move_safe(target.x, target.y - 100, feedrate=0.4):
-        return BlockResult.FAILED
-
-    log("  Frigo déposé ✓")
-    wait_ms(500)
-    return BlockResult.SUCCESS
-
-
-def block_return_to_base() -> BlockResult:
-    """Retour à la zone de départ avant fin de match."""
-    log("→ Retour base")
-    motion.feedrate(1.0).go(POI.startYellow.x, POI.startYellow.y)
-    if motion.was_successful():
-        log("  Base ✓")
-        return BlockResult.SUCCESS
-    return BlockResult.FAILED
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  Feasibility checks
+#  Block actions — one per objective
 # ─────────────────────────────────────────────────────────────────────────────
 
-def stock_01_ok() -> bool: return not occupancy.is_zone_occupied(POI.stockYellow_01, 400)
-def stock_02_ok() -> bool: return not occupancy.is_zone_occupied(POI.stockYellow_02, 400)
-def stock_04_ok() -> bool: return not occupancy.is_zone_occupied(POI.stockYellow_04, 450)
-def pantry_03_ok() -> bool: return not occupancy.is_zone_occupied(POI.pantry_03, 350)
-def pantry_04_ok() -> bool: return not occupancy.is_zone_occupied(POI.pantry_04, 350)
+def block_collect_A() -> BlockResult:
+    return collect_stock(POI.stockYellow_01, TableCompass.WEST, RobotCompass.AB)
+
+
+def block_store_A() -> BlockResult:
+    return store_stock(POI.pantry_03, TableCompass.WEST, RobotCompass.AB)
+
+
+def block_collect_B() -> BlockResult:
+    return collect_stock(POI.stockYellow_02, TableCompass.WEST, RobotCompass.AB)
+
+
+def block_store_B() -> BlockResult:
+    return store_stock(POI.pantry_04, TableCompass.EAST, RobotCompass.AB)
+
+
+def block_thermo_set() -> BlockResult:
+    """
+    Mirrors firmware thermometer_set().
+    goAlign to hot → servo drop → go target → servo store.
+    """
+    # goAlign to thermometer hot position, side C facing WEST
+    motion.go_align(POI.thermometer_hot_yellow, RobotCompass.C,
+                    compass_deg(TableCompass.WEST))
+    if not motion.was_successful():
+        return BlockResult.FAILED
+
+    # Servo: GRABBER_RIGHT to DROP pose (servo id=0, pose=0)
+    actuators.servo(RobotCompass.CA, 0, 0)  # DROP position
+
+    motion.go(POI.thermometer_target_yellow.x, POI.thermometer_target_yellow.y)
+    if not motion.was_successful():
+        return BlockResult.FAILED
+
+    # Servo: GRABBER_RIGHT to STORE pose (servo id=0, pose=2)
+    actuators.servo(RobotCompass.CA, 0, 2)  # STORE position
+
+    log("[thermo_set] done")
+    return BlockResult.SUCCESS
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Feasibility checks — mirrors firmware isZone*Free()
+# ─────────────────────────────────────────────────────────────────────────────
+
+def is_zone_A_free() -> bool:
+    occ = occupancy.is_zone_occupied(POI.stockYellow_01, ZONE_CHECK_RADIUS)
+    if occ:
+        log("Zone A occupied — skip")
+    return not occ
+
+
+def is_zone_B_free() -> bool:
+    occ = occupancy.is_zone_occupied(POI.stockYellow_02, ZONE_CHECK_RADIUS)
+    if occ:
+        log("Zone B occupied — skip")
+    return not occ
+
+
+def is_zone_thermo_free() -> bool:
+    occ = occupancy.is_zone_occupied(POI.thermometer_hot_yellow, ZONE_CHECK_RADIUS)
+    if occ:
+        log("Zone Thermo occupied — skip")
+    return not occ
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -221,69 +206,36 @@ def run_mission():
     safety.enable()
     motion.set_feedrate(1.0)
 
-    m = Mission(chrono, log)
-    m.set_mode(Mission.PRIORITY)
-    m.set_safety_margin_ms(6000)   # garantir retour base les 6 dernières secondes
+    planner = Planner(chrono, log)
+    planner.set_safety_margin_ms(5000)
 
-    # ── Collecte ──────────────────────────────────────────────────────────────
-    m.add(Block(
-        name     = "stock_yellow_01",
-        priority = 10,
-        score    = 40,
-        time_ms  = 7000,
-        action   = block_stock_yellow_01,
-        feasible = stock_01_ok,
-    ))
-    m.add(Block(
-        name     = "stock_yellow_04",
-        priority = 9,
-        score    = 40,
-        time_ms  = 8000,
-        action   = block_stock_yellow_04,
-        feasible = stock_04_ok,
-    ))
-    m.add(Block(
-        name     = "stock_yellow_02",
-        priority = 7,
-        score    = 40,
-        time_ms  = 9000,
-        action   = block_stock_yellow_02,
-        feasible = stock_02_ok,
-    ))
+    # ── Mission definitions — mirrors firmware match() ──────────────────────
+    # Each mission = complete objective (collect → store).
+    # Steps execute in sequence. If a step fails → retry later.
+    # If zone occupied → skip, try another mission.
 
-    # ── Dépôts ────────────────────────────────────────────────────────────────
-    m.add(Block(
-        name     = "deposit_pantry_03",
-        priority = 8,
-        score    = 60,
-        time_ms  = 6000,
-        action   = block_deposit_pantry_03,
-        feasible = pantry_03_ok,
-    ))
-    m.add(Block(
-        name     = "deposit_pantry_04",
-        priority = 6,
-        score    = 50,
-        time_ms  = 6000,
-        action   = block_deposit_pantry_04,
-        feasible = pantry_04_ok,
-    ))
-    m.add(Block(
-        name     = "deposit_fridge",
-        priority = 5,
-        score    = 80,
-        time_ms  = 7000,
-        action   = block_deposit_fridge,
-    ))
+    m = planner.add_mission("stock_A", priority=10, score=150)
+    m.add_step("collect_A", Timing.COLLECT_STOCK_A, block_collect_A, is_zone_A_free)
+    m.add_step("store_A",   Timing.STORE_STOCK_A,   block_store_A)
 
-    # ── Retour ────────────────────────────────────────────────────────────────
-    m.add(Block(
-        name     = "return_to_base",
-        priority = 1,
-        score    = 10,
-        time_ms  = 5000,
-        action   = block_return_to_base,
-    ))
+    m = planner.add_mission("stock_B", priority=8, score=150)
+    m.add_step("collect_B", Timing.COLLECT_STOCK_B, block_collect_B, is_zone_B_free)
+    m.add_step("store_B",   Timing.STORE_STOCK_B,   block_store_B)
 
-    m.run()
-    log(f"══ Fin mission — {m.total_score} pts ══")
+    m = planner.add_mission("thermo_set", priority=10, score=150)
+    m.add_step("thermo_set", Timing.THERMO_SET, block_thermo_set, is_zone_thermo_free)
+
+    # ── Run planner ─────────────────────────────────────────────────────────
+    planner.run()
+
+    # ── End-of-match — go to wait point ─────────────────────────────────────
+    log("[Match] Going to wait point")
+    # TODO: use team color to pick wait_yellow vs wait_blue
+    motion.go(POI.wait_yellow.x, POI.wait_yellow.y)
+
+    # Wait until ~4.5s before end
+    time_left = chrono.time_left_s()
+    if time_left > 5.0:
+        wait_ms(int((time_left - 4.5) * 1000))
+
+    log(f"══ Match finished — {planner.total_score} pts ══")
