@@ -19,8 +19,8 @@ void StallDetector::begin(const Vec3& startPos, const Vec3& target) {
     m_velStallAccumRot = 0.0f;
 
     // Reset error stagnation accumulators
-    m_stagLastErrX = fabsf(target.x - startPos.x);
-    m_stagLastErrY = fabsf(target.y - startPos.y);
+    m_stagBaseErrX = fabsf(target.x - startPos.x);
+    m_stagBaseErrY = fabsf(target.y - startPos.y);
     m_stagAccumX   = 0.0f;
     m_stagAccumY   = 0.0f;
     m_stagWindowAccumX = 0.0f;
@@ -36,8 +36,8 @@ void StallDetector::reset() {
     m_velStallAccumX   = 0.0f;
     m_velStallAccumY   = 0.0f;
     m_velStallAccumRot = 0.0f;
-    m_stagLastErrX = 0.0f;
-    m_stagLastErrY = 0.0f;
+    m_stagBaseErrX = 0.0f;
+    m_stagBaseErrY = 0.0f;
     m_stagAccumX   = 0.0f;
     m_stagAccumY   = 0.0f;
     m_stagWindowAccumX = 0.0f;
@@ -118,35 +118,43 @@ void StallDetector::updateVelocity(const Vec3& cmdVel, const Vec3& otosVel, floa
 // ============================================================
 //  Error stagnation detection (called at PID rate ~500 Hz)
 //
-//  Per-axis: every STAG_SNAPSHOT_PERIOD, check if the PID error
-//  has decreased by at least stagMoveMm since last snapshot.
-//    - If error did NOT decrease AND error > stagErrorMm:
-//      accumulate stagnation time.
-//    - If error decreased: reset accumulator.
+//  Per-axis: every STAG_SNAPSHOT_PERIOD (100 ms), check if the
+//  PID error has decreased from a BASELINE captured when the
+//  stagnation period started.
 //
-//  When accumulated stagnation time exceeds stagTimeS → stalled.
+//  Using a baseline instead of snapshot-to-snapshot comparison
+//  prevents oscillation (robot vibrating ±1-2 mm against a wall)
+//  from resetting the accumulator.  The oscillation averages out
+//  relative to the baseline.
 //
-//  Key insight: during normal acceleration the robot moves slowly
-//  but the error is DECREASING. When stuck against an obstacle
-//  the error stays CONSTANT (or oscillates). This avoids false
-//  positives during ramp-up that a raw position-delta check
-//  would produce.
+//  Flow:
+//    1. Error > stagErrorMm → start tracking (capture baseline)
+//    2. Every 100 ms: if (baseline - currentError) < stagMoveMm
+//       → no real progress → accumulate stagnation time
+//    3. If real progress detected → reset accumulator + baseline
+//    4. After stagTimeS of stagnation → stall on that axis
 // ============================================================
 
 void StallDetector::updateStagnation(const Vec3& pos, const Vec3& target, float dt) {
     // ── X axis ──
     m_stagWindowAccumX += dt;
     if (m_stagWindowAccumX >= STAG_SNAPSHOT_PERIOD) {
-        float errorX     = fabsf(target.x - pos.x);
-        float errReduced = m_stagLastErrX - errorX;   // positive = making progress
-        m_stagLastErrX   = errorX;
+        float errorX = fabsf(target.x - pos.x);
         m_stagWindowAccumX = 0.0f;
 
-        if (errReduced < config.stagMoveMm && errorX > config.stagErrorMm) {
-            // Error didn't decrease enough — stagnating
-            m_stagAccumX += STAG_SNAPSHOT_PERIOD;
+        if (errorX > config.stagErrorMm) {
+            // Capture baseline when stagnation period starts
+            if (m_stagAccumX == 0.0f) m_stagBaseErrX = errorX;
+
+            float progress = m_stagBaseErrX - errorX;  // positive = getting closer
+            if (progress < config.stagMoveMm) {
+                m_stagAccumX += STAG_SNAPSHOT_PERIOD;
+            } else {
+                // Real progress — reset and re-baseline
+                m_stagAccumX = 0.0f;
+            }
         } else {
-            m_stagAccumX = 0.0f;
+            m_stagAccumX = 0.0f;  // error too small, settling
         }
 
         if (m_stagAccumX >= config.stagTimeS && !m_stats.stalledX) {
@@ -154,9 +162,9 @@ void StallDetector::updateStagnation(const Vec3& pos, const Vec3& target, float 
             m_stats.velTriggered = true;
             m_stats.triggered    = true;
             Console::warn("StallDetector")
-                << "Stagnation stall X: pos=" << (int)pos.x
-                << " target=" << (int)target.x
-                << " error=" << (int)errorX << "mm"
+                << "Stagnation X: err=" << (int)errorX
+                << " base=" << (int)m_stagBaseErrX
+                << " progress=" << (int)(m_stagBaseErrX - errorX)
                 << " stag=" << (int)(m_stagAccumX * 1000) << "ms"
                 << Console::endl;
         }
@@ -165,13 +173,18 @@ void StallDetector::updateStagnation(const Vec3& pos, const Vec3& target, float 
     // ── Y axis ──
     m_stagWindowAccumY += dt;
     if (m_stagWindowAccumY >= STAG_SNAPSHOT_PERIOD) {
-        float errorY     = fabsf(target.y - pos.y);
-        float errReduced = m_stagLastErrY - errorY;
-        m_stagLastErrY   = errorY;
+        float errorY = fabsf(target.y - pos.y);
         m_stagWindowAccumY = 0.0f;
 
-        if (errReduced < config.stagMoveMm && errorY > config.stagErrorMm) {
-            m_stagAccumY += STAG_SNAPSHOT_PERIOD;
+        if (errorY > config.stagErrorMm) {
+            if (m_stagAccumY == 0.0f) m_stagBaseErrY = errorY;
+
+            float progress = m_stagBaseErrY - errorY;
+            if (progress < config.stagMoveMm) {
+                m_stagAccumY += STAG_SNAPSHOT_PERIOD;
+            } else {
+                m_stagAccumY = 0.0f;
+            }
         } else {
             m_stagAccumY = 0.0f;
         }
@@ -181,9 +194,9 @@ void StallDetector::updateStagnation(const Vec3& pos, const Vec3& target, float 
             m_stats.velTriggered = true;
             m_stats.triggered    = true;
             Console::warn("StallDetector")
-                << "Stagnation stall Y: pos=" << (int)pos.y
-                << " target=" << (int)target.y
-                << " error=" << (int)errorY << "mm"
+                << "Stagnation Y: err=" << (int)errorY
+                << " base=" << (int)m_stagBaseErrY
+                << " progress=" << (int)(m_stagBaseErrY - errorY)
                 << " stag=" << (int)(m_stagAccumY * 1000) << "ms"
                 << Console::endl;
         }
