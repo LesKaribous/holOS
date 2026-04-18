@@ -30,7 +30,7 @@ public:
     SINGLETON(Localisation)
 
 private :
-    float m_scale         = 0.9714f;
+    float m_scale         = 1.143834f;
     float m_angular_scale = 1.0f;
     bool m_use_IMU = false;
     bool m_connected = false;

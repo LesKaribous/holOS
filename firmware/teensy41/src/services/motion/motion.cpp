@@ -87,7 +87,7 @@ FLASHMEM void Motion::onRunning() {
     // Default 10 s, configurable via cfg_set(motion.timeout_ms, value).
     // Set to 0 to disable.
     {
-        uint32_t timeoutMs = (uint32_t)RuntimeConfig::getInt("motion.timeout_ms", 10000);
+        uint32_t timeoutMs = 5000;//(uint32_t)RuntimeConfig::getInt("motion.timeout_ms", 10000);
         if (timeoutMs > 0 && (millis() - m_moveStartMs) > timeoutMs) {
             Console::error("Motion") << "Move timeout (" << (int)timeoutMs
                                      << " ms) — canceling" << Console::endl;

@@ -50,7 +50,7 @@ namespace ActuatorPresets{
         Pin::Servo::Servo_AB_2,    //gripper servo
 
         //positions
-        20, //gripper_store,
+        10, //gripper_store,
         90, //gripper_grab,
         40, //gripper_drop,
         155, //lift_up,
