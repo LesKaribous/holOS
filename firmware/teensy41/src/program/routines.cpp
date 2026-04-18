@@ -351,6 +351,8 @@ FLASHMEM void onRobotBoot() {
     ihm.playTone(1174.66, 120);
     ihm.playTone(1318.51, 200);
     ihm.playTone(1760.00, 250);
+
+    actuators.moveElevator(RobotCompass::CA, ElevatorPose::UP);
 }
 
 

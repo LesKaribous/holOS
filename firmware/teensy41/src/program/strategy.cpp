@@ -41,17 +41,20 @@ static void collectStock(Vec2 target, TableCompass tc, RobotCompass rc) {
     constexpr float    APPROACH_OFFSET = 350.0f;
     constexpr float    GRAB_OFFSET     = 180.0f;
     constexpr uint32_t GRAB_DELAY_MS   = 1000;
+    const float sideOffset = 0;
 
     Vec2 approach = target - PolarVec(getCompassOrientation(tc) * DEG_TO_RAD, APPROACH_OFFSET).toVec2();
     Vec2 grab     = target - PolarVec(getCompassOrientation(tc) * DEG_TO_RAD, GRAB_OFFSET).toVec2();
 
-    float sidewiseoffset_dir = getCompassOrientation(RobotCompass::AB) - 90;
-    grab += PolarVec(sidewiseoffset_dir * DEG_TO_RAD, 50).toVec2(); // Offset latéral pour compenser la largeur du préhenseur
+    float sidewiseoffset_dir = getCompassOrientation(TableCompass::SOUTH);
+
+    approach += PolarVec(sidewiseoffset_dir * DEG_TO_RAD, sideOffset).toVec2(); // Offset latéral pour compenser la largeur du préhenseur
+    grab += PolarVec(sidewiseoffset_dir * DEG_TO_RAD, sideOffset).toVec2(); // Offset latéral pour compenser la largeur du préhenseur
 
     actuators.grab(rc);
     async motion.goAlign(approach, rc, getCompassOrientation(tc));
     motion.cancelOnStall(true); // Le robot stack contre le mur
-    async motion.goAlign(grab,     rc, getCompassOrientation(tc)).withStall();
+    async motion.withStall().goAlign(grab,     rc, getCompassOrientation(tc));
 
     actuators.moveElevator(rc, ElevatorPose::DOWN);
     waitMs(GRAB_DELAY_MS);
@@ -67,19 +70,25 @@ static void collectStock(Vec2 target, TableCompass tc, RobotCompass rc) {
 
 // Offset commun factored
 static void storeStock(Vec2 target, TableCompass tc, RobotCompass rc) {
-    constexpr float    APPROACH_OFFSET = 350.0f;
+    constexpr float    APPROACH_OFFSET = 450.0f;
     constexpr float    GRAB_OFFSET     = 120.0f;
     constexpr uint32_t GRAB_DELAY_MS   = 1000;
+    constexpr float  sideOffset   = 0;
 
     Vec2 approach = target - PolarVec(getCompassOrientation(tc) * DEG_TO_RAD, APPROACH_OFFSET).toVec2();
     Vec2 grab     = target - PolarVec(getCompassOrientation(tc) * DEG_TO_RAD, GRAB_OFFSET).toVec2();
-
     Vec2 grabrecal= target - PolarVec(getCompassOrientation(tc) * DEG_TO_RAD, GRAB_OFFSET-20).toVec2();
 
+    float sidewiseoffset_dir = getCompassOrientation(TableCompass::SOUTH);
+    approach += PolarVec(sidewiseoffset_dir * DEG_TO_RAD, sideOffset).toVec2(); // Offset latéral pour compenser la largeur du préhenseur
+    grab += PolarVec(sidewiseoffset_dir * DEG_TO_RAD, sideOffset).toVec2(); // Offset latéral pour compenser la largeur du préhenseur
+    grabrecal += PolarVec(sidewiseoffset_dir * DEG_TO_RAD, sideOffset).toVec2(); // Offset latéral pour compenser la largeur du préhenseur
+
+    
     async motion.goAlign(approach, rc, getCompassOrientation(tc));
     safety.disable();
-    motion.cancelOnStall(true); // Le robot stack contre le mur
-    async motion.goAlign(grab,     rc, getCompassOrientation(tc)).withStall();
+    motion.setFeedrate(0.3f);
+    async motion.goAlign(grab,     rc, getCompassOrientation(tc));
 
     waitMs(GRAB_DELAY_MS);
     actuators.drop(rc);//release just enough
@@ -116,39 +125,88 @@ static bool isColorUseful(ObjectColor color) {
 static bool pantryEmpty = false;
 
 static BlockResult blockCollectA() {
-    collectStock(POI::stockYellow_01, TableCompass::WEST, RobotCompass::AB);
+    if(ihm.isColor(Settings::BLUE)) {
+        collectStock(POI::stockBlue_01, TableCompass::EAST, RobotCompass::AB);
+    } else {
+        collectStock(POI::stockYellow_01, TableCompass::WEST, RobotCompass::AB);
+    }
+
     return motion.wasSuccessful() ? BlockResult::SUCCESS : BlockResult::FAILED;
 }
 
 static BlockResult blockStoreA() {
-    storeStock(POI::pantry_03 + pantryEmpty * Vec2(50,0), TableCompass::WEST, RobotCompass::AB);
+    if(ihm.isColor(Settings::BLUE)) {
+        storeStock(POI::pantry_07 + Vec2(0,25) + pantryEmpty * Vec2(50,0), TableCompass::EAST, RobotCompass::AB);
+    } else {
+        storeStock(POI::pantry_03 + Vec2(0,25) + pantryEmpty * Vec2(50,0), TableCompass::WEST, RobotCompass::AB);
+    }
+    
+    
     pantryEmpty = true;
     return motion.wasSuccessful() ? BlockResult::SUCCESS : BlockResult::FAILED;
 }
 
 static BlockResult blockCollectB() {
-    collectStock(POI::stockYellow_02, TableCompass::WEST, RobotCompass::AB);
+
+    if(ihm.isColor(Settings::BLUE)) {
+        collectStock(POI::stockBlue_02+ Vec2(0,40), TableCompass::EAST, RobotCompass::AB);
+    } else {
+        collectStock(POI::stockYellow_02+ Vec2(0,40), TableCompass::WEST, RobotCompass::AB);
+    }
+
     return motion.wasSuccessful() ? BlockResult::SUCCESS : BlockResult::FAILED;
 }
 
 static BlockResult blockStoreB() {
-    storeStock(POI::pantry_03 + pantryEmpty * Vec2(50,0), TableCompass::WEST, RobotCompass::AB);
+    if(ihm.isColor(Settings::BLUE)) {
+        storeStock(POI::pantry_07 + Vec2(0,25) + pantryEmpty * Vec2(50,0), TableCompass::EAST, RobotCompass::AB);
+    } else {
+        storeStock(POI::pantry_03 + Vec2(0,25) + pantryEmpty * Vec2(50,0), TableCompass::WEST, RobotCompass::AB);
+    }
+
     pantryEmpty = true;
     return motion.wasSuccessful() ? BlockResult::SUCCESS : BlockResult::FAILED;
 }
 
 static BlockResult thermometer_set() {
     motion.cancelOnStall(true);
-    async motion.goAlign(POI::thermometer_hot_yellow, RobotCompass::C, getCompassOrientation(TableCompass::WEST)).withStall();
-    actuators.getActuatorGroup(RobotCompass::CA).moveServoToPose((int)ServoIDs::GRABBER_RIGHT, (int) ManipulatorPose::DROP, 100);
+
+    if(ihm.isColor(Settings::BLUE)) {
+        async motion.withStall().goAlign(POI::thermometer_hot_blue, RobotCompass::C, getCompassOrientation(TableCompass::SOUTH));
+    } else {
+        async motion.withStall().goAlign(POI::thermometer_hot_yellow, RobotCompass::C, getCompassOrientation(TableCompass::WEST));
+    }
 
     
-    async motion.go(POI::thermometer_target_yellow).withStall();
+    actuators.getActuatorGroup(RobotCompass::CA).moveServoToPose((int)ServoIDs::GRABBER_RIGHT, (int) ManipulatorPose::DROP, 100);
+
+    if(ihm.isColor(Settings::BLUE)) {
+        async motion.withStall().go(POI::thermometer_hot_blue);
+    } else {
+        async motion.withStall().go(POI::thermometer_hot_yellow);
+    }
+
+    if(ihm.isColor(Settings::BLUE)) {
+        async motion.withStall().go(POI::thermometer_target_blue);
+    } else {
+        async motion.withStall().go(POI::thermometer_target_yellow);
+    }
+
     actuators.getActuatorGroup(RobotCompass::CA).moveServoToPose((int)ServoIDs::GRABBER_RIGHT, (int) ManipulatorPose::STORE, 100);
     motion.cancelOnStall(false);
-    return motion.wasSuccessful() ? BlockResult::SUCCESS : BlockResult::FAILED;
+    return BlockResult::SUCCESS;
 }
 
+static BlockResult blockCollectB() {
+
+    if(ihm.isColor(Settings::BLUE)) {
+        collectStock(POI::stockBlue_02+ Vec2(0,40), TableCompass::EAST, RobotCompass::AB);
+    } else {
+        collectStock(POI::stockYellow_02+ Vec2(0,40), TableCompass::WEST, RobotCompass::AB);
+    }
+
+    return motion.wasSuccessful() ? BlockResult::SUCCESS : BlockResult::FAILED;
+}
 
 // ============================================================
 //  Conditions de faisabilité
@@ -199,7 +257,7 @@ FLASHMEM void registerBlocks() {
     reg.add("store_A",   10, 150, Timing::STORE_STOCK_A,   blockStoreA);
     reg.add("collect_B",   10, 150, Timing::COLLECT_STOCK_B,   blockCollectB, isZoneBFree);
     reg.add("store_B",   10, 150, Timing::STORE_STOCK_B,   blockStoreB, isZoneBFree);
-    reg.add("thermo_set", 10, 150, Timing::THERMO_SET,   thermometer_set, isZoneThermoFree);
+    reg.add("thermo_set", 8, 150, Timing::THERMO_SET,   thermometer_set, isZoneThermoFree);
     // reg.add("collect_B", 8, 80, Timing::COLLECT_STOCK_B, blockCollectB, isZoneBFree);
     // reg.add("store_B",   8, 80, Timing::STORE_STOCK_B,   blockStoreB);
 }
@@ -218,7 +276,7 @@ FLASHMEM void registerBlocks() {
 FLASHMEM void match() {
     Console::info("Strategy") << "match() entry  SP=" << String(freeStack()) << Console::endl;
 
-    motion.setFeedrate(1.0f);
+    motion.setFeedrate(0.6f);
     motion.enableCruiseMode();
 
     // Ensure PCA9685 pump driver is initialized even if recalage() was
@@ -266,13 +324,25 @@ FLASHMEM void match() {
       m.setMaxRetries(Mission::INFINITE_RETRIES); }
 
     
+      //Sortir zone départ 350 550
+    if(ihm.isColor(Settings::BLUE)) {
+        async motion.go(Vec2(3000-350,550));
+    } else {
+        async motion.go(Vec2(350,550));
+    }
 
     planner.run();
     Vec2 poi_y = Vec2(600,850);//TODO Remove
-    if(ihm.isColor(Settings::BLUE)) {
-        async motion.go(poi_y /*POI::wait_blue*/).withStall();
-    } else {
-        async motion.go(POI::wait_yellow).withStall();
+
+    bool success = false;
+    for(int i = 0; i < 5; i++){
+        if(ihm.isColor(Settings::BLUE)) {
+            async motion.go(poi_y /*POI::wait_blue*/);
+        } else {
+            async motion.go(POI::wait_yellow);
+        }
+        success = motion.wasSuccessful();
+        if(success) break;
     }
 
     if(chrono.getTimeLeft() > 5000) {
@@ -295,9 +365,10 @@ FLASHMEM void recalage(){
     waitMs(600);
 
     if(ihm.isColor(Settings::BLUE)){
-        motion.setAbsPosition(Vec3( Vec2(3000-125,145), -90 * DEG_TO_RAD));
+        
+        motion.setAbsPosition(Vec3( Vec2(3000-140,125), 150 * DEG_TO_RAD));
         motion.goAlign(Vec2(3000-350, 300), RobotCompass::AB, getCompassOrientation(TableCompass::WEST));
-
+        actuators.moveElevator(RobotCompass::CA, ElevatorPose::DOWN);
         /*
         motion.setFeedrate(0.2);
         probeBorder(TableCompass::SOUTH, RobotCompass::BC,100);
@@ -313,7 +384,7 @@ FLASHMEM void recalage(){
         //motion.setAbsPosition(Vec3(POI::b2, motion.getOrientation()));
 
     }else{
-        motion.setAbsPosition(Vec3(125, 145 ,-90 * DEG_TO_RAD));
+        motion.setAbsPosition(Vec3(140, 125 ,-90 * DEG_TO_RAD));
         motion.goAlign(Vec2(350, 300), RobotCompass::AB, getCompassOrientation(TableCompass::EAST));
         /*
         motion.setFeedrate(0.2);
