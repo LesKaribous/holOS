@@ -18,11 +18,11 @@ void StallDetector::begin(const Vec3& startPos, const Vec3& target) {
     m_velStallAccumY   = 0.0f;
     m_velStallAccumRot = 0.0f;
 
-    // Reset stagnation accumulators
-    m_stagLastX  = startPos.x;
-    m_stagLastY  = startPos.y;
-    m_stagAccumX = 0.0f;
-    m_stagAccumY = 0.0f;
+    // Reset error stagnation accumulators
+    m_stagLastErrX = fabsf(target.x - startPos.x);
+    m_stagLastErrY = fabsf(target.y - startPos.y);
+    m_stagAccumX   = 0.0f;
+    m_stagAccumY   = 0.0f;
     m_stagWindowAccumX = 0.0f;
     m_stagWindowAccumY = 0.0f;
 }
@@ -36,10 +36,10 @@ void StallDetector::reset() {
     m_velStallAccumX   = 0.0f;
     m_velStallAccumY   = 0.0f;
     m_velStallAccumRot = 0.0f;
-    m_stagLastX  = 0.0f;
-    m_stagLastY  = 0.0f;
-    m_stagAccumX = 0.0f;
-    m_stagAccumY = 0.0f;
+    m_stagLastErrX = 0.0f;
+    m_stagLastErrY = 0.0f;
+    m_stagAccumX   = 0.0f;
+    m_stagAccumY   = 0.0f;
     m_stagWindowAccumX = 0.0f;
     m_stagWindowAccumY = 0.0f;
 }
@@ -116,39 +116,43 @@ void StallDetector::updateVelocity(const Vec3& cmdVel, const Vec3& otosVel, floa
 }
 
 // ============================================================
-//  Position stagnation detection (called at PID rate ~500 Hz)
+//  Error stagnation detection (called at PID rate ~500 Hz)
 //
-//  Per-axis: every STAG_SNAPSHOT_PERIOD, check if position has
-//  moved more than stagMoveMm since last snapshot.
-//    - If NOT moved AND remaining error > stagErrorMm:
+//  Per-axis: every STAG_SNAPSHOT_PERIOD, check if the PID error
+//  has decreased by at least stagMoveMm since last snapshot.
+//    - If error did NOT decrease AND error > stagErrorMm:
 //      accumulate stagnation time.
-//    - If moved: reset accumulator.
+//    - If error decreased: reset accumulator.
 //
 //  When accumulated stagnation time exceeds stagTimeS → stalled.
 //
-//  This catches low-speed stalls where the velocity mismatch
-//  detector fails because commanded velocity is below its threshold.
+//  Key insight: during normal acceleration the robot moves slowly
+//  but the error is DECREASING. When stuck against an obstacle
+//  the error stays CONSTANT (or oscillates). This avoids false
+//  positives during ramp-up that a raw position-delta check
+//  would produce.
 // ============================================================
 
 void StallDetector::updateStagnation(const Vec3& pos, const Vec3& target, float dt) {
     // ── X axis ──
     m_stagWindowAccumX += dt;
     if (m_stagWindowAccumX >= STAG_SNAPSHOT_PERIOD) {
-        float deltaX = fabsf(pos.x - m_stagLastX);
-        float errorX = fabsf(target.x - pos.x);
-        m_stagLastX = pos.x;
+        float errorX     = fabsf(target.x - pos.x);
+        float errReduced = m_stagLastErrX - errorX;   // positive = making progress
+        m_stagLastErrX   = errorX;
         m_stagWindowAccumX = 0.0f;
 
-        if (deltaX < config.stagMoveMm && errorX > config.stagErrorMm) {
+        if (errReduced < config.stagMoveMm && errorX > config.stagErrorMm) {
+            // Error didn't decrease enough — stagnating
             m_stagAccumX += STAG_SNAPSHOT_PERIOD;
         } else {
             m_stagAccumX = 0.0f;
         }
 
         if (m_stagAccumX >= config.stagTimeS && !m_stats.stalledX) {
-            m_stats.stalledX = true;
-            m_stats.velTriggered = true;  // so legacy displacement also sees it
-            m_stats.triggered    = true;  // unified flag for collectStats()
+            m_stats.stalledX     = true;
+            m_stats.velTriggered = true;
+            m_stats.triggered    = true;
             Console::warn("StallDetector")
                 << "Stagnation stall X: pos=" << (int)pos.x
                 << " target=" << (int)target.x
@@ -161,21 +165,21 @@ void StallDetector::updateStagnation(const Vec3& pos, const Vec3& target, float 
     // ── Y axis ──
     m_stagWindowAccumY += dt;
     if (m_stagWindowAccumY >= STAG_SNAPSHOT_PERIOD) {
-        float deltaY = fabsf(pos.y - m_stagLastY);
-        float errorY = fabsf(target.y - pos.y);
-        m_stagLastY = pos.y;
+        float errorY     = fabsf(target.y - pos.y);
+        float errReduced = m_stagLastErrY - errorY;
+        m_stagLastErrY   = errorY;
         m_stagWindowAccumY = 0.0f;
 
-        if (deltaY < config.stagMoveMm && errorY > config.stagErrorMm) {
+        if (errReduced < config.stagMoveMm && errorY > config.stagErrorMm) {
             m_stagAccumY += STAG_SNAPSHOT_PERIOD;
         } else {
             m_stagAccumY = 0.0f;
         }
 
         if (m_stagAccumY >= config.stagTimeS && !m_stats.stalledY) {
-            m_stats.stalledY = true;
+            m_stats.stalledY     = true;
             m_stats.velTriggered = true;
-            m_stats.triggered    = true;   // unified flag for collectStats()
+            m_stats.triggered    = true;
             Console::warn("StallDetector")
                 << "Stagnation stall Y: pos=" << (int)pos.y
                 << " target=" << (int)target.y

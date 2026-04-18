@@ -52,8 +52,8 @@ public:
         float    velRotMinRadS  = 0.3f;    // minimum commanded rot speed (rad/s)
         float    velRotMaxRadS  = 0.1f;    // OTOS rot speed below this = "not turning" (rad/s)
 
-        // Position stagnation — catches low-speed stalls
-        float    stagMoveMm     = 1.5f;    // position must move at least this much per window
+        // Error stagnation — catches low-speed stalls
+        float    stagMoveMm     = 0.5f;    // error must decrease by at least this much per 100ms window
         float    stagTimeS      = 0.40f;   // stagnation duration to trigger stall (s)
         float    stagErrorMm    = 3.0f;    // minimum PID error to consider (ignore settling noise)
     };
@@ -113,11 +113,12 @@ private:
     float m_velStallAccumY   = 0.0f;
     float m_velStallAccumRot = 0.0f;
 
-    // Position stagnation accumulators
-    float m_stagLastX  = 0.0f;   // snapshot position at start of current window
-    float m_stagLastY  = 0.0f;
-    float m_stagAccumX = 0.0f;   // time spent stagnating on X
-    float m_stagAccumY = 0.0f;
+    // Error stagnation accumulators — tracks whether PID error is decreasing.
+    // If error doesn't decrease by stagMoveMm per window → stagnating.
+    float m_stagLastErrX = 0.0f;  // snapshot of |error| at start of window
+    float m_stagLastErrY = 0.0f;
+    float m_stagAccumX   = 0.0f;  // time spent stagnating on X
+    float m_stagAccumY   = 0.0f;
     float m_stagWindowAccumX = 0.0f;  // time since last snapshot (X)
     float m_stagWindowAccumY = 0.0f;
     static constexpr float STAG_SNAPSHOT_PERIOD = 0.10f;  // re-snapshot every 100ms
