@@ -428,12 +428,18 @@ FLASHMEM void command_stall_probe(const args_t& args) {
     // 1) Align face toward wall
     async motion.noStall().align(rc, getCompassOrientation(tc));
 
-    // 2) Approach phase (relative, no stall — just get close to the wall)
+    // 2) Approach phase (relative, border-snap enabled).
+    //    If clearance is too large and the robot hits the wall during
+    //    approach, borderSnap corrects the position and completes the move
+    //    instead of pushing forever with noStall().
     motion.setRelative();
-    async motion.noStall().goPolar(getCompassOrientation(rc), clearance);
+    async motion.withBorderSnap().goPolar(getCompassOrientation(rc), clearance);
 
-    // 3) Probe phase — advance with stall detection, stop on contact
-    motion.cancelOnStall(true);
+    // 3) Probe phase — advance with stall detection, stop on contact.
+    //    Explicitly disable borderSnap so the move CANCELS on stall
+    //    instead of snapping (we want the raw stall position for calibration).
+    motion.withBorderSnap(false);   // clear global default if active
+    motion.cancelOnStall(true);     // sets stallEnabled + cancelOnStall
     async motion.goPolar(getCompassOrientation(rc), degagement + 100.0f);  // overshoot target — stall will cancel
     motion.cancelOnStall(false);
 

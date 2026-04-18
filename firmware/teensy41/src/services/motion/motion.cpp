@@ -83,6 +83,21 @@ FLASHMEM void Motion::onRunning() {
         return;
     }
 
+    // ── Move timeout — safety net against stuck moves ────────────────
+    // Default 10 s, configurable via cfg_set(motion.timeout_ms, value).
+    // Set to 0 to disable.
+    {
+        uint32_t timeoutMs = (uint32_t)RuntimeConfig::getInt("motion.timeout_ms", 10000);
+        if (timeoutMs > 0 && (millis() - m_moveStartMs) > timeoutMs) {
+            Console::error("Motion") << "Move timeout (" << (int)timeoutMs
+                                     << " ms) — canceling" << Console::endl;
+            clearWaypoints();
+            if (current_move_cruised) cruise_controller.cancel();
+            else                      stepper_controller.cancel();
+            return;
+        }
+    }
+
     // Stall handling — three modes (checked in priority order):
     //
     //  1) borderSnap: if stalled near a table border → snap position to the
