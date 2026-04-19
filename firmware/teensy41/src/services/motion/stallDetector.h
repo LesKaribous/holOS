@@ -102,11 +102,13 @@ public:
     // Clear stall state on a single axis (after border snap) to prevent re-trigger.
     // Also recomputes velTriggered so the legacy displacement check doesn't re-fire.
     void clearStalledX() {
-        m_stats.stalledX = false; m_velStallAccumX = 0.0f; m_stagAccumX = 0.0f;
+        m_stats.stalledX = false; m_velStallAccumX = 0.0f;
+        m_stagAccumX = 0.0f; m_stagBaseErrX = 0.0f;
         m_stats.velTriggered = m_stats.stalledX || m_stats.stalledY || m_stats.stalledRot;
     }
     void clearStalledY() {
-        m_stats.stalledY = false; m_velStallAccumY = 0.0f; m_stagAccumY = 0.0f;
+        m_stats.stalledY = false; m_velStallAccumY = 0.0f;
+        m_stagAccumY = 0.0f; m_stagBaseErrY = 0.0f;
         m_stats.velTriggered = m_stats.stalledX || m_stats.stalledY || m_stats.stalledRot;
     }
 
@@ -131,12 +133,14 @@ private:
     float m_velStallAccumRot = 0.0f;
 
     // Error stagnation accumulators — tracks whether PID error is decreasing.
-    // If error doesn't decrease by stagMoveMm per window → stagnating.
-    float m_stagLastErrX = 0.0f;  // snapshot of |error| at start of window
-    float m_stagLastErrY = 0.0f;
+    // Compares current error to a BASELINE captured when stagnation started,
+    // not to the previous snapshot. This prevents oscillation (robot vibrating
+    // against a wall) from resetting the accumulator.
+    float m_stagBaseErrX = 0.0f;  // error when stagnation period started
+    float m_stagBaseErrY = 0.0f;
     float m_stagAccumX   = 0.0f;  // time spent stagnating on X
     float m_stagAccumY   = 0.0f;
-    float m_stagWindowAccumX = 0.0f;  // time since last snapshot (X)
+    float m_stagWindowAccumX = 0.0f;
     float m_stagWindowAccumY = 0.0f;
-    static constexpr float STAG_SNAPSHOT_PERIOD = 0.10f;  // re-snapshot every 100ms
+    static constexpr float STAG_SNAPSHOT_PERIOD = 0.10f;  // check every 100ms
 };
