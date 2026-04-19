@@ -101,6 +101,12 @@ public:
         float    targetAngleDeg   = 0.0f;   // rotation demandée
         float    traveledAngleDeg = 0.0f;   // rotation réelle
         bool     stalled          = false;  // stall déclenché pendant le move
+        // Cause par axe (survit au reset() du StallDetector — fiable post-move)
+        bool     stallCauseStagX  = false;
+        bool     stallCauseStagY  = false;
+        bool     stallCauseVelX   = false;
+        bool     stallCauseVelY   = false;
+        bool     stallCauseVelRot = false;
         // Détail stall (pour tuner Stall::TRANS_DISP_MM / ANGLE_DISP_RAD)
         int      stallChecks      = 0;      // fenêtres évaluées
         float    stallMinTransMm  = 0.0f;   // pire fenêtre trans observée
@@ -125,10 +131,31 @@ public:
     void engage();
     void disengage();
 
-    // ---- Fluent — options pour le prochain move ----
+    // ---- API collision simple (sticky) ----
+    //   motion.collide(true);       // tous les moves suivants cancellent sur stall
+    //   async motion.go(x, y);
+    //   async motion.go(x2, y2);    // toujours actif
+    //   motion.collide(false);      // désactive pour la suite
+    // Reste actif jusqu'à collide(false), y compris après complete/cancel.
+    Motion& collide(bool on);
+
+    // ---- API border snap (sticky) ----
+    //   motion.snap(true);          // sur stall près d'une bordure : snap
+    //                               //   la coord de l'axe stallé + continue
+    //                               //   sur les autres axes.
+    //                               // sur stall LOIN d'une bordure (collision
+    //                               //   objet) : cancel comme collide(true).
+    //   async motion.go(x1, y1);    // peut glisser le long d'un mur
+    //   async motion.go(x2, y2);
+    //   motion.snap(false);         // désactive le mode snap
+    // Combinable avec collide() : snap() implique stall+cancel ; collide(false)
+    // ne casse pas le snap tant que celui-ci est sticky.
+    Motion& snap(bool on);
+
+    // ---- Fluent options one-shot — n'affectent que le PROCHAIN move ----
     // Enchaîner avant la commande de déplacement :
     //   async motion.noStall().feedrate(0.8f).go(x, y);
-
+    // Préférer collide() pour la gestion de collision courante.
     Motion& noStall();                      // désactive stall detection
     Motion& withStall(bool on = true);      // contrôle fin de la stall detection
     Motion& cancelOnStall(bool on = true);  // annule si stall détecté
@@ -248,6 +275,12 @@ private:
     // ---- Options ----
     MoveOptions m_pendingOpts;
     MoveOptions m_activeOpts;
+    // Sticky flags for collide() / snap() — survive reset / complete / cancel.
+    bool        m_stickyCollide = false;
+    bool        m_stickySnap    = false;
+
+    // Helper : reset m_pendingOpts aux defaults globaux en préservant les stickies.
+    void resetPendingOpts();
 
     // ---- Waypoint queue ----
     static constexpr int   WAYPOINT_CAPACITY = 8;

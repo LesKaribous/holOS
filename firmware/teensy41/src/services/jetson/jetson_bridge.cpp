@@ -548,7 +548,8 @@ FLASHMEM void JetsonBridge::handleRequest(Request& req) {
     if (lastCmd.startsWith("calib_move_open(") ||
         lastCmd.startsWith("calib_turn_open(") ||
         lastCmd.startsWith("probe_open(") ||
-        lastCmd.startsWith("stall_probe(")) {
+        lastCmd.startsWith("stall_probe(") ||
+        lastCmd.startsWith("calib_stall(")) {
         // Immediate ACK — Python unblocks its reply wait at once.
         req.reply("ok");
 
@@ -572,6 +573,8 @@ FLASHMEM void JetsonBridge::handleRequest(Request& req) {
                 command_probe_open(args);
             } else if (lastCmd.startsWith("stall_probe(")) {
                 command_stall_probe(args);
+            } else if (lastCmd.startsWith("calib_stall(")) {
+                command_calib_stall(args);
             }
         }
 

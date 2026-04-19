@@ -36,6 +36,8 @@ class StallDetector {
 public:
 
     // ---- Tunable parameters ----
+    // Source unique des defaults : Settings::Motion::Stall (config/settings.h).
+    // Runtime override possible via RuntimeConfig (voir PositionController::start()).
     struct Config {
         // Sliding-window (legacy)
         uint32_t delayMs        = Settings::Motion::Stall::DELAY_MS;
@@ -45,17 +47,17 @@ public:
         float    targetTransMm  = Settings::Motion::Stall::TARGET_TRANS_MM;
         float    targetAngleRad = Settings::Motion::Stall::TARGET_ANGLE_RAD;
 
-        // Velocity mismatch
-        float    velCmdMinMmS   = 30.0f;   // minimum commanded speed to consider (mm/s)
-        float    velOtosMaxMmS  = 10.0f;   // OTOS speed below this = "not moving" (mm/s)
-        float    velStallTimeS  = 0.20f;   // sustained mismatch duration to trigger (s)
-        float    velRotMinRadS  = 0.3f;    // minimum commanded rot speed (rad/s)
-        float    velRotMaxRadS  = 0.1f;    // OTOS rot speed below this = "not turning" (rad/s)
+        // Velocity mismatch (cmd vs OTOS)
+        float    velCmdMinMmS   = Settings::Motion::Stall::VEL_CMD_MIN_MMS;
+        float    velOtosMaxMmS  = Settings::Motion::Stall::VEL_OTOS_MAX_MMS;
+        float    velStallTimeS  = Settings::Motion::Stall::VEL_STALL_TIME_S;
+        float    velRotMinRadS  = Settings::Motion::Stall::VEL_ROT_MIN_RADS;
+        float    velRotMaxRadS  = Settings::Motion::Stall::VEL_ROT_MAX_RADS;
 
         // Error stagnation — catches low-speed stalls
-        float    stagMoveMm     = 0.5f;    // error must decrease by at least this much per 100ms window
-        float    stagTimeS      = 0.40f;   // stagnation duration to trigger stall (s)
-        float    stagErrorMm    = 3.0f;    // minimum PID error to consider (ignore settling noise)
+        float    stagMoveMm     = Settings::Motion::Stall::STAG_MOVE_MM;
+        float    stagTimeS      = Settings::Motion::Stall::STAG_TIME_S;
+        float    stagErrorMm    = Settings::Motion::Stall::STAG_ERROR_MM;
     };
 
     // ---- Move statistics ----
@@ -70,6 +72,15 @@ public:
         bool  stalledX     = false;
         bool  stalledY     = false;
         bool  stalledRot   = false;
+
+        // Per-axis trigger cause (for debugging / reporting).
+        // Set once when a stagnation/velocity fires, never cleared by the live
+        // detector — only begin() resets them.
+        bool  causeStagX   = false;
+        bool  causeStagY   = false;
+        bool  causeVelX    = false;
+        bool  causeVelY    = false;
+        bool  causeVelRot  = false;
     };
 
     Config config;
@@ -107,6 +118,12 @@ private:
     Vec3     m_lastPos;
     uint32_t m_lastCheckMs = 0;
     Stats    m_stats;
+
+    // Expected travel per axis, captured at begin() — used to gate
+    // stagnation checks: an axis that wasn't supposed to move much
+    // won't be allowed to trigger a stall.
+    float    m_expectedTravelX = 0.0f;
+    float    m_expectedTravelY = 0.0f;
 
     // Velocity mismatch accumulators (time spent in mismatch state)
     float m_velStallAccumX   = 0.0f;

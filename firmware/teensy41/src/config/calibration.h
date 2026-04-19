@@ -22,20 +22,22 @@
  *                               Set so that OTOS angle == physical rotation.
  */
 
-#include "settings.h"   // for CalibrationProfile, Vec3
+#include "settings.h"   // for CalibrationProfile, Vec3, Settings::Calibration::*
 
 struct CalibrationProfile;
 
 namespace Calibration {
 
-    // ── Compile-time defaults (mirrors the old Settings::Calibration::Primary) ──
-    // Kept here as a reset target — never modified at runtime.
-    const CalibrationProfile DEFAULTS = {
-        { 1.0f,   1.0f,   1.0f   },   // Holonomic  : A  B  C
-        { 1.223249f,-1.203677f, 0.831f },    // Cartesian  : X  Y  ROT
-    };
-    constexpr float OTOS_LINEAR_DEFAULT  = 0.990723f;
-    constexpr float OTOS_ANGULAR_DEFAULT = 1.0f;
+    // ── Compile-time defaults ────────────────────────────────────────────────
+    // Source unique : Settings::Calibration (voir config/settings.h).
+    // Deux profils y cohabitent : Settings::Calibration::Stepper (open-loop)
+    // et Settings::Calibration::Cruise (closed-loop / OTOS). DEFAULTS pointe
+    // sur Cruise (mode par défaut).
+    // Ces alias sont gardés pour compat descendante — le nouveau code
+    // devrait référencer Settings::Calibration::{Stepper|Cruise|DEFAULTS}.
+    inline const CalibrationProfile& DEFAULTS      = Settings::Calibration::DEFAULTS;
+    constexpr float           OTOS_LINEAR_DEFAULT  = Settings::Calibration::OTOS_LINEAR_DEFAULT;
+    constexpr float           OTOS_ANGULAR_DEFAULT = Settings::Calibration::OTOS_ANGULAR_DEFAULT;
 
     // ── Live (mutable) values — modified by calibration commands and SD load ──
     extern CalibrationProfile Current;

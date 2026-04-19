@@ -97,11 +97,16 @@ void command_probe_open(const args_t& args);
 // Stall probe: stall-detection calibration against a wall
 void command_stall_probe(const args_t& args);
 
+// Stall auto-calibration : tune stall.stag_move_mm / stall.stag_time iteratively
+// via true-positive (bump wall) + false-positive (free-space) tests against WEST border.
+void command_calib_stall(const args_t& args);
+
 // Last calibration report payload (populated by calib_move_open / calib_turn_open / probe_open / stall_probe).
 // Format: "kind=move cmd=... axis=... dx=... dy=... dth=... od=..."
 //      or "kind=turn cmd_deg=... dth_rad=... od_deg=..."
 //      or "kind=probe wall=... face=... x=... y=... theta=..."
 //      or "kind=stall_probe wall=... face=... x=... y=... theta=... stalled=... dur_ms=... travel_mm=... stall_min_trans=..."
+//      or "kind=calib_stall iter=... stag_move=... stag_time=... status=<converged|abandoned> phaseA=... phaseB=..."
 //      or "kind=error msg=..."
 // Empty string if no calibration command has run yet.
 const char* getLastCalibReport();

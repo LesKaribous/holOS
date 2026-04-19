@@ -11,7 +11,13 @@ void StallDetector::begin(const Vec3& startPos, const Vec3& target) {
     m_target      = target;
     m_lastPos     = startPos;
     m_lastCheckMs = 0;
-    m_stats       = {};
+    m_stats       = {};   // full reset: new move starts with clean stats
+
+    // Expected travel per axis — used to gate stagnation checks. If an axis
+    // wasn't supposed to move (|travel| small), any residual PID error on
+    // that axis would otherwise trigger a false-positive stagnation stall.
+    m_expectedTravelX = fabsf(target.x - startPos.x);
+    m_expectedTravelY = fabsf(target.y - startPos.y);
 
     // Reset velocity accumulators
     m_velStallAccumX   = 0.0f;
@@ -27,12 +33,18 @@ void StallDetector::begin(const Vec3& startPos, const Vec3& target) {
     m_stagWindowAccumY = 0.0f;
 }
 
+// reset() is called when the PositionController leaves an active move
+// (e.g. during onCanceling() once velocity reaches zero). It must NOT
+// clear m_stats — the caller (Motion::collectStats) reads the outcome
+// of the move AFTER reset(). Only begin() wipes stats on the next move.
 void StallDetector::reset() {
     m_startPos    = Vec3(0.0f);
     m_target      = Vec3(0.0f);
     m_lastPos     = Vec3(0.0f);
     m_lastCheckMs = 0;
-    m_stats       = {};
+    // m_stats preserved on purpose — see comment above.
+    m_expectedTravelX = 0.0f;
+    m_expectedTravelY = 0.0f;
     m_velStallAccumX   = 0.0f;
     m_velStallAccumY   = 0.0f;
     m_velStallAccumRot = 0.0f;
@@ -90,15 +102,18 @@ void StallDetector::updateVelocity(const Vec3& cmdVel, const Vec3& otosVel, floa
     // Check thresholds
     bool newStall = false;
     if (m_velStallAccumX >= config.velStallTimeS && !m_stats.stalledX) {
-        m_stats.stalledX = true;
+        m_stats.stalledX   = true;
+        m_stats.causeVelX  = true;  // sticky cause flag — survives reset()
         newStall = true;
     }
     if (m_velStallAccumY >= config.velStallTimeS && !m_stats.stalledY) {
-        m_stats.stalledY = true;
+        m_stats.stalledY   = true;
+        m_stats.causeVelY  = true;
         newStall = true;
     }
     if (m_velStallAccumRot >= config.velStallTimeS && !m_stats.stalledRot) {
-        m_stats.stalledRot = true;
+        m_stats.stalledRot   = true;
+        m_stats.causeVelRot  = true;
         newStall = true;
     }
 
@@ -134,58 +149,67 @@ void StallDetector::updateVelocity(const Vec3& cmdVel, const Vec3& otosVel, floa
 // ============================================================
 
 void StallDetector::updateStagnation(const Vec3& pos, const Vec3& target, float dt) {
+    // An axis that wasn't supposed to move can't meaningfully stagnate —
+    // any residual PID error there will look like "constant error" forever
+    // and trigger a false-positive. Require the expected travel on an axis
+    // to be at least targetTransMm before enabling its stagnation check.
+    const bool checkX = m_expectedTravelX > config.targetTransMm;
+    const bool checkY = m_expectedTravelY > config.targetTransMm;
+
     // ── X axis ──
-    m_stagWindowAccumX += dt;
-    if (m_stagWindowAccumX >= STAG_SNAPSHOT_PERIOD) {
-        float errorX     = fabsf(target.x - pos.x);
-        float errReduced = m_stagLastErrX - errorX;   // positive = making progress
-        m_stagLastErrX   = errorX;
-        m_stagWindowAccumX = 0.0f;
+    if (checkX) {
+        m_stagWindowAccumX += dt;
+        if (m_stagWindowAccumX >= STAG_SNAPSHOT_PERIOD) {
+            float errorX     = fabsf(target.x - pos.x);
+            float errReduced = m_stagLastErrX - errorX;   // positive = making progress
+            m_stagLastErrX   = errorX;
+            m_stagWindowAccumX = 0.0f;
 
-        if (errReduced < config.stagMoveMm && errorX > config.stagErrorMm) {
-            // Error didn't decrease enough — stagnating
-            m_stagAccumX += STAG_SNAPSHOT_PERIOD;
-        } else {
-            m_stagAccumX = 0.0f;
-        }
+            if (errReduced < config.stagMoveMm && errorX > config.stagErrorMm) {
+                // Error didn't decrease enough — stagnating
+                m_stagAccumX += STAG_SNAPSHOT_PERIOD;
+            } else {
+                m_stagAccumX = 0.0f;
+            }
 
-        if (m_stagAccumX >= config.stagTimeS && !m_stats.stalledX) {
-            m_stats.stalledX     = true;
-            m_stats.velTriggered = true;
-            m_stats.triggered    = true;
-            Console::warn("StallDetector")
-                << "Stagnation stall X: pos=" << (int)pos.x
-                << " target=" << (int)target.x
-                << " error=" << (int)errorX << "mm"
-                << " stag=" << (int)(m_stagAccumX * 1000) << "ms"
-                << Console::endl;
+            if (m_stagAccumX >= config.stagTimeS && !m_stats.stalledX) {
+                m_stats.stalledX     = true;
+                m_stats.causeStagX   = true;  // sticky cause flag
+                m_stats.velTriggered = true;
+                m_stats.triggered    = true;
+                Console::warn("StallDetector")
+                    << "Stall X (stag): err=" << (int)errorX << "mm"
+                    << " after " << (int)(m_stagAccumX * 1000) << "ms"
+                    << Console::endl;
+            }
         }
     }
 
     // ── Y axis ──
-    m_stagWindowAccumY += dt;
-    if (m_stagWindowAccumY >= STAG_SNAPSHOT_PERIOD) {
-        float errorY     = fabsf(target.y - pos.y);
-        float errReduced = m_stagLastErrY - errorY;
-        m_stagLastErrY   = errorY;
-        m_stagWindowAccumY = 0.0f;
+    if (checkY) {
+        m_stagWindowAccumY += dt;
+        if (m_stagWindowAccumY >= STAG_SNAPSHOT_PERIOD) {
+            float errorY     = fabsf(target.y - pos.y);
+            float errReduced = m_stagLastErrY - errorY;
+            m_stagLastErrY   = errorY;
+            m_stagWindowAccumY = 0.0f;
 
-        if (errReduced < config.stagMoveMm && errorY > config.stagErrorMm) {
-            m_stagAccumY += STAG_SNAPSHOT_PERIOD;
-        } else {
-            m_stagAccumY = 0.0f;
-        }
+            if (errReduced < config.stagMoveMm && errorY > config.stagErrorMm) {
+                m_stagAccumY += STAG_SNAPSHOT_PERIOD;
+            } else {
+                m_stagAccumY = 0.0f;
+            }
 
-        if (m_stagAccumY >= config.stagTimeS && !m_stats.stalledY) {
-            m_stats.stalledY     = true;
-            m_stats.velTriggered = true;
-            m_stats.triggered    = true;
-            Console::warn("StallDetector")
-                << "Stagnation stall Y: pos=" << (int)pos.y
-                << " target=" << (int)target.y
-                << " error=" << (int)errorY << "mm"
-                << " stag=" << (int)(m_stagAccumY * 1000) << "ms"
-                << Console::endl;
+            if (m_stagAccumY >= config.stagTimeS && !m_stats.stalledY) {
+                m_stats.stalledY     = true;
+                m_stats.causeStagY   = true;
+                m_stats.velTriggered = true;
+                m_stats.triggered    = true;
+                Console::warn("StallDetector")
+                    << "Stall Y (stag): err=" << (int)errorY << "mm"
+                    << " after " << (int)(m_stagAccumY * 1000) << "ms"
+                    << Console::endl;
+            }
         }
     }
 }

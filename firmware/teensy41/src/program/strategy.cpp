@@ -3,12 +3,33 @@
 #include "config/poi.h"
 #include "config/score.h"
 #include "config/env.h"
+#include "config/runtime_config.h"
 #include "routines.h"
 #include "mission.h"
 #include "services/lidar/occupancy.h"
+#include <algorithm>  // std::min / std::max (clamp anti-divergence)
 
 // TODO : déplacer dans Actuators
 Adafruit_PWMServoDriver pwm = Adafruit_PWMServoDriver();
+
+void test(){
+// ─── Section à risque (approche d'un objet, passage étroit) ───
+motion.collide(true);
+async motion.go(target1);
+async motion.go(target2);
+if (motion.getLastStats().stalled) {
+    // collision détectée → repli / replan
+    handleCollision();
+}
+motion.collide(false);
+
+// ─── Zone libre rapide ─────────────────────────────────────
+motion.noStall().feedrate(0.5f);  // one-shot, override explicite
+async motion.go(target3);
+
+// ─── Recalage au mur ──────────────────────────────────────
+async motion.withBorderSnap().goPolar(heading, distance);  // spécialisé
+}
 
 
 // ============================================================
@@ -53,8 +74,10 @@ static void collectStock(Vec2 target, TableCompass tc, RobotCompass rc) {
 
     actuators.grab(rc);
     async motion.goAlign(approach, rc, getCompassOrientation(tc));
-    motion.cancelOnStall(true); // Le robot stack contre le mur
-    async motion.withStall().goAlign(grab,     rc, getCompassOrientation(tc));
+    RuntimeConfig::setInt("motion.timeout_ms", 2000); // 5 secondes
+    motion.collide(true);
+    async motion.goAlign(grab,     rc, getCompassOrientation(tc));
+    motion.collide(false);
 
     actuators.moveElevator(rc, ElevatorPose::DOWN);
     waitMs(GRAB_DELAY_MS);
@@ -84,11 +107,13 @@ static void storeStock(Vec2 target, TableCompass tc, RobotCompass rc) {
     grab += PolarVec(sidewiseoffset_dir * DEG_TO_RAD, sideOffset).toVec2(); // Offset latéral pour compenser la largeur du préhenseur
     grabrecal += PolarVec(sidewiseoffset_dir * DEG_TO_RAD, sideOffset).toVec2(); // Offset latéral pour compenser la largeur du préhenseur
 
-    
+    RuntimeConfig::setInt("motion.timeout_ms", 6000); // 5 secondes
     async motion.goAlign(approach, rc, getCompassOrientation(tc));
     safety.disable();
     motion.setFeedrate(0.3f);
+    RuntimeConfig::setInt("motion.timeout_ms", 2000); // 5 secondes
     async motion.goAlign(grab,     rc, getCompassOrientation(tc));
+    
 
     waitMs(GRAB_DELAY_MS);
     actuators.drop(rc);//release just enough
@@ -100,6 +125,7 @@ static void storeStock(Vec2 target, TableCompass tc, RobotCompass rc) {
     motion.setFeedrate(1.0f);
     async motion.goAlign(approach,     rc, getCompassOrientation(tc));
 
+    RuntimeConfig::setInt("motion.timeout_ms", 6000); // 5 secondes
     motion.cancelOnStall(false);
     safety.enable();
     motion.setFeedrate(1.0f);
@@ -126,12 +152,12 @@ static bool pantryEmpty = false;
 
 static BlockResult blockCollectA() {
     if(ihm.isColor(Settings::BLUE)) {
-        collectStock(POI::stockBlue_01, TableCompass::EAST, RobotCompass::AB);
+        collectStock(POI::stockBlue_01 + Vec2(0,40), TableCompass::EAST, RobotCompass::AB);
     } else {
-        collectStock(POI::stockYellow_01, TableCompass::WEST, RobotCompass::AB);
+        collectStock(POI::stockYellow_01 + Vec2(0,40), TableCompass::WEST, RobotCompass::AB);
     }
 
-    return motion.wasSuccessful() ? BlockResult::SUCCESS : BlockResult::FAILED;
+    return BlockResult::SUCCESS;
 }
 
 static BlockResult blockStoreA() {
@@ -143,15 +169,15 @@ static BlockResult blockStoreA() {
     
     
     pantryEmpty = true;
-    return motion.wasSuccessful() ? BlockResult::SUCCESS : BlockResult::FAILED;
+    return BlockResult::SUCCESS;
 }
 
 static BlockResult blockCollectB() {
 
     if(ihm.isColor(Settings::BLUE)) {
-        collectStock(POI::stockBlue_02+ Vec2(0,40), TableCompass::EAST, RobotCompass::AB);
+        collectStock(POI::stockBlue_02+ Vec2(0,60), TableCompass::EAST, RobotCompass::AB);
     } else {
-        collectStock(POI::stockYellow_02+ Vec2(0,40), TableCompass::WEST, RobotCompass::AB);
+        collectStock(POI::stockYellow_02+ Vec2(0,60), TableCompass::WEST, RobotCompass::AB);
     }
 
     return motion.wasSuccessful() ? BlockResult::SUCCESS : BlockResult::FAILED;
@@ -159,9 +185,9 @@ static BlockResult blockCollectB() {
 
 static BlockResult blockStoreB() {
     if(ihm.isColor(Settings::BLUE)) {
-        storeStock(POI::pantry_07 + Vec2(0,25) + pantryEmpty * Vec2(50,0), TableCompass::EAST, RobotCompass::AB);
+        storeStock(POI::pantry_07 + Vec2(0,40) + pantryEmpty * Vec2(50,0), TableCompass::EAST, RobotCompass::AB);
     } else {
-        storeStock(POI::pantry_03 + Vec2(0,25) + pantryEmpty * Vec2(50,0), TableCompass::WEST, RobotCompass::AB);
+        storeStock(POI::pantry_03 + Vec2(0,40) + pantryEmpty * Vec2(50,0), TableCompass::WEST, RobotCompass::AB);
     }
 
     pantryEmpty = true;
@@ -169,22 +195,17 @@ static BlockResult blockStoreB() {
 }
 
 static BlockResult thermometer_set() {
-    motion.cancelOnStall(true);
-
+    RuntimeConfig::setInt("motion.timeout_ms", 4000); // 5 secondes
     if(ihm.isColor(Settings::BLUE)) {
-        async motion.withStall().goAlign(POI::thermometer_hot_blue, RobotCompass::C, getCompassOrientation(TableCompass::SOUTH));
+        async motion.goAlign(POI::thermometer_hot_blue, RobotCompass::C, getCompassOrientation(TableCompass::SOUTH));
     } else {
-        async motion.withStall().goAlign(POI::thermometer_hot_yellow, RobotCompass::C, getCompassOrientation(TableCompass::WEST));
+        async motion.goAlign(POI::thermometer_hot_yellow, RobotCompass::C, getCompassOrientation(TableCompass::WEST));
     }
 
-    
+    //actuators.moveElevator(RobotCompass::CA, ElevatorPose::STORE);
     actuators.getActuatorGroup(RobotCompass::CA).moveServoToPose((int)ServoIDs::GRABBER_RIGHT, (int) ManipulatorPose::DROP, 100);
 
-    if(ihm.isColor(Settings::BLUE)) {
-        async motion.withStall().go(POI::thermometer_hot_blue);
-    } else {
-        async motion.withStall().go(POI::thermometer_hot_yellow);
-    }
+    os.wait(1000);
 
     if(ihm.isColor(Settings::BLUE)) {
         async motion.withStall().go(POI::thermometer_target_blue);
@@ -195,17 +216,6 @@ static BlockResult thermometer_set() {
     actuators.getActuatorGroup(RobotCompass::CA).moveServoToPose((int)ServoIDs::GRABBER_RIGHT, (int) ManipulatorPose::STORE, 100);
     motion.cancelOnStall(false);
     return BlockResult::SUCCESS;
-}
-
-static BlockResult blockCollectB() {
-
-    if(ihm.isColor(Settings::BLUE)) {
-        collectStock(POI::stockBlue_02+ Vec2(0,40), TableCompass::EAST, RobotCompass::AB);
-    } else {
-        collectStock(POI::stockYellow_02+ Vec2(0,40), TableCompass::WEST, RobotCompass::AB);
-    }
-
-    return motion.wasSuccessful() ? BlockResult::SUCCESS : BlockResult::FAILED;
 }
 
 // ============================================================
@@ -533,6 +543,231 @@ FLASHMEM void probeBorder(TableCompass tc, RobotCompass rc, float clearance, flo
 	if(wasAbsolute) motion.setAbsolute();
     motion.setFeedrate(currentFeedrate);
     actuators.moveElevator(rc, ElevatorPose::DOWN);
+}
+
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//  calibrateStall — Auto-tune de la détection de collision par stagnation.
+//
+//  Procédure (en boucle, jusqu'à 2 phases OK ou maxIter atteint) :
+//
+//    ① Recalage WEST   : probeBorder pour se placer à x≈clearance du mur.
+//    ② Phase A (VP)    : goPolar(face, +PROBE_BUMP) avec stall actif.
+//                          → doit stall. Sinon : params trop rigides → assouplir.
+//    ③ Phase B (FP)    : goPolar(face, -PROBE_REVERSE) dans zone libre.
+//                          → NE doit PAS stall. Sinon : trop sensible → durcir.
+//
+//  Détection stall vs timeout : on lit motion.getLastStats().stalled après
+//  chaque async — clean, pas besoin de proxy sur millis().
+//
+//  Pendant la calibration, velocity-mismatch est désactivé (velCmdMin → 1e6)
+//  pour isoler la contribution de la stagnation. Restauré en fin.
+//
+//  Les probeBorder intermédiaires utilisent toujours les params ORIGINELS
+//  (lambda safeProbeBorder) pour ne pas faire foirer le recalage lui-même
+//  avec un jeu de params extrême.
+// ═══════════════════════════════════════════════════════════════════════════════
+FLASHMEM StallCalibResult calibrateStall(RobotCompass face, int maxIter) {
+    // ─── Paramètres de la procédure ─────────────────────────────────────────
+    // Flux par itération :
+    //   (initial) probeBorder aveugle → retraite à CLEARANCE du mur
+    //   Phase A   : goPolar(+PROBE_BUMP)  vers mur → doit stall  (> CLEARANCE)
+    //   back-off  : goPolar(-CLEARANCE)   éloignement relatif (pas de probeBorder)
+    //   Phase B   : goPolar(+PROBE_CLEAR) vers mur → NE doit PAS stall  (< CLEARANCE)
+    //   (si échec) safeProbeBorder avant la prochaine itération
+    const float    CLEARANCE   = 500.0f;  // mm — distance au mur entre les phases
+    const float    PROBE_BUMP  = 600.0f;  // mm — Phase A (> CLEARANCE → hit wall)
+    const float    PROBE_CLEAR = 400.0f;  // mm — Phase B (< CLEARANCE → reste 100mm du mur)
+    // NB : cruise mode → feedrate × Settings::Motion::MAX_SPEED (1800 mm/s).
+    // 0.1 ⇒ ~180 mm/s, safe pour un bump-test. NE PAS monter au-dessus de 0.2
+    // sans retester : le robot slammerait le mur avant que le stall detector
+    // n'ait le temps de firer (stag_time typique 400 ms).
+    const float    FEEDRATE    = 0.1f;    // ~180 mm/s — vitesse de calibration safe
+
+    // ─── Snapshot état motion / RuntimeConfig pour restauration fin ─────────
+    const boolean wasAbsolute    = motion.isAbsolute();
+    const float   savedFeedrate  = motion.getFeedrate();
+    const float   saved_stagMove = RuntimeConfig::getFloat("stall.stag_move_mm",
+                                        Settings::Motion::Stall::STAG_MOVE_MM);
+    const float   saved_stagTime = RuntimeConfig::getFloat("stall.stag_time",
+                                        Settings::Motion::Stall::STAG_TIME_S);
+    const float   saved_velCmdMin= RuntimeConfig::getFloat("stall.vel_cmd_min",
+                                        Settings::Motion::Stall::VEL_CMD_MIN_MMS);
+
+    // Valeurs de travail (partent des valeurs courantes, pas des defaults)
+    float stagMove = saved_stagMove;
+    float stagTime = saved_stagTime;
+
+    StallCalibResult result;
+    result.stagMoveMm = stagMove;
+    result.stagTimeS  = stagTime;
+
+    // ─── Lambdas internes ───────────────────────────────────────────────────
+    // Applique les params courants dans RuntimeConfig (lu au prochain start()).
+    auto applyTestParams = [&]() {
+        RuntimeConfig::setFloat("stall.stag_move_mm", stagMove);
+        RuntimeConfig::setFloat("stall.stag_time",    stagTime);
+    };
+    // Restaure les params originels pour un probeBorder intermédiaire sans
+    // risque de false-positive corrompant le recalage.
+    auto applySafeParams = [&]() {
+        RuntimeConfig::setFloat("stall.stag_move_mm", saved_stagMove);
+        RuntimeConfig::setFloat("stall.stag_time",    saved_stagTime);
+        RuntimeConfig::setFloat("stall.vel_cmd_min",  saved_velCmdMin);
+    };
+    // Rend velocity-mismatch aveugle (isole stagnation).
+    auto blindVelocity = [&]() {
+        RuntimeConfig::setFloat("stall.vel_cmd_min", 1.0e6f);
+    };
+    // Recalage WEST avec params safe, puis réapplique blinding + params de test.
+    auto safeProbeBorder = [&](float clearance) {
+        applySafeParams();
+        probeBorder(TableCompass::WEST, face, clearance);
+        blindVelocity();
+        applyTestParams();
+    };
+
+    // ─── Setup initial ──────────────────────────────────────────────────────
+    motion.setFeedrate(FEEDRATE);
+    blindVelocity();
+
+    Console::info("CalibStall")
+        << "Initial: touch wall + back off " << (int)CLEARANCE << "mm"
+        << Console::endl;
+    safeProbeBorder(CLEARANCE);
+
+    // Formate la cause per-axe du stall pour les logs (ex: "stagX+velY").
+    // Vide = aucune cause détectée (triggered sans cause = displacement legacy).
+    auto fmtCause = [](const Motion::MoveStats& s) -> const char* {
+        // Ordre de priorité : stagnation avant velocity-mismatch.
+        if (s.stallCauseStagX) return "stagX";
+        if (s.stallCauseStagY) return "stagY";
+        if (s.stallCauseVelX)  return "velX";
+        if (s.stallCauseVelY)  return "velY";
+        if (s.stallCauseVelRot)return "velR";
+        return s.stalled ? "disp" : "-";
+    };
+
+    int iter = 0;
+    for (iter = 0; iter < maxIter; iter++) {
+        Console::info("CalibStall")
+            << "───── Iter " << iter
+            << "  stagMove=" << stagMove << "mm"
+            << "  stagTime=" << (int)(stagTime * 1000) << "ms ─────"
+            << Console::endl;
+
+        applyTestParams();
+
+        // ══════ PHASE A : test VRAI-POSITIF (doit stall contre le mur) ══════
+        // IMPORTANT : cruise mode obligatoire — le StallDetector vit dans
+        // cruise_controller.stall() (PositionController). En stepper mode
+        // le détecteur n'est pas actif et collectStats() zérote m_lastStats.
+        // Convention probeBorder : +D dans direction face = vers le mur.
+        motion.setRelative();
+        motion.collide(true);    // sticky : stall detect + cancel actifs
+        async motion.goPolar(getCompassOrientation(face), +PROBE_BUMP);
+
+        Motion::MoveStats statsA = motion.getLastStats();
+        result.phaseAOk = statsA.stalled;
+        Console::info("CalibStall")
+            << "  Phase A (bump): " << (statsA.stalled ? "OK   " : "FAIL ")
+            << "cause=" << fmtCause(statsA)
+            << "  dur=" << (int)statsA.durationMs << "ms"
+            << "  dist=" << (int)statsA.traveledMm << "/" << (int)PROBE_BUMP << "mm"
+            << Console::endl;
+
+        if (!statsA.stalled) {
+            // Pas de stall → params trop rigides → on assouplit.
+            const float oldMove = stagMove;
+            const float oldTime = stagTime;
+            stagMove *= 1.4f;
+            stagTime *= 0.8f;
+            stagMove = std::min(stagMove, 4.0f);
+            stagTime = std::max(stagTime, 0.10f);
+            Console::warn("CalibStall")
+                << "  → loosening: stagMove " << oldMove << "→" << stagMove
+                << "  stagTime " << (int)(oldTime*1000) << "→" << (int)(stagTime*1000) << "ms"
+                << Console::endl;
+            safeProbeBorder(CLEARANCE);
+            continue;
+        }
+
+        // Phase A OK → back-off RELATIF de CLEARANCE (pas de probeBorder !).
+        // On vient de stall contre le mur : pousser encore dedans n'a aucun sens.
+        // On s'éloigne simplement du mur pour avoir ~CLEARANCE de jeu avant Phase B.
+        Console::info("CalibStall") << "  Back-off " << (int)CLEARANCE << "mm" << Console::endl;
+        motion.setRelative();
+        motion.collide(false);           // désactive stall en s'éloignant du mur
+        async motion.goPolar(getCompassOrientation(face), -CLEARANCE);
+
+        // ══════ PHASE B : test FAUX-POSITIF (ne doit PAS stall) ══════════════
+        // Cruise mode. On se déplace VERS le mur sur PROBE_CLEAR < CLEARANCE,
+        // on reste donc en zone libre (~100 mm du mur). Tout stall ici = faux+.
+        applyTestParams();
+        motion.setRelative();
+        motion.collide(true);
+        async motion.goPolar(getCompassOrientation(face), +PROBE_CLEAR);
+        motion.collide(false);
+
+        Motion::MoveStats statsB = motion.getLastStats();
+        result.phaseBOk = !statsB.stalled;
+        Console::info("CalibStall")
+            << "  Phase B (free): " << (!statsB.stalled ? "OK   " : "FAIL ")
+            << "cause=" << fmtCause(statsB)
+            << "  dur=" << (int)statsB.durationMs << "ms"
+            << "  dist=" << (int)statsB.traveledMm << "/" << (int)PROBE_CLEAR << "mm"
+            << Console::endl;
+
+        if (statsB.stalled) {
+            // Faux-positif → params trop sensibles → on durcit.
+            const float oldMove = stagMove;
+            const float oldTime = stagTime;
+            stagMove *= 0.7f;
+            stagTime *= 1.2f;
+            stagMove = std::max(stagMove, 0.1f);
+            stagTime = std::min(stagTime, 1.0f);
+            Console::warn("CalibStall")
+                << "  → tightening: stagMove " << oldMove << "→" << stagMove
+                << "  stagTime " << (int)(oldTime*1000) << "→" << (int)(stagTime*1000) << "ms"
+                << Console::endl;
+            safeProbeBorder(CLEARANCE);
+            continue;
+        }
+
+        // Les deux phases passent → convergence atteinte.
+        result.converged = true;
+        break;
+    }
+
+    result.iter       = iter + (result.converged ? 1 : 0);
+    result.stagMoveMm = stagMove;
+    result.stagTimeS  = stagTime;
+
+    if (!result.converged) {
+        Console::error("CalibStall")
+            << "Did NOT converge in " << maxIter << " iterations — rolling back"
+            << Console::endl;
+        // Rollback : on remet les params originels
+        result.stagMoveMm = saved_stagMove;
+        result.stagTimeS  = saved_stagTime;
+    }
+
+    // ─── Écriture finale + restauration ─────────────────────────────────────
+    RuntimeConfig::setFloat("stall.stag_move_mm", result.stagMoveMm);
+    RuntimeConfig::setFloat("stall.stag_time",    result.stagTimeS);
+    RuntimeConfig::setFloat("stall.vel_cmd_min",  saved_velCmdMin);
+
+    if (wasAbsolute) motion.setAbsolute();
+    motion.setFeedrate(savedFeedrate);
+
+    Console::info("CalibStall")
+        << "DONE iter=" << result.iter
+        << " stagMove=" << result.stagMoveMm
+        << " stagTime=" << result.stagTimeS
+        << " status=" << (result.converged ? "converged" : "abandoned")
+        << Console::endl;
+
+    return result;
 }
 
 FLASHMEM void initPump(){

@@ -1,6 +1,7 @@
 #pragma once
 #include "services/service.h"
 #include "utils/geometry.h"
+#include "config/settings.h"   // Settings::Calibration::OTOS_*_DEFAULT
 #include <SparkFun_Qwiic_OTOS_Arduino_Library.h>
 
 class Localisation : public Service{
@@ -30,8 +31,11 @@ public:
     SINGLETON(Localisation)
 
 private :
-    float m_scale         = 1.143834f;
-    float m_angular_scale = 1.0f;
+    // Scalars OTOS : defaults depuis Settings::Calibration (source unique).
+    // Valeurs écrasées au boot par Calibration::reset() qui synchronise aussi
+    // l'état interne de l'OTOS hardware via setLinearScale / setAngularScale.
+    float m_scale         = Settings::Calibration::OTOS_LINEAR_DEFAULT;
+    float m_angular_scale = Settings::Calibration::OTOS_ANGULAR_DEFAULT;
     bool m_use_IMU = false;
     bool m_connected = false;
     bool m_calibrated = false;

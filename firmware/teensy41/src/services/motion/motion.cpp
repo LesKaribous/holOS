@@ -112,37 +112,35 @@ FLASHMEM void Motion::onRunning() {
     if (current_move_cruised && m_activeOpts.stallEnabled && cruise_controller.isStalled()) {
 
         if (m_activeOpts.borderSnap) {
+            // ── Border snap : axe stallé près d'une bordure → snap sur la bordure,
+            // zero l'erreur PID sur cet axe, laisse le(s) autre(s) continuer.
+            // Si l'axe stalle LOIN d'une bordure (collision objet) → cancel.
+            // BORDER_MARGIN configurable via cfg_set motion.border_margin (défaut 150 mm
+            // = offset conservateur couvrant toutes les faces du robot).
+            const float margin = (float)RuntimeConfig::getInt("motion.border_margin", 150);
             auto& stall = cruise_controller.stall();
             Vec3 pos = estimatedPosition();
 
-            // Conservative margin — covers all robot faces (max offset ~137 mm)
-            constexpr float BORDER_MARGIN = 150.0f;
-
             bool stalledX = stall.isStalledX();
             bool stalledY = stall.isStalledY();
-            bool handledX = false, handledY = false;
+            bool handled  = false;
 
             if (stalledX) {
-                bool nearXmin = pos.x < BORDER_MARGIN;
-                bool nearXmax = pos.x > (TABLE_SIZE_X - BORDER_MARGIN);
-                if (nearXmin || nearXmax) {
-                    float snapX = nearXmin ? BORDER_MARGIN : (TABLE_SIZE_X - BORDER_MARGIN);
-                    // Correct the localisation on X
-                    Vec3 corrected = pos;
-                    corrected.x = snapX;
+                bool nearMin = pos.x < margin;
+                bool nearMax = pos.x > (TABLE_SIZE_X - margin);
+                if (nearMin || nearMax) {
+                    float snapX = nearMin ? margin : (TABLE_SIZE_X - margin);
+                    Vec3 corrected = pos;  corrected.x = snapX;
                     localisation.setPosition(corrected);
                     _position.x = snapX;
-                    // Zero PID error on X so it stops pushing
                     cruise_controller.snapAxisTarget(0, snapX);
-                    // Clear stall accumulator so it doesn't re-trigger
                     stall.clearStalledX();
-                    handledX = true;
+                    handled = true;
                     Console::info("Motion") << "Border snap X → " << (int)snapX
-                                            << (nearXmin ? " (Xmin)" : " (Xmax)") << Console::endl;
+                                            << (nearMin ? " (Xmin)" : " (Xmax)") << Console::endl;
                 } else {
-                    // Object collision far from border
                     Console::warn("Motion") << "Stall X far from border (x="
-                                            << (int)pos.x << ") — canceling" << Console::endl;
+                                            << (int)pos.x << "mm) — canceling" << Console::endl;
                     clearWaypoints();
                     cruise_controller.cancel();
                     return;
@@ -150,35 +148,33 @@ FLASHMEM void Motion::onRunning() {
             }
 
             if (stalledY) {
-                bool nearYmin = pos.y < BORDER_MARGIN;
-                bool nearYmax = pos.y > (TABLE_SIZE_Y - BORDER_MARGIN);
-                if (nearYmin || nearYmax) {
-                    float snapY = nearYmin ? BORDER_MARGIN : (TABLE_SIZE_Y - BORDER_MARGIN);
+                bool nearMin = pos.y < margin;
+                bool nearMax = pos.y > (TABLE_SIZE_Y - margin);
+                if (nearMin || nearMax) {
+                    float snapY = nearMin ? margin : (TABLE_SIZE_Y - margin);
                     Vec3 corrected = localisation.getPosition();
                     corrected.y = snapY;
                     localisation.setPosition(corrected);
                     _position.y = snapY;
                     cruise_controller.snapAxisTarget(1, snapY);
-                    // Clear stall accumulator so it doesn't re-trigger
                     stall.clearStalledY();
-                    handledY = true;
+                    handled = true;
                     Console::info("Motion") << "Border snap Y → " << (int)snapY
-                                            << (nearYmin ? " (Ymin)" : " (Ymax)") << Console::endl;
+                                            << (nearMin ? " (Ymin)" : " (Ymax)") << Console::endl;
                 } else {
                     Console::warn("Motion") << "Stall Y far from border (y="
-                                            << (int)pos.y << ") — canceling" << Console::endl;
+                                            << (int)pos.y << "mm) — canceling" << Console::endl;
                     clearWaypoints();
                     cruise_controller.cancel();
                     return;
                 }
             }
 
-            // If we snapped at least one axis, clear the top-level stall flag
-            // so the PID can continue on remaining axes without re-entering
-            // this block on the very next cycle.
-            if (handledX || handledY) {
+            if (handled) {
+                // Un axe a été snappé, clear le flag top-level pour que
+                // le PID continue sur l'axe libre sans re-rentrer ici au
+                // cycle suivant. Le move complete via hasFinished() normal.
                 cruise_controller.clearStalledFlag();
-                // Fall through to normal hasFinished() check below.
             }
 
         } else if (m_activeOpts.cancelOnStall) {
@@ -322,6 +318,70 @@ void Motion::control() {
 // ============================================================
 //  Fluent — options pour le prochain move
 // ============================================================
+
+// collide(bool) — API simple et sticky : active/désactive la détection de
+// collision (stall detect + cancel-on-stall) pour TOUS les moves suivants
+// jusqu'au prochain collide(false). Survit aux complete/cancel.
+//
+//   motion.collide(true);
+//   async motion.go(x1, y1);   // cancel sur stall
+//   async motion.go(x2, y2);   // toujours actif
+//   motion.collide(false);
+//   async motion.go(x3, y3);   // pas de stall
+//
+// Note: si snap() est sticky, collide(false) NE désactive PAS la détection
+// (snap a encore besoin de stall+cancel comme fallback "loin d'une bordure").
+FLASHMEM Motion& Motion::collide(bool on) {
+    m_stickyCollide = on;
+    const bool needStall = on || m_stickySnap;
+    m_pendingOpts.stallEnabled  = needStall;
+    m_pendingOpts.cancelOnStall = needStall;
+    if (!on && !m_stickySnap) {
+        // Désactive aussi le border-snap s'il était levé par la sticky.
+        m_pendingOpts.borderSnap = false;
+    }
+    return *this;
+}
+
+// snap(bool) — API sticky parallèle à collide(), pour glisser le long des murs.
+// Sur stall près d'une bordure : snap la coord sur la paroi, zero l'erreur PID
+// de cet axe, laisse les autres axes continuer leur chemin. Sur stall LOIN
+// d'une bordure : fallback cancel (collision objet).
+//
+//   motion.snap(true);
+//   async motion.go(1500, 0);   // peut glisser en Y contre mur bas
+//   async motion.go(1500, 2000); // puis en Y contre mur haut
+//   motion.snap(false);
+FLASHMEM Motion& Motion::snap(bool on) {
+    m_stickySnap = on;
+    m_pendingOpts.borderSnap = on;
+    if (on) {
+        // snap implique stall + cancel (fallback si loin d'une bordure)
+        m_pendingOpts.stallEnabled  = true;
+        m_pendingOpts.cancelOnStall = true;
+    } else if (!m_stickyCollide) {
+        // Plus de sticky actif → retour état neutre
+        m_pendingOpts.stallEnabled  = false;
+        m_pendingOpts.cancelOnStall = false;
+    }
+    return *this;
+}
+
+// resetPendingOpts() — ré-initialise m_pendingOpts après un move, en honorant
+// les flags sticky (collide / snap). Utilisé par startWaypoint / complete /
+// forceCancel.
+FLASHMEM void Motion::resetPendingOpts() {
+    m_pendingOpts = MoveOptions::withGlobalDefaults();
+    if (m_stickyCollide) {
+        m_pendingOpts.stallEnabled  = true;
+        m_pendingOpts.cancelOnStall = true;
+    }
+    if (m_stickySnap) {
+        m_pendingOpts.borderSnap    = true;
+        m_pendingOpts.stallEnabled  = true;
+        m_pendingOpts.cancelOnStall = true;  // fallback si stall loin d'une bordure
+    }
+}
 
 FLASHMEM Motion& Motion::noStall() {
     m_pendingOpts.stallEnabled  = false;
@@ -530,7 +590,7 @@ FLASHMEM Motion& Motion::move(Vec3 target) {
 // startWaypoint() : installe les options du waypoint, puis lance move().
 FLASHMEM void Motion::startWaypoint(const Waypoint& wp) {
     m_activeOpts  = wp.opts;
-    m_pendingOpts = MoveOptions::withGlobalDefaults();  // reset aux defaults
+    resetPendingOpts();  // defaults globaux + sticky collide
     move(wp.target);
 }
 
@@ -626,7 +686,7 @@ FLASHMEM void Motion::complete() {
     _isMoving   = false;
     _isRotating = false;
     clearWaypoints();
-    m_pendingOpts  = MoveOptions{};
+    resetPendingOpts();  // preserve sticky collide
     _startPosition = _position = estimatedPosition();
     cruise_controller.reset();
     stepper_controller.reset();
@@ -640,7 +700,7 @@ FLASHMEM void Motion::forceCancel() {
     _isMoving   = false;
     _isRotating = false;
     clearWaypoints();
-    m_pendingOpts  = MoveOptions{};
+    resetPendingOpts();  // preserve sticky collide
     _startPosition = _position = estimatedPosition();
     cruise_controller.reset();
     stepper_controller.reset();
@@ -714,7 +774,17 @@ FLASHMEM void Motion::collectStats(bool success) {
                                              endPos.c, startPos.c)) * RAD_TO_DEG;
 
     auto stallStats = cruise_controller.stall().getStats();
-    m_lastStats.stalled          = stallStats.triggered;
+    // `triggered` is sometimes wiped by PositionController::reset() before we
+    // get here; fall back on the sticky per-axis cause flags which survive it.
+    const bool anyCause = stallStats.causeStagX || stallStats.causeStagY
+                        || stallStats.causeVelX  || stallStats.causeVelY
+                        || stallStats.causeVelRot;
+    m_lastStats.stalled          = stallStats.triggered || anyCause;
+    m_lastStats.stallCauseStagX  = stallStats.causeStagX;
+    m_lastStats.stallCauseStagY  = stallStats.causeStagY;
+    m_lastStats.stallCauseVelX   = stallStats.causeVelX;
+    m_lastStats.stallCauseVelY   = stallStats.causeVelY;
+    m_lastStats.stallCauseVelRot = stallStats.causeVelRot;
     m_lastStats.stallChecks      = stallStats.checks;
     m_lastStats.stallMinTransMm  = (stallStats.minTransMm  > 1e8f) ? 0.0f : stallStats.minTransMm;
     m_lastStats.stallMinAngleDeg = (stallStats.minAngleDeg > 1e8f) ? 0.0f : stallStats.minAngleDeg;
@@ -736,6 +806,11 @@ FLASHMEM void Motion::printDiagReport() const {
         << "  angle     : " << (int)s.traveledAngleDeg << " / "
                             << (int)s.targetAngleDeg   << " deg" << Console::endl
         << "  stall     : " << (s.stalled ? "YES" : "no")
+                            << (s.stallCauseStagX ? " stagX" : "")
+                            << (s.stallCauseStagY ? " stagY" : "")
+                            << (s.stallCauseVelX  ? " velX"  : "")
+                            << (s.stallCauseVelY  ? " velY"  : "")
+                            << (s.stallCauseVelRot? " velR"  : "")
                             << "  checks=" << s.stallChecks     << Console::endl
         << "  minTrans  : " << s.stallMinTransMm  << " mm  (seuil actuel: "
                             << cruise_controller.stall().config.transDispMm << " mm)" << Console::endl

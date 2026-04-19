@@ -9,19 +9,18 @@ namespace Calibration {
 
 
     
-CalibrationProfile Current = {
-    { 1.0f,   1.0f,   1.0f   },   // Holonomic  : A  B  C  (same as DEFAULTS)
-    { 1.203677f,-1.203677f, 0.831f },    // Cartesian  : X  Y  ROT
-};
-float OtosLinear  = OTOS_LINEAR_DEFAULT;
-float OtosAngular = OTOS_ANGULAR_DEFAULT;
+// Live state initialisé depuis Settings::Calibration (source unique).
+// Toute modification runtime passe par setCartesian/setHolonomic/setOtos*.
+CalibrationProfile Current     = Settings::Calibration::DEFAULTS;
+float              OtosLinear  = Settings::Calibration::OTOS_LINEAR_DEFAULT;
+float              OtosAngular = Settings::Calibration::OTOS_ANGULAR_DEFAULT;
 
 // ── Mutators ─────────────────────────────────────────────────────────────────
 
 void reset() {
-    Current   = DEFAULTS;
-    OtosLinear  = OTOS_LINEAR_DEFAULT;
-    OtosAngular = OTOS_ANGULAR_DEFAULT;
+    Current     = Settings::Calibration::DEFAULTS;
+    OtosLinear  = Settings::Calibration::OTOS_LINEAR_DEFAULT;
+    OtosAngular = Settings::Calibration::OTOS_ANGULAR_DEFAULT;
     localisation.setLinearScale(OtosLinear);
     localisation.setAngularScale(OtosAngular);
 }

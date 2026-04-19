@@ -10,15 +10,23 @@
 #include "config/poi.h"
 
 FLASHMEM void registerCommands() {
+
+    //OS
     CommandHandler::registerCommand("start", "Start Match", command_start);
     CommandHandler::registerCommand("stop", "Stop Robot", command_stop);
     CommandHandler::registerCommand("reboot", "Reboot Robot", command_reboot);
+    CommandHandler::registerCommand("wait(duration)", "Wait a bit for duration", command_wait);
 
+    //Services 
     CommandHandler::registerCommand("enable(service)", "Enable a specific service", command_enable);
     CommandHandler::registerCommand("disable(service)", "Disable a specific service", command_disable);
     CommandHandler::registerCommand("status(service)", "Display single status", command_status);
-    CommandHandler::registerCommand("wait(duration)", "Wait a bit for duration", command_wait);
+    
+    //Lidar color
     CommandHandler::registerCommand("lidarMode(mode)", "Change neopixel display mode on lidar", command_lidarMode);
+    CommandHandler::registerCommand("radar", " Toogle radar view on neopixel", command_radar);
+
+    //Motion
     CommandHandler::registerCommand("go(x,y)", "Move to a specific position", command_go);
     CommandHandler::registerCommand("go_coc(x,y)", "Move with cancel on collide/stall", command_go_coc);
     CommandHandler::registerCommand("via(x,y)", "Add pass-through waypoint (for chained via;go)", command_via);
@@ -30,8 +38,8 @@ FLASHMEM void registerCommands() {
     CommandHandler::registerCommand("pause", "Pause motion", command_pause);
     CommandHandler::registerCommand("resume", "Resume motion", command_resume);
     CommandHandler::registerCommand("cancel", "Cancel motion", command_cancel);
-    CommandHandler::registerCommand("probe(tableCompass, side)", "Probe border", command_probe);
-    CommandHandler::registerCommand("probe_open(wall,face)", "Probe border and report via T:cal", command_probe_open);
+    CommandHandler::registerCommand("probe(tableCompass, robotCompass)", "Probe border", command_probe);
+    CommandHandler::registerCommand("probe_open(tableCompass,side)", "Probe border and report via T:cal", command_probe_open);
     CommandHandler::registerCommand("sleep", "Put motion to sleep", command_sleep);
     CommandHandler::registerCommand("wake", "Wake up motion", command_wake);
     CommandHandler::registerCommand("align(side,angle)", "Align to a specific side and angle", command_align);
@@ -39,7 +47,17 @@ FLASHMEM void registerCommands() {
     CommandHandler::registerCommand("setRelative", "Set motion to relative mode", command_setRelative);
     CommandHandler::registerCommand("setAbsPosition(x,y,angle)", "Set absolute position", command_setAbsPosition);
     CommandHandler::registerCommand("setAbsolutePosition(x,y,angle)", "Set absolute position", command_setAbsPosition);
-    CommandHandler::registerCommand("resetCompass", "Reset compass and set to 0", command_resetCompass);
+    CommandHandler::registerCommand("cruise", " Enable cruise mode", command_cruise);
+    CommandHandler::registerCommand("feed(feedrate)", " Set Move feedrate", command_feed);
+
+    CommandHandler::registerCommand("resetCompass", "Reset compass and set to 0 (experimental)", command_resetCompass);
+    CommandHandler::registerCommand("collisionDetect(state)", "Toggle collision detection", command_collision_detect);
+
+    //CommandHandler::registerCommand("open(side)", "Open actuator on a specific side", command_open);
+    //CommandHandler::registerCommand("close(side)", "Close actuator on a specific side", command_close);
+    CommandHandler::registerCommand("recalage()", "Execute recalage routine", command_recalage);
+
+    //Actuators
     CommandHandler::registerCommand("elevator(side, pose)", "Raise elevator to desired pose", command_elevator);
     CommandHandler::registerCommand("moveElevator(side,angle)", "Raise elevator to desired angle", command_move_elevator);
     CommandHandler::registerCommand("raise(side)", "Raise elevator", command_raise);
@@ -50,22 +68,22 @@ FLASHMEM void registerCommands() {
     CommandHandler::registerCommand("pump(side)", "enable pump", command_pump);
     CommandHandler::registerCommand("ev(side)", " disable pump", command_ev);
     CommandHandler::registerCommand("initPump", " Init Pump", command_initPump);
-    CommandHandler::registerCommand("cruise", " Enable cruise mode", command_cruise);
-    CommandHandler::registerCommand("feed(feedrate)", " Set Move feedrate", command_feed);
+    CommandHandler::registerCommand("servo(side, servoID, pose)", "move servo to position", command_servo);
+    //CommandHandler::registerCommand("servo_pos(side, servoID, pose)", "move servo to pose", command_servo_pos);
+    CommandHandler::registerCommand("printServo(side)", "print servo mapping", command_printServo);
+
+
+
+    
     CommandHandler::registerCommand("music", " Play a sound", command_music);
-    CommandHandler::registerCommand("radar", " Toogle radar view on neopixel", command_radar);
+
+
     CommandHandler::registerCommand("test", " Dummy Test function ", command_test);
     CommandHandler::registerCommand("scale(value)", " Set otos linear scale", command_otos_scale);
     CommandHandler::registerCommand("calibrate", " calibrate otos linear scale", command_otos_calibration);
     
-    CommandHandler::registerCommand("servo(side, servoID, pose)", "move servo to position", command_servo);
-    //CommandHandler::registerCommand("servo_pos(side, servoID, pose)", "move servo to pose", command_servo_pos);
-    CommandHandler::registerCommand("printServo(side)", "print servo mapping", command_printServo);
-    CommandHandler::registerCommand("collisionDetect(state)", "Toggle collision detection", command_collision_detect);
 
-    //CommandHandler::registerCommand("open(side)", "Open actuator on a specific side", command_open);
-    //CommandHandler::registerCommand("close(side)", "Close actuator on a specific side", command_close);
-    CommandHandler::registerCommand("recalage()", "Execute recalage routine", command_recalage);
+
     CommandHandler::registerCommand("print(value)", "Print the result of an expression in the terminal", command_print);
     CommandHandler::registerCommand("stats", "Print cyclic stats", command_stats);
     CommandHandler::registerCommand("health", "Print full service health snapshot", command_health);
@@ -74,8 +92,6 @@ FLASHMEM void registerCommands() {
 
     // Calibration
     CommandHandler::registerCommand("calib_status",              "Print all calibration values",              command_calib_status);
-    CommandHandler::registerCommand("calib_save",                "Save calibration to SD",                    command_calib_save);
-    CommandHandler::registerCommand("calib_load",                "Load calibration from SD",                  command_calib_load);
     CommandHandler::registerCommand("calib_reset",               "Reset calibration to defaults",             command_calib_reset);
     CommandHandler::registerCommand("calib_cart(x,y,rot)",       "Set Cartesian scale factors",               command_calib_cart);
     CommandHandler::registerCommand("calib_holo(a,b,c)",         "Set per-wheel holonomic scale factors",     command_calib_holo);
@@ -86,6 +102,9 @@ FLASHMEM void registerCommands() {
 
     // Stall calibration probe — approach wall, detect stall, correct position, back off
     CommandHandler::registerCommand("stall_probe(wall,face,clearance,degagement)", "Stall-detection calibration probe against a wall", command_stall_probe);
+
+    // Stall auto-calibration — iteratively tune stall.stag_move_mm / stall.stag_time
+    CommandHandler::registerCommand("calib_stall(face,maxIter)", "Auto-tune stall detection (stagnation) against WEST border", command_calib_stall);
 
     // Motion — arc / rotation around arbitrary point
     CommandHandler::registerCommand("goAround(cx,cy,angleDeg)",  "Rotate around point (cx,cy) by angle",      command_goAround);
@@ -480,6 +499,61 @@ FLASHMEM void command_stall_probe(const args_t& args) {
              stats.traveledMm,
              stats.stallMinTransMm);
     Console::info("StallProbe") << g_lastCalibReport << Console::endl;
+}
+
+/**
+ * calib_stall(face[, maxIter]) — auto-tune de la détection de collision.
+ *
+ * Itère des tests vrai-positif (bump WEST border, doit stall) et faux-positif
+ * (400 mm en zone libre, ne doit pas stall) en ajustant les params stagnation
+ * (RuntimeConfig stall.stag_move_mm / stall.stag_time) jusqu'à convergence.
+ *
+ * Args :
+ *   face    : face robot contre la bordure WEST (A|AB|B|BC|C|CA). Défaut AB.
+ *   maxIter : itérations max avant abandon (clampé [1, 20]). Défaut 6.
+ *
+ * Report T:cal :
+ *   kind=calib_stall iter=<n> stag_move=<mm> stag_time=<s>
+ *     status=<converged|abandoned> phaseA=<0|1> phaseB=<0|1>
+ */
+FLASHMEM void command_calib_stall(const args_t& args) {
+    g_lastCalibReport[0] = 0;
+
+    RobotCompass rc = RobotCompass::AB;
+    int maxIter     = 6;
+
+    if (args.size() >= 1) {
+        String faceStr = args[0];
+        if (!validCompassString(faceStr)) {
+            snprintf(g_lastCalibReport, sizeof(g_lastCalibReport),
+                     "kind=error msg=invalid_face_%s", faceStr.c_str());
+            return;
+        }
+        rc = compassFromString(faceStr);
+    }
+    if (args.size() >= 2) {
+        maxIter = args[1].toInt();
+        if (maxIter < 1)  maxIter = 1;
+        if (maxIter > 20) maxIter = 20;
+    }
+
+    if (motion.isMoving()) {
+        calibReportError("motion_busy");
+        return;
+    }
+
+    // Lance la calibration (peut durer 30-90 s selon itérations)
+    StallCalibResult r = calibrateStall(rc, maxIter);
+
+    // Report final pour la télémétrie
+    snprintf(g_lastCalibReport, sizeof(g_lastCalibReport),
+             "kind=calib_stall iter=%d stag_move=%.3f stag_time=%.3f"
+             " status=%s phaseA=%d phaseB=%d",
+             r.iter, r.stagMoveMm, r.stagTimeS,
+             r.converged ? "converged" : "abandoned",
+             r.phaseAOk ? 1 : 0,
+             r.phaseBOk ? 1 : 0);
+    Console::info("CalibStall") << g_lastCalibReport << Console::endl;
 }
 
 // Motion — pass-through waypoint (used in chained via(x,y);go(x,y) commands)

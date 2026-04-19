@@ -132,8 +132,8 @@ namespace Settings {
 
         // ---- Limites cinématiques ----
         const float
-        MAX_SPEED     = 3800,             // mm/s  (OTOS max tracking speed : 2.5 m/s)
-        MAX_ACCEL     = 3500,             // mm/s²
+        MAX_SPEED     = 1800,             // mm/s  (OTOS max tracking speed : 2.5 m/s)
+        MAX_ACCEL     = 1500,             // mm/s²
         MAX_ROT_SPEED = 10,               // rad/s
         MAX_ROT_ACCEL = 30.0f;            // rad/s²
 
@@ -143,13 +143,28 @@ namespace Settings {
         MIN_ANGLE    = 2.0f * DEG_TO_RAD; // rad — tolérance angulaire (~2°)
 
         // ---- Détection de blocage (stall) ----
+        // Defaults compile-time.  À runtime ils peuvent être écrasés par
+        // RuntimeConfig (cfg_set stall.*) — voir PositionController::start().
         namespace Stall {
-            constexpr uint32_t DELAY_MS         = 1000;
-            constexpr uint32_t PERIOD_MS         = 500;
-            constexpr float    TRANS_DISP_MM     = 5.0f;
-            constexpr float    ANGLE_DISP_RAD    = 0.02f;
-            constexpr float    TARGET_TRANS_MM   = 20.0f;
-            constexpr float    TARGET_ANGLE_RAD  = 0.05f;
+            // Sliding-window (legacy displacement check)
+            constexpr uint32_t DELAY_MS         = 1000;     // délai avant 1er check (ms)
+            constexpr uint32_t PERIOD_MS        = 500;      // période de check (ms)
+            constexpr float    TRANS_DISP_MM    = 5.0f;     // déplacement min attendu sur fenêtre (mm)
+            constexpr float    ANGLE_DISP_RAD   = 0.02f;    // rotation min attendue (rad)
+            constexpr float    TARGET_TRANS_MM  = 20.0f;    // tolérance trans d'arrivée (mm)
+            constexpr float    TARGET_ANGLE_RAD = 0.05f;    // tolérance angulaire d'arrivée (rad)
+
+            // Velocity mismatch (cmdVel vs otosVel) — détection rapide par axe
+            constexpr float    VEL_CMD_MIN_MMS  = 30.0f;    // cmd min pour considérer (mm/s)
+            constexpr float    VEL_OTOS_MAX_MMS = 10.0f;    // otos sous ce seuil = "immobile" (mm/s)
+            constexpr float    VEL_STALL_TIME_S = 0.20f;    // durée sustained mismatch (s)
+            constexpr float    VEL_ROT_MIN_RADS = 0.3f;     // cmd rot min (rad/s)
+            constexpr float    VEL_ROT_MAX_RADS = 0.1f;     // otos rot max (rad/s)
+
+            // Position stagnation (erreur PID qui ne décroît plus)
+            constexpr float    STAG_MOVE_MM     = 0.5f;     // progrès min d'erreur / fenêtre 100ms (mm)
+            constexpr float    STAG_TIME_S      = 0.40f;    // durée de stagnation déclenchante (s)
+            constexpr float    STAG_ERROR_MM    = 3.0f;     // seuil min d'erreur PID pour considérer (mm)
         }
     }
 
@@ -181,11 +196,52 @@ namespace Settings {
         constexpr unsigned long persitency = 1000;  // ms
     }
 
+    // ─────────────────────────────────────────────────────────────────────────
+    //  Calibration — defaults compile-time
+    //
+    //  Source unique des defaults ; consommés par Calibration::reset() et
+    //  lors de l'initialisation de Calibration::Current.
+    //
+    //  IMPORTANT : deux profils distincts, un par contrôleur de motion.
+    //
+    //   - Stepper  : boucle OUVERTE (StepperController, open-loop pas-à-pas).
+    //                Pas de feedback OTOS : les facteurs Cartesian corrigent
+    //                directement l'erreur géométrique de la plateforme.
+    //
+    //   - Cruise   : boucle FERMÉE (PositionController + OTOS + PID).
+    //                L'OTOS fournit la position réelle ; le PID compense les
+    //                écarts mécaniques. Les facteurs Cartesian sont donc plus
+    //                proches de l'identité et surtout dépendent du scalar OTOS.
+    //
+    //  Calibration::Current est initialisé à partir de DEFAULTS (alias de
+    //  Cruise, puisque le mode normal d'utilisation est closed-loop). Pour
+    //  basculer en profil stepper à l'init d'un move open-loop, un module
+    //  futur pourra écrire Calibration::Current = Settings::Calibration::Stepper
+    //  avant d'appeler kinematics.ik().
+    //
+    //  Scalars OTOS : cappés par le hardware dans [0.872, 1.127].
+    // ─────────────────────────────────────────────────────────────────────────
     namespace Calibration {
-        const CalibrationProfile Primary = {
-            { 1.0f,   1.0f,   1.0f  },  // Holonomic : ABC
-            { 1.089f,-1.089f, 0.831f}   // Cartesian : XY ROT
+        // NB : CalibrationProfile contient des Vec3 dont les ctors ne sont pas
+        // constexpr — on utilise `inline const` (C++17) pour avoir une
+        // définition unique dédupliquée au link, malgré l'inclusion multiple.
+
+        // Open-loop profile : StepperController (aucune correction OTOS).
+        inline const CalibrationProfile Stepper = {
+            { 1.0f,    1.0f,    1.0f   },   // Holonomic : A   B   C
+            { 1.089f, -1.089f,  0.831f },   // Cartesian : X   Y   ROT
         };
+        // Closed-loop profile : PositionController + OTOS + PID.
+        inline const CalibrationProfile Cruise = {
+            { 1.0f,       1.0f,       1.0f   },   // Holonomic : A   B   C
+            { 1.223249f, -1.203677f,  0.831f },   // Cartesian : X   Y   ROT
+        };
+        // Alias : utilisé pour initialiser Calibration::Current
+        // (mode par défaut = cruise closed-loop).
+        inline const CalibrationProfile& DEFAULTS = Cruise;
+
+        constexpr float OTOS_LINEAR_DEFAULT  = 1.022f;
+        constexpr float OTOS_ANGULAR_DEFAULT = 1.0f;
     }
 
     // ─────────────────────────────────────────────────────────────────────────
