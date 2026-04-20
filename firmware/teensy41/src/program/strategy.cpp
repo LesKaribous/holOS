@@ -12,24 +12,29 @@
 // TODO : déplacer dans Actuators
 Adafruit_PWMServoDriver pwm = Adafruit_PWMServoDriver();
 
-void test(){
-// ─── Section à risque (approche d'un objet, passage étroit) ───
-motion.collide(true);
-async motion.go(target1);
-async motion.go(target2);
-if (motion.getLastStats().stalled) {
-    // collision détectée → repli / replan
-    handleCollision();
-}
-motion.collide(false);
-
-// ─── Zone libre rapide ─────────────────────────────────────
-motion.noStall().feedrate(0.5f);  // one-shot, override explicite
-async motion.go(target3);
-
-// ─── Recalage au mur ──────────────────────────────────────
-async motion.withBorderSnap().goPolar(heading, distance);  // spécialisé
-}
+// ============================================================
+//  Exemples d'usage de l'API motion (collide / snap / feedrate)
+//  — pseudo-code, pour documentation uniquement.
+// ============================================================
+//
+//   // ─── Section à risque (approche d'un objet, passage étroit) ───
+//   motion.collide(true);
+//   async motion.go(target1);
+//   async motion.go(target2);
+//   if (motion.getLastStats().stalled) {
+//       // collision détectée → repli / replan
+//       handleCollision();
+//   }
+//   motion.collide(false);
+//
+//   // ─── Zone libre rapide ─────────────────────────────────────
+//   motion.feedrate(0.5f);  // one-shot, override explicite
+//   async motion.go(target3);
+//
+//   // ─── Recalage au mur ──────────────────────────────────────
+//   motion.snap(true);
+//   async motion.goPolar(heading, distance);
+//   motion.snap(false);
 
 
 // ============================================================
@@ -72,7 +77,7 @@ static void collectStock(Vec2 target, TableCompass tc, RobotCompass rc) {
     approach += PolarVec(sidewiseoffset_dir * DEG_TO_RAD, sideOffset).toVec2(); // Offset latéral pour compenser la largeur du préhenseur
     grab += PolarVec(sidewiseoffset_dir * DEG_TO_RAD, sideOffset).toVec2(); // Offset latéral pour compenser la largeur du préhenseur
 
-    actuators.grab(rc);
+    actuators.grab(rc); //wide open
     async motion.goAlign(approach, rc, getCompassOrientation(tc));
     RuntimeConfig::setInt("motion.timeout_ms", 2000); // 5 secondes
     motion.collide(true);
@@ -81,11 +86,19 @@ static void collectStock(Vec2 target, TableCompass tc, RobotCompass rc) {
 
     actuators.moveElevator(rc, ElevatorPose::DOWN);
     waitMs(GRAB_DELAY_MS);
+    actuators.drop(rc);//gather
+    waitMs(GRAB_DELAY_MS);
+    actuators.moveElevator(rc, ElevatorPose::STORE);
+    waitMs(GRAB_DELAY_MS);
+    actuators.grab(rc);//wide open
+    waitMs(GRAB_DELAY_MS);
+    actuators.moveElevator(rc, ElevatorPose::DOWN);
+    waitMs(GRAB_DELAY_MS);
     actuators.store(rc);
     waitMs(GRAB_DELAY_MS);
     actuators.moveElevator(rc, ElevatorPose::STORE);
 
-    motion.cancelOnStall(false);
+    motion.collide(false);
     safety.enable();
     motion.setFeedrate(1.0f);
     Console::info("Strategy") << "[collectStock] done      SP=" << String(freeStack()) << Console::endl;
@@ -94,13 +107,13 @@ static void collectStock(Vec2 target, TableCompass tc, RobotCompass rc) {
 // Offset commun factored
 static void storeStock(Vec2 target, TableCompass tc, RobotCompass rc) {
     constexpr float    APPROACH_OFFSET = 450.0f;
-    constexpr float    GRAB_OFFSET     = 120.0f;
+    constexpr float    GRAB_OFFSET     = 50.0f;
     constexpr uint32_t GRAB_DELAY_MS   = 1000;
     constexpr float  sideOffset   = 0;
 
     Vec2 approach = target - PolarVec(getCompassOrientation(tc) * DEG_TO_RAD, APPROACH_OFFSET).toVec2();
     Vec2 grab     = target - PolarVec(getCompassOrientation(tc) * DEG_TO_RAD, GRAB_OFFSET).toVec2();
-    Vec2 grabrecal= target - PolarVec(getCompassOrientation(tc) * DEG_TO_RAD, GRAB_OFFSET-20).toVec2();
+    Vec2 grabrecal= target - PolarVec(getCompassOrientation(tc) * DEG_TO_RAD, GRAB_OFFSET-50).toVec2();
 
     float sidewiseoffset_dir = getCompassOrientation(TableCompass::SOUTH);
     approach += PolarVec(sidewiseoffset_dir * DEG_TO_RAD, sideOffset).toVec2(); // Offset latéral pour compenser la largeur du préhenseur
@@ -111,7 +124,8 @@ static void storeStock(Vec2 target, TableCompass tc, RobotCompass rc) {
     async motion.goAlign(approach, rc, getCompassOrientation(tc));
     safety.disable();
     motion.setFeedrate(0.3f);
-    RuntimeConfig::setInt("motion.timeout_ms", 2000); // 5 secondes
+    RuntimeConfig::setInt("motion.timeout_ms", 5000); // 5 secondes
+    motion.collide(true);
     async motion.goAlign(grab,     rc, getCompassOrientation(tc));
     
 
@@ -123,10 +137,12 @@ static void storeStock(Vec2 target, TableCompass tc, RobotCompass rc) {
     motion.setFeedrate(0.3f);
     async motion.goAlign(grabrecal,     rc, getCompassOrientation(tc));
     motion.setFeedrate(1.0f);
+    motion.collide(false);
     async motion.goAlign(approach,     rc, getCompassOrientation(tc));
+    actuators.store(rc); //close gripper avoid collision
 
-    RuntimeConfig::setInt("motion.timeout_ms", 6000); // 5 secondes
-    motion.cancelOnStall(false);
+    RuntimeConfig::setInt("motion.timeout_ms", 10000); // 5 secondes
+    motion.collide(false);
     safety.enable();
     motion.setFeedrate(1.0f);
     Console::info("Strategy") << "[storeStock] done      SP=" << String(freeStack()) << Console::endl;
@@ -152,9 +168,9 @@ static bool pantryEmpty = false;
 
 static BlockResult blockCollectA() {
     if(ihm.isColor(Settings::BLUE)) {
-        collectStock(POI::stockBlue_01 + Vec2(0,40), TableCompass::EAST, RobotCompass::AB);
+        collectStock(POI::stockBlue_01 + Vec2(0,0), TableCompass::EAST, RobotCompass::AB);
     } else {
-        collectStock(POI::stockYellow_01 + Vec2(0,40), TableCompass::WEST, RobotCompass::AB);
+        collectStock(POI::stockYellow_01 + Vec2(0,0), TableCompass::WEST, RobotCompass::AB);
     }
 
     return BlockResult::SUCCESS;
@@ -162,9 +178,9 @@ static BlockResult blockCollectA() {
 
 static BlockResult blockStoreA() {
     if(ihm.isColor(Settings::BLUE)) {
-        storeStock(POI::pantry_07 + Vec2(0,25) + pantryEmpty * Vec2(50,0), TableCompass::EAST, RobotCompass::AB);
+        storeStock(POI::pantry_07 + Vec2(0,0) + pantryEmpty * Vec2(30,0), TableCompass::EAST, RobotCompass::AB);
     } else {
-        storeStock(POI::pantry_03 + Vec2(0,25) + pantryEmpty * Vec2(50,0), TableCompass::WEST, RobotCompass::AB);
+        storeStock(POI::pantry_03 + Vec2(0,0) + pantryEmpty * Vec2(30,0), TableCompass::WEST, RobotCompass::AB);
     }
     
     
@@ -175,46 +191,97 @@ static BlockResult blockStoreA() {
 static BlockResult blockCollectB() {
 
     if(ihm.isColor(Settings::BLUE)) {
-        collectStock(POI::stockBlue_02+ Vec2(0,60), TableCompass::EAST, RobotCompass::AB);
+        collectStock(POI::stockBlue_02+ Vec2(0,0), TableCompass::EAST, RobotCompass::AB);
     } else {
-        collectStock(POI::stockYellow_02+ Vec2(0,60), TableCompass::WEST, RobotCompass::AB);
+        collectStock(POI::stockYellow_02+ Vec2(0,0), TableCompass::WEST, RobotCompass::AB);
     }
 
-    return motion.wasSuccessful() ? BlockResult::SUCCESS : BlockResult::FAILED;
+    return BlockResult::SUCCESS;
 }
 
 static BlockResult blockStoreB() {
     if(ihm.isColor(Settings::BLUE)) {
-        storeStock(POI::pantry_07 + Vec2(0,40) + pantryEmpty * Vec2(50,0), TableCompass::EAST, RobotCompass::AB);
+        storeStock(POI::pantry_07 + Vec2(0,0) + pantryEmpty * Vec2(30,0), TableCompass::EAST, RobotCompass::AB);
     } else {
-        storeStock(POI::pantry_03 + Vec2(0,40) + pantryEmpty * Vec2(50,0), TableCompass::WEST, RobotCompass::AB);
+        storeStock(POI::pantry_03 + Vec2(0,0) + pantryEmpty * Vec2(30,0), TableCompass::WEST, RobotCompass::AB);
     }
 
     pantryEmpty = true;
-    return motion.wasSuccessful() ? BlockResult::SUCCESS : BlockResult::FAILED;
+    return BlockResult::SUCCESS;
+}
+
+
+static BlockResult blockCollectC() {
+    probeBorder(TableCompass::SOUTH, RobotCompass::BC, 100, 300);
+    if(ihm.isColor(Settings::BLUE)) {
+        collectStock(POI::stockBlue_04+ Vec2(20,-30), TableCompass::NORTH, RobotCompass::AB);
+    } else {
+        collectStock(POI::stockYellow_04+ Vec2(20,-30), TableCompass::NORTH, RobotCompass::AB);
+    }
+
+    return BlockResult::SUCCESS;
+}
+
+static BlockResult blockStoreC() {
+    if(ihm.isColor(Settings::BLUE)) {
+        storeStock(POI::pantry_06 + Vec2(-30,-250) + pantryEmpty * Vec2(0, 50), TableCompass::SOUTH, RobotCompass::AB);
+    } else {
+        storeStock(POI::pantry_04 + Vec2(-30,-250) + pantryEmpty * Vec2(0, 50), TableCompass::SOUTH, RobotCompass::AB);
+    }
+
+    pantryEmpty = true;
+    return BlockResult::SUCCESS;
 }
 
 static BlockResult thermometer_set() {
-    RuntimeConfig::setInt("motion.timeout_ms", 4000); // 5 secondes
+    RuntimeConfig::setInt("motion.timeout_ms", 5000); // 5 secondes
+    motion.collide(false);
+    motion.snap(false);
+    motion.yield(true);
     if(ihm.isColor(Settings::BLUE)) {
-        async motion.goAlign(POI::thermometer_hot_blue, RobotCompass::C, getCompassOrientation(TableCompass::SOUTH));
+        async motion.goAlign(POI::thermometer_hot_blue_approach, RobotCompass::C, getCompassOrientation(TableCompass::SOUTH));
+        RuntimeConfig::setInt("motion.timeout_ms", 2000); // 5 secondes
+        async motion.go(POI::thermometer_hot_blue);
     } else {
-        async motion.goAlign(POI::thermometer_hot_yellow, RobotCompass::C, getCompassOrientation(TableCompass::WEST));
+        async motion.goAlign(POI::thermometer_hot_yellow_approach, RobotCompass::C, getCompassOrientation(TableCompass::WEST));
+        RuntimeConfig::setInt("motion.timeout_ms", 2000); // 5 secondes
+        async motion.go(POI::thermometer_hot_yellow);
     }
 
     //actuators.moveElevator(RobotCompass::CA, ElevatorPose::STORE);
     actuators.getActuatorGroup(RobotCompass::CA).moveServoToPose((int)ServoIDs::GRABBER_RIGHT, (int) ManipulatorPose::DROP, 100);
+    actuators.getActuatorGroup(RobotCompass::CA).moveServoToPose((int)ServoIDs::ELEVATOR, (int) ElevatorPose::UP, 100);
+    actuators.getActuatorGroup(RobotCompass::CA).moveServoToPose((int)ServoIDs::GRABBER_LEFT, (int) ManipulatorPose::DROP, 100);
 
     os.wait(1000);
 
     if(ihm.isColor(Settings::BLUE)) {
-        async motion.withStall().go(POI::thermometer_target_blue);
+        async motion.goAlign(POI::thermometer_hot_blue, RobotCompass::CA, getCompassOrientation(TableCompass::SOUTH));
     } else {
-        async motion.withStall().go(POI::thermometer_target_yellow);
+        async motion.goAlign(POI::thermometer_hot_yellow, RobotCompass::CA, getCompassOrientation(TableCompass::SOUTH));
+    }
+
+    RuntimeConfig::setInt("motion.timeout_ms", 20000); // 5 secondes
+    //motion.collide(true);
+    if(ihm.isColor(Settings::BLUE)) {
+        async motion.go(POI::thermometer_target_blue);
+    } else {
+        async motion.go(POI::thermometer_target_yellow);
+    }
+    motion.collide(false);
+    motion.snap(false);
+    motion.yield(false);
+
+    if(ihm.isColor(Settings::BLUE)) {
+        async motion.go(POI::thermometer_target_blue - Vec2(0,200));
+    } else {
+        async motion.go(POI::thermometer_target_yellow - Vec2(0,200));
     }
 
     actuators.getActuatorGroup(RobotCompass::CA).moveServoToPose((int)ServoIDs::GRABBER_RIGHT, (int) ManipulatorPose::STORE, 100);
-    motion.cancelOnStall(false);
+    actuators.getActuatorGroup(RobotCompass::CA).moveServoToPose((int)ServoIDs::ELEVATOR, (int) ElevatorPose::DOWN, 100);
+    actuators.getActuatorGroup(RobotCompass::CA).moveServoToPose((int)ServoIDs::GRABBER_LEFT, (int) ManipulatorPose::STORE, 100);
+
     return BlockResult::SUCCESS;
 }
 
@@ -234,21 +301,58 @@ namespace ZoneCheck {
 }
 
 static bool isZoneAFree() {
-    bool occupied = occupancy.isZoneOccupied(POI::stockYellow_01, ZoneCheck::RADIUS);
+    bool occupied = false;
+    
+          //Sortir zone départ 350 550
+    if(ihm.isColor(Settings::BLUE)) {
+        occupied = occupancy.isZoneOccupied(POI::stockBlue_01, ZoneCheck::RADIUS);
+    } else {
+        occupied = occupancy.isZoneOccupied(POI::stockYellow_01, ZoneCheck::RADIUS);
+    }
+    
     if (occupied)
         Console::warn("Strategy") << "Zone A occupee — bloc skipe" << Console::endl;
     return !occupied;
 }
 
 static bool isZoneBFree() {
-    bool occupied = occupancy.isZoneOccupied(POI::stockYellow_02, ZoneCheck::RADIUS);
+    bool occupied = false;
+
+    if(ihm.isColor(Settings::BLUE)) {
+        occupied = occupancy.isZoneOccupied(POI::stockBlue_02, ZoneCheck::RADIUS);
+    } else {
+        occupied = occupancy.isZoneOccupied(POI::stockYellow_02, ZoneCheck::RADIUS);
+    }
+    
+    if (occupied)
+        Console::warn("Strategy") << "Zone B occupee — bloc skipe" << Console::endl;
+    return !occupied;
+}
+
+
+static bool isZoneCFree() {
+    bool occupied = false;
+
+    if(ihm.isColor(Settings::BLUE)) {
+        occupied = occupancy.isZoneOccupied(POI::stockBlue_04, ZoneCheck::RADIUS);
+    } else {
+        occupied = occupancy.isZoneOccupied(POI::stockYellow_04, ZoneCheck::RADIUS);
+    }
+    
     if (occupied)
         Console::warn("Strategy") << "Zone B occupee — bloc skipe" << Console::endl;
     return !occupied;
 }
 
 static bool isZoneThermoFree() {
-    bool occupied = occupancy.isZoneOccupied(POI::thermometer_hot_yellow, ZoneCheck::RADIUS);
+    bool occupied = false;
+
+    if(ihm.isColor(Settings::BLUE)) {
+        occupied = occupancy.isZoneOccupied(POI::thermometer_hot_blue, ZoneCheck::RADIUS);
+    } else {
+        occupied = occupancy.isZoneOccupied(POI::thermometer_hot_yellow, ZoneCheck::RADIUS);
+    }
+
     if (occupied)
         Console::warn("Strategy") << "Zone Thermo occupee — bloc skipe" << Console::endl;
     return !occupied;
@@ -267,6 +371,8 @@ FLASHMEM void registerBlocks() {
     reg.add("store_A",   10, 150, Timing::STORE_STOCK_A,   blockStoreA);
     reg.add("collect_B",   10, 150, Timing::COLLECT_STOCK_B,   blockCollectB, isZoneBFree);
     reg.add("store_B",   10, 150, Timing::STORE_STOCK_B,   blockStoreB, isZoneBFree);
+    reg.add("collect_C",   10, 150, Timing::COLLECT_STOCK_B,   blockCollectC, isZoneCFree);
+    reg.add("store_C",   10, 150, Timing::STORE_STOCK_B,   blockStoreC, isZoneCFree);
     reg.add("thermo_set", 8, 150, Timing::THERMO_SET,   thermometer_set, isZoneThermoFree);
     // reg.add("collect_B", 8, 80, Timing::COLLECT_STOCK_B, blockCollectB, isZoneBFree);
     // reg.add("store_B",   8, 80, Timing::STORE_STOCK_B,   blockStoreB);
@@ -288,6 +394,8 @@ FLASHMEM void match() {
 
     motion.setFeedrate(0.6f);
     motion.enableCruiseMode();
+    motion.collide(false);
+    motion.snap(false);
 
     // Ensure PCA9685 pump driver is initialized even if recalage() was
     // skipped (defensive — initPump is idempotent).
@@ -328,13 +436,20 @@ FLASHMEM void match() {
     stockB.addStep("store_B",   Timing::STORE_STOCK_B,   blockStoreB, nullptr, false);  // non-annulable : robot porte un objet
     stockB.setMaxRetries(Mission::INFINITE_RETRIES);
 
-    { Mission& m = planner.addMission("thermo_set", 10, 150);
-      m.addStep("thermo_set", Timing::THERMO_SET, thermometer_set, isZoneThermoFree);
-      m.addDependency(stockB);
-      m.setMaxRetries(Mission::INFINITE_RETRIES); }
 
-    
-      //Sortir zone départ 350 550
+    Mission& m = planner.addMission("thermo_set", 10, 150);
+    m.addStep("thermo_set", Timing::THERMO_SET, thermometer_set, isZoneThermoFree);
+    m.addDependency(stockB);
+    m.setMaxRetries(Mission::INFINITE_RETRIES);
+
+    Mission& stockC = planner.addMission("stock_C", 5, 150);
+    stockC.addStep("collect_B", Timing::COLLECT_STOCK_B, blockCollectC, isZoneCFree);
+    stockC.addStep("store_B",   Timing::STORE_STOCK_B,   blockStoreC, nullptr, false);  // non-annulable : robot porte un objet
+    stockC.addDependency(m);
+    stockC.setMaxRetries(1);
+
+
+    //Sortir zone départ 350 550
     if(ihm.isColor(Settings::BLUE)) {
         async motion.go(Vec2(3000-350,550));
     } else {
@@ -342,12 +457,12 @@ FLASHMEM void match() {
     }
 
     planner.run();
-    Vec2 poi_y = Vec2(600,850);//TODO Remove
+    RuntimeConfig::setInt("motion.timeout_ms", 20000); // 5 secondes
 
     bool success = false;
     for(int i = 0; i < 5; i++){
         if(ihm.isColor(Settings::BLUE)) {
-            async motion.go(poi_y /*POI::wait_blue*/);
+            async motion.go(POI::wait_blue);
         } else {
             async motion.go(POI::wait_yellow);
         }
@@ -376,7 +491,7 @@ FLASHMEM void recalage(){
 
     if(ihm.isColor(Settings::BLUE)){
         
-        motion.setAbsPosition(Vec3( Vec2(3000-140,125), 150 * DEG_TO_RAD));
+        motion.setAbsPosition(Vec3( Vec2(3000-140,100), 150 * DEG_TO_RAD));
         motion.goAlign(Vec2(3000-350, 300), RobotCompass::AB, getCompassOrientation(TableCompass::WEST));
         actuators.moveElevator(RobotCompass::CA, ElevatorPose::DOWN);
         /*
@@ -423,14 +538,26 @@ FLASHMEM void nearEnd(){
     //nav.setAbsolute();
     safety.enable();
 
-    // Go to the waiting point near SIMAs
+    //point de passage
+    motion.collide(false);
+    motion.snap(false);
+    motion.yield(true);
+
+
     if(ihm.isColor(Settings::BLUE)) {
-        async motion.go(POI::startBlue);
-    }
-    else {
-        async motion.go(POI::startYellow);
+        async motion.go(Vec2(3000-350,700));
+    } else {
+        async motion.go(Vec2(350,700));
     }
 
+
+    if(ihm.isColor(Settings::BLUE)) {
+        async motion.go(POI::startBlue + Vec2(0,-100));
+    }
+    else {
+        async motion.go(POI::startYellow + Vec2(0,-100));
+    }
+    motion.collide(false);
     // // Time to wait befor SIMAs leave the Backstage
     // unsigned long left = chrono.getTimeLeft();
     // unsigned long waitSima = (left > 5000) ? (left - 5000) : 0; 
@@ -463,7 +590,7 @@ RobotCompass previousActuator(RobotCompass rc){
 
 FLASHMEM void calibrate(){
     motion.disableCruiseMode();
-    //motion.cancelOnStall(false);
+    //motion.collide(false);
 
     float start = localisation.getPosition().x;
     float distance = 0;
@@ -491,56 +618,54 @@ FLASHMEM void calibrate(){
         
     }
 
-    //motion.cancelOnStall(false);
+    //motion.collide(false);
     motion.enableCruiseMode();
 }
 
 
 FLASHMEM void probeBorder(TableCompass tc, RobotCompass rc, float clearance, float approachDist, float probeDist, float feedrate){
-    
-	boolean wasAbsolute = motion.isAbsolute();
+
+    boolean wasAbsolute = motion.isAbsolute();
     float currentFeedrate = motion.getFeedrate();
     actuators.moveElevator(rc, ElevatorPose::UP);
-    
+
     motion.setFeedrate(feedrate);
-	async motion.align(rc, getCompassOrientation(tc));
+    async motion.align(rc, getCompassOrientation(tc));
     motion.setRelative();
 
-    motion.disableCruiseMode();
-    motion.cancelOnStall(true);
-	async motion.goPolar(getCompassOrientation(rc),approachDist);
-	async motion.goPolar(getCompassOrientation(rc),probeDist);
-    motion.cancelOnStall(false);
+    // Cruise mode requis pour que snap() fonctionne (PID + OTOS + stall detector).
+    // snap(true) : si on stalle près d'une bordure, la coord de l'axe stallé est
+    // automatiquement snappée au mur connu (margin côté Xmin/Ymin, TABLE-margin
+    // côté Xmax/Ymax) et le move termine proprement.
     motion.enableCruiseMode();
-    
-	float _offset = getOffsets(rc);
+    motion.snap(true);
+    async motion.goPolar(getCompassOrientation(rc), approachDist);
+    async motion.goPolar(getCompassOrientation(rc), probeDist);
+    motion.snap(false);
+
+    // Correction explicite de l'orientation : snap ne touche pas à position.c.
+    // On recale aussi la coord selon tc pour rester aligné avec les conventions
+    // des appelants (au cas où snap aurait raté, typiquement si on probe un
+    // obstacle loin des bordures).
+    float _offset  = getOffsets(rc);
+    Vec3  position = motion.estimatedPosition();
     Console::println(_offset);
-	Vec3 position = motion.estimatedPosition();
     Console::println(position);
 
-	if(tc == TableCompass::NORTH){
-		position.y = 0.0 + _offset; //We hit Xmax
-		//_probedX = true;
-	}else if(tc == TableCompass::SOUTH){
-		position.y = 2000.0 - _offset; //We hit Xmin
-		//_probedX = true;
-	}else if(tc == TableCompass::EAST){
-		position.x = 3000.0 - _offset; //We hit Ymax
-		//_probedY = true;
-	}else if(tc == TableCompass::WEST){
-		position.x = 0.0 + _offset; //We hit Ymin
-		//_probedY = true;
-	}
+    if      (tc == TableCompass::NORTH) position.y = 0.0    + _offset;
+    else if (tc == TableCompass::SOUTH) position.y = 2000.0 - _offset;
+    else if (tc == TableCompass::EAST)  position.x = 3000.0 - _offset;
+    else if (tc == TableCompass::WEST)  position.x = 0.0    + _offset;
     position.c = DEG_TO_RAD * (getCompassOrientation(tc) - getCompassOrientation(rc));
-	
+
     motion.setAbsPosition(position);
     delay(200);
-    
-    if(clearance != 0){ 
-        async motion.goPolar(getCompassOrientation(rc),-clearance);
+
+    if (clearance != 0) {
+        async motion.goPolar(getCompassOrientation(rc), -clearance);
     }
-    
-	if(wasAbsolute) motion.setAbsolute();
+
+    if (wasAbsolute) motion.setAbsolute();
     motion.setFeedrate(currentFeedrate);
     actuators.moveElevator(rc, ElevatorPose::DOWN);
 }

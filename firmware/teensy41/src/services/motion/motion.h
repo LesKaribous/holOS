@@ -24,12 +24,17 @@
 //
 //  Usage typique dans un bloc Mission :
 //
-//    // Move simple (auto-cancel si coincé)
+//    // Move simple (pas de stall par défaut)
+//    async motion.go(500, 200);
+//
+//    // Moves avec cancel-on-stall (sticky) :
+//    motion.collide(true);
 //    async motion.go(500, 200);
 //    if (!motion.wasSuccessful()) return BlockResult::FAILED;
+//    motion.collide(false);
 //
-//    // Move sans détection de blocage :
-//    async motion.noStall().go(500, 200);
+//    // Moves capables de glisser contre un mur (sticky) :
+//    motion.snap(true);  async motion.go(1500, 0);  motion.snap(false);
 //
 //    // Move avec feedrate réduit :
 //    async motion.feedrate(0.7f).go(500, 200);
@@ -63,13 +68,14 @@ public:
         bool  stallEnabled     = false;   // active la stall detection
         bool  cancelOnStall    = false;   // annule le move si stall détecté
         bool  borderSnap       = false;   // border-aware stall: snap to wall + per-axis complete
+        bool  yieldAxis        = false;   // per-axis release on stall: target=pos, no localisation update
         bool  optimizeRotation = true;    // minimise la rotation (stepper mode)
         float feedrate         = -1.0f;   // -1 → utilise le feedrate global
 
         /// Build a MoveOptions with global defaults from RuntimeConfig:
         ///   motion.border_snap   (0/1, default 0) — enables borderSnap + stall
         ///   motion.collision     (0/1, default 0) — enables cancelOnStall + stall
-        /// Explicit fluent calls (noStall, withBorderSnap...) override these.
+        /// Explicit fluent calls (collide / snap) override these.
         static MoveOptions withGlobalDefaults() {
             MoveOptions o;
             bool snap  = RuntimeConfig::getInt("motion.border_snap", 0) != 0;
@@ -152,14 +158,23 @@ public:
     // ne casse pas le snap tant que celui-ci est sticky.
     Motion& snap(bool on);
 
+    // ---- API yield (sticky) ----
+    //   motion.yield(true);         // sur stall d'un axe : lâche la consigne
+    //                               //   sur cet axe (target = position courante)
+    //                               //   SANS toucher à la localisation, puis
+    //                               //   continue le move sur les autres axes.
+    //   async motion.go(x1, y1);    // XY : touche X+ → X cancel, Y continue
+    //   motion.yield(false);
+    // Différent de snap() : yield() NE met PAS à jour la position estimée ;
+    // idéal quand on ne fait pas confiance à la coord exacte de la bordure
+    // (obstacle, pièce adverse, bordure non plane). Combinable avec snap() —
+    // snap gagne si la target pointe explicitement vers une bordure, yield
+    // prend le relais pour les stalls "non-bordure".
+    Motion& yield(bool on);
+
     // ---- Fluent options one-shot — n'affectent que le PROCHAIN move ----
-    // Enchaîner avant la commande de déplacement :
-    //   async motion.noStall().feedrate(0.8f).go(x, y);
-    // Préférer collide() pour la gestion de collision courante.
-    Motion& noStall();                      // désactive stall detection
-    Motion& withStall(bool on = true);      // contrôle fin de la stall detection
-    Motion& cancelOnStall(bool on = true);  // annule si stall détecté
-    Motion& withBorderSnap(bool on = true); // border-aware stall: snap to wall + per-axis complete
+    //   async motion.feedrate(0.8f).go(x, y);
+    // Pour la gestion collision / border-snap, utiliser collide()/snap() sticky.
     Motion& withOptimization(bool on = true);
     Motion& feedrate(float f);
 
@@ -278,6 +293,7 @@ private:
     // Sticky flags for collide() / snap() — survive reset / complete / cancel.
     bool        m_stickyCollide = false;
     bool        m_stickySnap    = false;
+    bool        m_stickyYield   = false;
 
     // Helper : reset m_pendingOpts aux defaults globaux en préservant les stickies.
     void resetPendingOpts();

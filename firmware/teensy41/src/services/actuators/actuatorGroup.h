@@ -3,7 +3,9 @@
 #include "sensor.h"
 #include <vector>
 
-#define MAX_SERVOS 12
+// Renamed from MAX_SERVOS to avoid macro collision with Servo.h from the
+// Teensy Arduino framework which defines its own MAX_SERVOS.
+#define MAX_SERVOS_PER_GROUP 12
 
 class ActuatorGroup{
 private:

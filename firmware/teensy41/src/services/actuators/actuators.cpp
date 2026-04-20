@@ -315,13 +315,31 @@ FLASHMEM void Actuators::store(RobotCompass rc, int speed){
 FLASHMEM void Actuators::moveElevator(RobotCompass rc, ElevatorPose pose, int speed){
 
     if (rc == RobotCompass::AB){
-        if(getActuatorGroup(rc).hasServo((int)ServoIDs::HUGGER_ELEVATOR))
-            getActuatorGroup(rc).getServo((int)ServoIDs::HUGGER_ELEVATOR).moveToPose(CAST_POSE(pose), speed);
+        if(getActuatorGroup(rc).hasServo((int)ServoIDs::HUGGER_ELEVATOR)){
+            SmartServo& s = getActuatorGroup(rc).getServo((int)ServoIDs::HUGGER_ELEVATOR);
+            int target = s.getPose(CAST_POSE(pose));
+            Console::info("Actuators") << "moveElevator AB pose=" << CAST_POSE(pose)
+                                       << " target=" << target
+                                       << " [min=" << s.getMinPos() << " max=" << s.getMaxPos() << "]"
+                                       << Console::endl;
+            s.moveToPose(CAST_POSE(pose), speed);
+        } else {
+            Console::error("Actuators") << "moveElevator AB: no HUGGER_ELEVATOR servo" << Console::endl;
+        }
     }
-    
+
     if (rc == RobotCompass::CA){
-        if(getActuatorGroup(rc).hasServo((int)ServoIDs::ELEVATOR))
-            getActuatorGroup(rc).getServo((int)ServoIDs::ELEVATOR).moveToPose(CAST_POSE(pose), speed);
+        if(getActuatorGroup(rc).hasServo((int)ServoIDs::ELEVATOR)){
+            SmartServo& s = getActuatorGroup(rc).getServo((int)ServoIDs::ELEVATOR);
+            int target = s.getPose(CAST_POSE(pose));
+            Console::info("Actuators") << "moveElevator CA pose=" << CAST_POSE(pose)
+                                       << " target=" << target
+                                       << " [min=" << s.getMinPos() << " max=" << s.getMaxPos() << "]"
+                                       << Console::endl;
+            s.moveToPose(CAST_POSE(pose), speed);
+        } else {
+            Console::error("Actuators") << "moveElevator CA: no ELEVATOR servo" << Console::endl;
+        }
     }
 }
 

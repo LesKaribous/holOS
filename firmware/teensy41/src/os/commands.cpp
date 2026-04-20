@@ -262,7 +262,7 @@ FLASHMEM void command_radar(const args_t &args){
 
 FLASHMEM void command_test(const args_t &args){
     motion.setAbsPosition({913, 1440, 90 * DEG_TO_RAD});
-    bool isYellow = ihm.isColor(Settings::YELLOW);
+    (void)ihm.isColor(Settings::YELLOW);   // isYellow — future use
     initPump();
 }
 
@@ -384,7 +384,7 @@ FLASHMEM void command_probe_open(const args_t& args) {
  *
  * Similar to probe_open() but designed to calibrate / validate stall detection.
  * The robot aligns the specified face toward the wall, then advances with
- * cancelOnStall(true) at a low feedrate.  When the stall detector fires
+ * collide(true) at a low feedrate.  When the stall detector fires
  * (robot hit the wall), the move is cancelled automatically.  The firmware
  * then:
  *   1. Applies the corrected absolute position (known wall coordinate).
@@ -445,22 +445,23 @@ FLASHMEM void command_stall_probe(const args_t& args) {
     motion.setFeedrate(0.20f);    // slow for stall calibration
 
     // 1) Align face toward wall
-    async motion.noStall().align(rc, getCompassOrientation(tc));
+    async motion.align(rc, getCompassOrientation(tc));
 
     // 2) Approach phase (relative, border-snap enabled).
     //    If clearance is too large and the robot hits the wall during
-    //    approach, borderSnap corrects the position and completes the move
-    //    instead of pushing forever with noStall().
+    //    approach, snap() corrects the position and completes the move
+    //    instead of pushing forever.
     motion.setRelative();
-    async motion.withBorderSnap().goPolar(getCompassOrientation(rc), clearance);
+    motion.snap(true);
+    async motion.goPolar(getCompassOrientation(rc), clearance);
+    motion.snap(false);
 
     // 3) Probe phase — advance with stall detection, stop on contact.
-    //    Explicitly disable borderSnap so the move CANCELS on stall
-    //    instead of snapping (we want the raw stall position for calibration).
-    motion.withBorderSnap(false);   // clear global default if active
-    motion.cancelOnStall(true);     // sets stallEnabled + cancelOnStall
+    //    snap(false) + collide(true) → cancel sur stall (pas de snap)
+    //    pour récupérer la position brute de stall pour la calibration.
+    motion.collide(true);
     async motion.goPolar(getCompassOrientation(rc), degagement + 100.0f);  // overshoot target — stall will cancel
-    motion.cancelOnStall(false);
+    motion.collide(false);
 
     // Grab stall stats before they're overwritten
     Motion::MoveStats stats = motion.getLastStats();
@@ -480,7 +481,7 @@ FLASHMEM void command_stall_probe(const args_t& args) {
 
     // 5) Back off
     if (degagement > 0) {
-        async motion.noStall().goPolar(getCompassOrientation(rc), -degagement);
+        async motion.goPolar(getCompassOrientation(rc), -degagement);
     }
 
     // Restore
@@ -569,7 +570,9 @@ FLASHMEM void command_go_coc(const args_t& args){
     if(args.size() != 2) return;
     float x = args[0].toFloat();
     float y = args[1].toFloat();
-    async motion.cancelOnStall().go(x, y);
+    motion.collide(true);
+    async motion.go(x, y);
+    motion.collide(false);
 }
 
 // Motion — move to (x,y) and align to angle (degrees, firmware frame)
@@ -733,7 +736,7 @@ FLASHMEM void command_resetCompass(const args_t& args){
 FLASHMEM void command_collision_detect(const args_t& args){
     if(args.size() != 1) return;
     bool state = args[0] == "1" || args[0].equalsIgnoreCase("true") || args[0].equalsIgnoreCase("on");
-    motion.cancelOnStall(state);
+    motion.collide(state);
     if(state) Console::info("Interpreter") << "Stall detection enabled" << Console::endl;
     else Console::info("Interpreter") << "Stall detection disabled" << Console::endl;
 }
@@ -1078,7 +1081,7 @@ FLASHMEM void command_calib_move_open(const args_t& args) {
     // Motion::complete() resets the stepper controller, so hasFinished()
     // returns false even though the move is done. The `async` macro already
     // blocks until the Job exits pending state — that is the correct signal.
-    async motion.noStall().goPolar(heading_deg, dist);
+    async motion.goPolar(heading_deg, dist);
 
     // Restore configuration
     motion.setFeedrate(prevFeedrate);
@@ -1135,7 +1138,7 @@ FLASHMEM void command_calib_turn_open(const args_t& args) {
     // NOTE: `async` blocks until the Job exits pending state. No hasFinished()
     // loop needed — Motion::complete() resets controllers, making hasFinished()
     // return false even though the move is done.
-    async motion.noStall().withOptimization(false).turn(angle_deg);
+    async motion.withOptimization(false).turn(angle_deg);
 
     motion.setFeedrate(prevFeedrate);
     motion.enableCruiseMode();

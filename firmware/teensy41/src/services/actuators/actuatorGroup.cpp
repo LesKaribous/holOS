@@ -30,8 +30,8 @@ FLASHMEM void ActuatorGroup::listServo(){
 }
 
 FLASHMEM void ActuatorGroup::createServo(int id, int pin, int defaultPos, int minPos, int maxPos){
-    if(m_servos.size() < MAX_SERVOS) m_servos.emplace(id, SmartServo(pin, defaultPos, minPos, maxPos));
-    else Console::error("ActuatorGroup") << "Max servo limit reached, ActuatorGroup can handle up to " << MAX_POSES << " poses" << Console::endl;
+    if(m_servos.size() < MAX_SERVOS_PER_GROUP) m_servos.emplace(id, SmartServo(pin, defaultPos, minPos, maxPos));
+    else Console::error("ActuatorGroup") << "Max servo limit reached, ActuatorGroup can handle up to " << MAX_SERVOS_PER_GROUP << " servos" << Console::endl;
     Console::info() << "ActuatorGroup : Servo " << id << " created on pin " << pin << Console::endl;
 }
 

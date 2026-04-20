@@ -35,7 +35,23 @@ FLASHMEM bool SmartServo::moveTo(int target, int speed, bool runAsync){ //true f
     if(!m_enabled) return false;
     if(m_sleeping) wakeUp(); //Wake
 
-    target = constrain(target, m_minPos, m_maxPos);
+    // Si la cible est hors des bornes [m_minPos, m_maxPos], on clamp à la
+    // limite la plus proche ET on log un warning — le servo bouge quand même
+    // jusqu'à la limite, mais l'utilisateur est averti que la valeur demandée
+    // a été saturée (typiquement un preset à ajuster ou un offset trop large).
+    if (target < m_minPos) {
+        Console::warn("SmartServo") << "pin=" << m_pin
+                                    << " target=" << target
+                                    << " < min=" << m_minPos
+                                    << " → clamped to " << m_minPos << Console::endl;
+        target = m_minPos;
+    } else if (target > m_maxPos) {
+        Console::warn("SmartServo") << "pin=" << m_pin
+                                    << " target=" << target
+                                    << " > max=" << m_maxPos
+                                    << " → clamped to " << m_maxPos << Console::endl;
+        target = m_maxPos;
+    }
     speed  = constrain(speed, 0, 100);
 
     m_target = target;

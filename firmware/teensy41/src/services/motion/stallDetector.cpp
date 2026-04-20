@@ -163,8 +163,8 @@ void StallDetector::updateStagnation(const Vec3& pos, const Vec3& target, float 
         m_stagWindowAccumX += dt;
         if (m_stagWindowAccumX >= STAG_SNAPSHOT_PERIOD) {
             float errorX     = fabsf(target.x - pos.x);
-            float errReduced = m_stagLastErrX - errorX;   // positive = making progress
-            m_stagLastErrX   = errorX;
+            float errReduced = m_stagBaseErrX - errorX;   // positive = making progress
+            m_stagBaseErrX   = errorX;
             m_stagWindowAccumX = 0.0f;
 
             if (errReduced < config.stagMoveMm && errorX > config.stagErrorMm) {
@@ -192,8 +192,8 @@ void StallDetector::updateStagnation(const Vec3& pos, const Vec3& target, float 
         m_stagWindowAccumY += dt;
         if (m_stagWindowAccumY >= STAG_SNAPSHOT_PERIOD) {
             float errorY     = fabsf(target.y - pos.y);
-            float errReduced = m_stagLastErrY - errorY;
-            m_stagLastErrY   = errorY;
+            float errReduced = m_stagBaseErrY - errorY;
+            m_stagBaseErrY   = errorY;
             m_stagWindowAccumY = 0.0f;
 
             if (errReduced < config.stagMoveMm && errorY > config.stagErrorMm) {
