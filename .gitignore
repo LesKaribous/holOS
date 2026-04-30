@@ -8,3 +8,7 @@ log/
 __pycache__
 software/.holos_lastport
 .pyc
+software/vision.old
+software/vision/Lib
+software/vision/Include
+software/vision/Scripts

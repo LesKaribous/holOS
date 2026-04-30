@@ -1,0 +1,248 @@
+{
+  "aruco_dict": "4x4_50",
+  "anchors": {
+    "TL": {
+      "tag_id": 23,
+      "x_mm": 2400.0,
+      "y_mm": 1400.0
+    },
+    "TR": {
+      "tag_id": 22,
+      "x_mm": 600.0,
+      "y_mm": 1400.0
+    },
+    "BR": {
+      "tag_id": 20,
+      "x_mm": 600.0,
+      "y_mm": 600.0
+    },
+    "BL": {
+      "tag_id": 21,
+      "x_mm": 2400.0,
+      "y_mm": 600.0
+    }
+  },
+  "aruco_enabled": true,
+  "undistort_enabled": true,
+  "rectify_enabled": true,
+  "grid_enabled": true,
+  "preprocessing": {
+    "median_blur": {
+      "on": false,
+      "ksize": 3
+    },
+    "gaussian_blur": {
+      "on": false,
+      "sigma": 1.5
+    },
+    "bilateral": {
+      "on": false,
+      "d": 5,
+      "sigma_color": 75.0,
+      "sigma_space": 75.0
+    },
+    "nlm_denoise": {
+      "on": false,
+      "h": 7.0,
+      "template": 7,
+      "search": 21
+    },
+    "motion_deblur": {
+      "on": false,
+      "length": 2.5,
+      "angle": 0.0,
+      "snr_db": 25.0
+    },
+    "brightness": {
+      "on": false,
+      "alpha": 1.0,
+      "beta": 0.0
+    },
+    "gamma": {
+      "on": false,
+      "value": 0.6499999999999997
+    },
+    "clahe": {
+      "on": false,
+      "clip": 3.0,
+      "tile": 8
+    },
+    "unsharp": {
+      "on": false,
+      "amount": 1.0,
+      "radius": 1.5
+    },
+    "edge_enhance": {
+      "on": false,
+      "amount": 0.5
+    },
+    "adaptive_thresh": {
+      "on": false,
+      "block": 23,
+      "C": 5
+    },
+    "grayscale": {
+      "on": false
+    }
+  },
+  "tracker": {
+    "robots": [
+      {
+        "tag_id": 1,
+        "label": "USER",
+        "color_bgr": [
+          0,
+          255,
+          0
+        ],
+        "z_mm": 490.0
+      },
+      {
+        "tag_id": 7,
+        "label": "OPPONENT",
+        "color_bgr": [
+          0,
+          0,
+          255
+        ],
+        "z_mm": 490.0
+      }
+    ],
+    "cam_mode": "manual",
+    "cam_override": [
+      1275.0,
+      -200.0,
+      1600.0
+    ],
+    "fx_estimate": null
+  },
+  "poly_calibration": {
+    "type": "poly_table_calibration",
+    "convention": "twinvision_topleft_mm",
+    "table_size_mm": [
+      3000.0,
+      2000.0
+    ],
+    "image_size": [
+      1920,
+      1080
+    ],
+    "calibrated_at": "2026-04-30T01:46:59",
+    "note": "Calibration TwinVision (UI)",
+    "poly_model": {
+      "deg": 3,
+      "coef_x": [
+        1302.199128620676,
+        -36.94534503712896,
+        0.7401383483643835,
+        38.90759936492798,
+        -1777.719823604079,
+        577.1809987894488,
+        -647.5436700484058,
+        -37.83436914498484,
+        35.82045871902022,
+        -454.8421833114789
+      ],
+      "coef_y": [
+        801.8340600792827,
+        -1138.0211617017062,
+        223.00148410904444,
+        -160.11243516418813,
+        -4.833714019830243,
+        -52.14975893702611,
+        -17.94457405109095,
+        134.87186036766207,
+        -690.6667270064742,
+        39.77769630328653
+      ],
+      "normalization": {
+        "u_mean": 960.0,
+        "v_mean": 540.0,
+        "u_std": 960.0,
+        "v_std": 540.0
+      }
+    },
+    "homography_pixel_to_mm": [
+      [
+        3.485161858952993,
+        1.0700919510588056,
+        -1365.2507997614023
+      ],
+      [
+        0.11530470441530874,
+        4.5694827305326,
+        -838.6324679355791
+      ],
+      [
+        9.472086363307116e-05,
+        0.0006759679694032044,
+        1.0
+      ]
+    ],
+    "corners_pixel": {
+      "TL": [
+        338.0,
+        175.0
+      ],
+      "TR": [
+        1408.0,
+        148.0
+      ],
+      "BR": [
+        1639.0,
+        920.0
+      ],
+      "BL": [
+        120.0,
+        885.0
+      ]
+    },
+    "residuals_mm": {
+      "poly_rms": 11.828994036056756,
+      "poly_max": 29.750165307309203,
+      "poly_median": 9.60391745722964,
+      "homography_rms": 153.0229240023263,
+      "homography_max": 244.8439940711639
+    },
+    "intrinsics": {
+      "K": [
+        [
+          1573.919039802183,
+          0.0,
+          960.0
+        ],
+        [
+          0.0,
+          1638.6673367260198,
+          540.0
+        ],
+        [
+          0.0,
+          0.0,
+          1.0
+        ]
+      ],
+      "dist": [
+        [
+          -0.5235957848475045,
+          -0.8256191141108862,
+          0.1992763817131749,
+          0.18520027779758122,
+          13.05509491072719,
+          0.43023283901180176,
+          0.010823231326830067,
+          13.330451734041942,
+          -0.20413459869354242,
+          -0.014599058136415774,
+          -0.18739549183262605,
+          -0.24174053537314832,
+          -0.15041613012089494,
+          0.8176137687674355
+        ]
+      ],
+      "rms_px": 15.378096709714033
+    }
+  },
+  "poly_calibration_use": false,
+  "camera_intrinsics_path": "C:/Users/jules/Documents/CDR/TwinVision/calibrations/camera_intrinsics.json"
+}
