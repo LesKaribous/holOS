@@ -152,7 +152,10 @@ socket.on('state', state => {
 
   updateNetworkFromState(state);
   if (activeView === 'modules') updateModulesView(state);
-  if (_remoteDrawerOpen && state.robot) {
+  // remote.js is loaded after this file and lives in its own script scope
+  // (because of 'use strict' + `let`), so reach for the global it exposes
+  // on `window` instead of bare-name lookup.
+  if (window._remoteDrawerOpen && state.robot) {
     remoteUpdateTheta(state.robot.theta * 180 / Math.PI);
   }
 });
@@ -173,11 +176,50 @@ function cgSetWs(connected) {
 
 function cgSetConnectionMode(mode, hwType, hwPort) {
   _currentConnectionMode = mode;
+  // Team selection is only legal in sim mode — on real hardware the team
+  // comes from a physical switch. Disable the topbar Y/B buttons in HW.
+  const isHw = (mode === 'usb' || mode === 'xbee');
+  const yBtn = document.getElementById('btn-yellow');
+  const bBtn = document.getElementById('btn-blue');
+  const teamWrap = document.querySelector('.team-toggle');
+  if (yBtn) yBtn.disabled = isHw;
+  if (bBtn) bBtn.disabled = isHw;
+  if (teamWrap) {
+    teamWrap.title = isHw
+      ? 'Team is set by the robot’s physical switch in HW mode'
+      : 'Team color (sim only)';
+    teamWrap.classList.toggle('disabled', isHw);
+  }
+
+  // Both robot-panel-sim and robot-panel-hw stay visible: the user can
+  // start the sim bridge OR connect HW from this single popup. Update
+  // the sim section's status badge so it reflects whether the bridge is
+  // currently running.
+  const simStatusEl = document.getElementById('sim-bridge-status');
+  if (simStatusEl) {
+    if (mode === 'sim') {
+      simStatusEl.textContent = 'running';
+      simStatusEl.style.color = 'var(--green)';
+    } else {
+      simStatusEl.textContent = 'idle';
+      simStatusEl.style.color = 'var(--text-dim)';
+    }
+  }
+  // Disable HW connect controls while sim is running (and vice versa) so
+  // the user can't accidentally have both at once.
+  const hwBtn = document.getElementById('serial-connect-btn');
+  if (hwBtn) hwBtn.disabled = (mode === 'sim');
+  const simStartBtn = document.getElementById('sim-bridge-start-btn');
+  if (simStartBtn) simStartBtn.disabled = (mode === 'usb' || mode === 'xbee');
   const dot      = document.getElementById('cg-dot-robot');
   const link     = document.getElementById('cg-lnk-robot');
   const sub      = document.getElementById('cg-sub-robot');
+  const lbl      = document.getElementById('cg-lbl-robot');
   const modeEl   = document.getElementById('conn-mode-val');
   const serverSub = document.getElementById('cg-sub-server');
+
+  // Right-side node label flips: "Simulator" in sim mode, "Robot" otherwise.
+  if (lbl) lbl.textContent = (mode === 'sim') ? 'Simulator' : 'Robot';
 
   if (mode === 'usb' || mode === 'xbee') {
     const label   = mode === 'xbee' ? 'XBee' : 'USB Wired';
@@ -233,6 +275,7 @@ function toggleNavGroup(name) {
 }
 
 function switchView(name, btn) {
+  const previousView = activeView;
   activeView = name;
   document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
   document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
@@ -266,13 +309,25 @@ function switchView(name, btn) {
     if (lastState) updateModulesView(lastState);
   } else if (name === 'calibration') {
     onCalibViewActivated();
-  } else if (name === 'vision') {
+  } else if (name === 'vision-dashboard') {
     onVisionViewActivated();
+  } else if (name === 'vision-editor') {
+    onVisionEditorActivated();
+  } else if (name === 'vision-objects') {
+    onVisionObjectsActivated();
   } else if (name === 'actuators') {
     actInit();
   }
 
-  socket.emit('vision_view_active', { active: name === 'vision' });
+  // Any of the three vision tabs counts as "vision tab active" for the
+  // backend's stream-client gating. Only emit on TRANSITIONS into / out of
+  // the vision group so the server-side counter doesn't drift when the
+  // user switches between the three subtabs.
+  const wasVision = previousView && previousView.startsWith('vision-');
+  const isVision  = name && name.startsWith('vision-');
+  if (wasVision !== isVision) {
+    socket.emit('vision_view_active', { active: isVision });
+  }
 }
 
 // Mini-map click → go to map view

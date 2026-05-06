@@ -62,12 +62,13 @@
     <!-- Link holOS → Robot -->
     <div class="cg-link" id="cg-lnk-robot"></div>
 
-    <!-- Node: Robot / Teensy (clickable → robot connect panel) -->
+    <!-- Node: Robot / Simulator (clickable → connect / sim-control panel)
+         Label flips between "Robot" (HW) and "Simulator" (sim) via JS. -->
     <button class="cg-node cg-node-btn" id="cg-node-robot"
-            onclick="togglePanel('robot-panel')" title="Robot connection">
+            onclick="togglePanel('robot-panel')" title="Robot / Simulator">
       <span class="cg-dot" id="cg-dot-robot"></span>
-      <span class="cg-lbl">Robot</span>
-      <span class="cg-sub" id="cg-sub-robot">SIM</span>
+      <span class="cg-lbl" id="cg-lbl-robot">Robot</span>
+      <span class="cg-sub" id="cg-sub-robot">idle</span>
     </button>
 
   </div>
@@ -90,22 +91,42 @@
   </div>
 </div>
 
-<!-- ── Robot connection panel ─────────────────────────────────────────────── -->
+<!-- ── Robot / Simulator connection panel ─────────────────────────────────── -->
 <div id="robot-panel" class="conn-panel hidden">
-  <div class="conn-panel-title">Robot — Teensy 4.1</div>
-  <div class="conn-panel-row" style="gap:6px;flex-wrap:wrap">
-    <select id="serial-port-sel" class="input-sm" style="flex:1;min-width:160px">
-      <option value="">— port —</option>
-    </select>
-    <button class="btn-tiny" onclick="serialRefreshPorts()" title="Refresh ports">↺</button>
+  <!-- Simulator-mode controls: starts/stops the simulated bridge so the
+       virtual robot becomes "online". Distinct from the topbar Start which
+       runs the match strategy. -->
+  <div id="robot-panel-sim" class="conn-panel-section">
+    <div class="conn-panel-title">Simulator</div>
+    <div class="conn-panel-row" style="gap:6px">
+      <button class="btn-tiny green" id="sim-bridge-start-btn"
+              onclick="simBridgeStart()" title="Start the simulated bridge">▶ Start simulator</button>
+      <button class="btn-tiny red" id="sim-bridge-stop-btn"
+              onclick="simBridgeStop()" title="Stop the simulated bridge">⏹ Stop</button>
+      <span id="sim-bridge-status" style="font-size:11px;color:var(--text-dim)">idle</span>
+    </div>
+    <div class="conn-panel-row" style="font-size:10px;color:var(--text-dim);line-height:1.4">
+      The simulated bridge takes the place of the Teensy/XBee transport so
+      strategy code can run end-to-end without hardware.
+    </div>
   </div>
-  <div class="conn-panel-row" style="gap:6px">
-    <button id="serial-connect-btn" class="btn-tiny green" onclick="serialConnect()">Connect</button>
-    <button class="btn-tiny red"   onclick="serialDisconnect()">Disconnect</button>
-    <span id="serial-status-val" style="font-size:11px;color:var(--text-dim)">not connected</span>
-  </div>
-  <div class="conn-panel-row" style="font-size:10px;color:var(--text-dim);line-height:1.4">
-    USB or XBee auto-detected from firmware pong response.
+  <!-- Hardware connect controls -->
+  <div id="robot-panel-hw" class="conn-panel-section">
+    <div class="conn-panel-title">Robot — Teensy 4.1</div>
+    <div class="conn-panel-row" style="gap:6px;flex-wrap:wrap">
+      <select id="serial-port-sel" class="input-sm" style="flex:1;min-width:160px">
+        <option value="">— port —</option>
+      </select>
+      <button class="btn-tiny" onclick="serialRefreshPorts()" title="Refresh ports">↺</button>
+    </div>
+    <div class="conn-panel-row" style="gap:6px">
+      <button id="serial-connect-btn" class="btn-tiny green" onclick="serialConnect()">Connect</button>
+      <button class="btn-tiny red"   onclick="serialDisconnect()">Disconnect</button>
+      <span id="serial-status-val" style="font-size:11px;color:var(--text-dim)">not connected</span>
+    </div>
+    <div class="conn-panel-row" style="font-size:10px;color:var(--text-dim);line-height:1.4">
+      USB or XBee auto-detected from firmware pong response.
+    </div>
   </div>
 </div>
 
@@ -204,23 +225,77 @@
           </span>
           <span class="nav-lbl">Terminal</span>
         </button>
-        <button class="nav-btn nav-child" data-view="network" onclick="switchView('network',this)">
+      </div>
+    </div>
+
+    <!-- ── Network (standalone) ─────────────────────────────────────────── -->
+    <button class="nav-btn" data-view="network" onclick="switchView('network',this)">
+      <span class="nav-icon">
+        <svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
+          <circle cx="3.5" cy="9" r="1.7" fill="currentColor" stroke="none"/>
+          <circle cx="9"   cy="3.5" r="1.7" fill="currentColor" stroke="none"/>
+          <circle cx="14.5" cy="9" r="1.7" fill="currentColor" stroke="none"/>
+          <circle cx="9"   cy="14.5" r="1.7" fill="currentColor" stroke="none"/>
+          <line x1="5" y1="9" x2="13" y2="9"/><line x1="9" y1="5" x2="9" y2="13"/>
+          <line x1="4.5" y1="7.5" x2="7.5" y2="4.5"/><line x1="10.5" y1="4.5" x2="13.5" y2="7.5"/>
+        </svg>
+      </span>
+      <span class="nav-lbl">Network</span>
+    </button>
+
+    <!-- ── Vision group: Dashboard · Editor · Objects ────────────────────── -->
+    <div class="nav-group" id="nav-group-vision">
+      <button class="nav-group-hdr" onclick="toggleNavGroup('vision')">
+        <span class="nav-icon">
+          <svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M1 9s3.5-6 8-6 8 6 8 6-3.5 6-8 6-8-6-8-6z"/>
+            <circle cx="9" cy="9" r="2.5"/>
+          </svg>
+        </span>
+        <span class="nav-lbl">Vision</span>
+        <span class="nav-chevron"></span>
+      </button>
+      <div class="nav-group-items">
+        <button class="nav-btn nav-child" data-view="vision-dashboard" onclick="switchView('vision-dashboard',this)">
           <span class="nav-icon">
-            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
-              <circle cx="3" cy="8" r="1.5" fill="currentColor" stroke="none"/>
-              <circle cx="8" cy="3" r="1.5" fill="currentColor" stroke="none"/>
-              <circle cx="13" cy="8" r="1.5" fill="currentColor" stroke="none"/>
-              <circle cx="8" cy="13" r="1.5" fill="currentColor" stroke="none"/>
-              <line x1="4.5" y1="8" x2="11.5" y2="8"/><line x1="8" y1="4.5" x2="8" y2="11.5"/>
-              <line x1="4.1" y1="6.5" x2="6.5" y2="4.1"/><line x1="9.5" y1="4.1" x2="11.9" y2="6.5"/>
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="1.5" y="2"  width="6" height="6" rx="1"/>
+              <rect x="8.5" y="2"  width="6" height="3" rx="1"/>
+              <rect x="8.5" y="6"  width="6" height="8" rx="1"/>
+              <rect x="1.5" y="9"  width="6" height="5" rx="1"/>
             </svg>
           </span>
-          <span class="nav-lbl">Network</span>
+          <span class="nav-lbl">Dashboard</span>
+        </button>
+        <button class="nav-btn nav-child" data-view="vision-editor" onclick="switchView('vision-editor',this)">
+          <span class="nav-icon">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="3" cy="4" r="1.5"/><circle cx="13" cy="4" r="1.5"/>
+              <circle cx="8" cy="12" r="1.5"/>
+              <line x1="3"  y1="5.5" x2="6.7"  y2="11"/>
+              <line x1="13" y1="5.5" x2="9.3" y2="11"/>
+              <line x1="4.5" y1="4" x2="11.5" y2="4"/>
+            </svg>
+          </span>
+          <span class="nav-lbl">Editor</span>
+        </button>
+        <button class="nav-btn nav-child" data-view="vision-objects" onclick="switchView('vision-objects',this)">
+          <span class="nav-icon">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+              <line x1="6" y1="4" x2="14" y2="4"/>
+              <line x1="6" y1="8" x2="14" y2="8"/>
+              <line x1="6" y1="12" x2="14" y2="12"/>
+              <circle cx="3" cy="4" r="1"/>
+              <circle cx="3" cy="8" r="1"/>
+              <circle cx="3" cy="12" r="1"/>
+            </svg>
+          </span>
+          <span class="nav-lbl">Objects</span>
         </button>
       </div>
     </div>
 
-    <!-- ── Setup group: Modules · Vision · Calibration · Tests ───────────── -->
+    <!-- ── Setup group: Modules · Calibration · Tests · Actuators ────────── -->
     <div class="nav-group" id="nav-group-setup">
       <button class="nav-group-hdr" onclick="toggleNavGroup('setup')">
         <span class="nav-icon">
@@ -246,15 +321,6 @@
             </svg>
           </span>
           <span class="nav-lbl">Modules</span>
-        </button>
-        <button class="nav-btn nav-child" data-view="vision" onclick="switchView('vision',this)">
-          <span class="nav-icon">
-            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M1 8s3-5.5 7-5.5 7 5.5 7 5.5-3 5.5-7 5.5S1 8 1 8z"/>
-              <circle cx="8" cy="8" r="2"/>
-            </svg>
-          </span>
-          <span class="nav-lbl">Vision</span>
         </button>
         <button class="nav-btn nav-child" data-view="calibration" onclick="switchView('calibration',this)">
           <span class="nav-icon">
@@ -352,7 +418,7 @@
         </button>
         <button class="mbar-tool" id="btn-occ-save" onclick="saveStaticMap()" title="Save static occupancy map to disk">
           <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M13 13H3a1 1 0 01-1-1V4a1 1 0 011-1h8l2 2v7a1 1 0 01-1 1z"/><rect x="5" y="9" width="6" height="4"/><rect x="5" y="3" width="4" height="3"/></svg>
-          <span>&#128190; Save</span>
+          <span>Save</span>
         </button>
         <button class="mbar-tool" id="btn-occ-deploy" onclick="deployStaticMap()" title="Deploy static map to T40 over serial">
           <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M8 2v8M5 7l3 3 3-3"/><rect x="2" y="11" width="12" height="3" rx="1"/></svg>
@@ -823,10 +889,10 @@
           <div class="editor-toolbar">
             <input id="macro-name" type="text" class="editor-title-input" placeholder="macro_name">
             <div style="display:flex;gap:5px;align-items:center">
-              <button class="btn-tiny" onclick="saveMacros()">💾 Save</button>
+              <button class="btn-tiny" onclick="saveMacros()">Save</button>
               <button class="btn-tiny green" onclick="runMacroInSim()">▶ Sim</button>
               <button class="btn-tiny" id="btn-macro-run-robot" onclick="runMacroOnRobot()"
-                      title="Exécuter la macro séquentiellement sur le robot connecté">🤖 Robot</button>
+                      title="Exécuter la macro séquentiellement sur le robot connecté">Robot</button>
               <button class="btn-tiny" onclick="generateMacroPython()">{ } Python</button>
               <button class="btn-tiny red" onclick="deleteMacro()">🗑</button>
             </div>
@@ -1441,385 +1507,153 @@
     </div><!-- /view-calibration -->
 
 
-    <!-- ── VISION VIEW ───────────────────────────────────────────────────────── -->
-    <div id="view-vision" class="view">
+    <!-- ════════════════════════════════════════════════════════════════════ -->
+    <!--  VISION · DASHBOARD — live feeds + tracker status                  -->
+    <!-- ════════════════════════════════════════════════════════════════════ -->
+    <div id="view-vision-dashboard" class="view">
       <div class="vision-layout">
-
-        <!-- ── LEFT: feeds + controls ──────────────────────────────────────── -->
         <div class="vision-main">
 
-          <!-- Header bar -->
-          <div class="vision-header">
-            <label class="vision-enable-toggle" title="Enable/disable vision processing">
+          <!-- Single toolbar — Vision toggle + active-pipeline picker +
+               state pills. Source / ArUco / dict / JPEG-Q controls have
+               moved into the pipeline nodes themselves (Vision · Editor). -->
+          <div class="vision-pipeline-bar">
+            <label class="switch" title="Enable / disable the active pipeline">
               <input type="checkbox" id="vision-enabled-cb" onchange="visionToggleEnabled(this.checked)">
-              <span>Vision</span>
+              <span class="switch-slider"></span>
+              <span class="switch-label">Vision</span>
             </label>
-            <span id="vision-status-badge" class="vision-badge vision-badge-off">OFF</span>
-
-            <!-- Source selector -->
-            <div class="vision-source-block">
-              <div class="vision-source-types">
-                <label class="vsrc-tab"><input type="radio" name="vsrc-type" value="usb"    checked onchange="visionSourceTypeChanged()"> USB Camera</label>
-                <label class="vsrc-tab"><input type="radio" name="vsrc-type" value="ip"           onchange="visionSourceTypeChanged()"> IP Camera</label>
-                <label class="vsrc-tab"><input type="radio" name="vsrc-type" value="video"        onchange="visionSourceTypeChanged()"> Video File</label>
-                <label class="vsrc-tab"><input type="radio" name="vsrc-type" value="image"        onchange="visionSourceTypeChanged()"> Static Image</label>
-              </div>
-              <!-- USB camera row -->
-              <div id="vsrc-usb" class="vsrc-row">
-                <label class="vsrc-lbl">Camera index</label>
-                <input id="vsrc-usb-idx" class="input-sm" type="number" min="0" max="9" value="0" style="width:56px">
-                <button class="btn-tiny" onclick="visionApplySource()">Open</button>
-              </div>
-              <!-- IP camera row -->
-              <div id="vsrc-ip" class="vsrc-row hidden">
-                <label class="vsrc-lbl">URL (RTSP / HTTP)</label>
-                <input id="vsrc-ip-url" class="input-sm" type="text" placeholder="rtsp://192.168.1.10/stream" style="flex:1">
-                <button class="btn-tiny" onclick="visionApplySource()">Connect</button>
-              </div>
-              <!-- Video file row -->
-              <div id="vsrc-video" class="vsrc-row hidden">
-                <label class="vsrc-lbl">Video</label>
-                <input id="vsrc-video-path" class="input-sm" type="text" placeholder="/path/to/video.mp4" style="flex:1">
-                <input type="file" id="vsrc-video-file" accept="video/*,.avi,.mkv,.mp4" style="display:none"
-                       onchange="document.getElementById('vsrc-video-path').value=this.files[0]?.name||''">
-                <button class="btn-tiny" onclick="document.getElementById('vsrc-video-file').click()" title="Browse...">📂</button>
-                <button class="btn-tiny" onclick="visionApplySource()">Open</button>
-              </div>
-              <!-- Static image row -->
-              <div id="vsrc-image" class="vsrc-row hidden">
-                <label class="vsrc-lbl">Image</label>
-                <input id="vsrc-image-path" class="input-sm" type="text" placeholder="/path/to/image.jpg" style="flex:1">
-                <input type="file" id="vsrc-image-file" accept="image/*,.png,.jpg,.bmp" style="display:none"
-                       onchange="document.getElementById('vsrc-image-path').value=this.files[0]?.name||''">
-                <button class="btn-tiny" onclick="document.getElementById('vsrc-image-file').click()" title="Browse...">📂</button>
-                <button class="btn-tiny" onclick="visionApplySource()">Open</button>
-              </div>
-              <span id="v-status-badge" class="v-badge" style="margin-left:8px;font-size:11px"></span>
-            </div><!-- /vision-source-block -->
-
-            <div class="vision-header-toggles">
-              <label class="toggle"><input type="checkbox" id="v-undistort"  onchange="visionCfg('undistort',this.checked)"> Undistort</label>
-              <label class="toggle"><input type="checkbox" id="v-aruco" checked onchange="visionCfg('show_aruco',this.checked)"> ArUco</label>
-              <label class="toggle"><input type="checkbox" id="v-ids"   checked onchange="visionCfg('show_ids',this.checked)"> IDs</label>
-              <label class="toggle"><input type="checkbox" id="v-rej"         onchange="visionCfg('show_rejected',this.checked)"> Rejected</label>
-              <label class="toggle"><input type="checkbox" id="v-grid"  checked onchange="visionCfg('show_grid',this.checked)"> Grid</label>
-              <label class="toggle"><input type="checkbox" id="v-overlay" checked onchange="visionCfg('show_table_overlay',this.checked)"> Overlay</label>
-              <label class="toggle"><input type="checkbox" id="v-autocolor" onchange="visionCfg('auto_color',this.checked)"> AutoColor</label>
-            </div>
-
-            <div class="vision-dict-row">
-              <label style="font-size:11px;color:var(--text-dim)">Dict</label>
-              <select id="vision-dict-sel" class="input-sm" onchange="visionCfg('dict',this.value)">
-                <option>4x4_50</option><option>4x4_100</option><option>4x4_250</option>
-                <option>5x5_50</option><option>5x5_100</option><option>6x6_50</option>
-                <option>APRILTAG_36h11</option>
-              </select>
-              <label style="font-size:11px;color:var(--text-dim);margin-left:8px">JPEG Q</label>
-              <input type="range" id="vision-quality-sl" min="30" max="95" step="5" value="70"
-                     style="width:70px" oninput="visionCfg('jpeg_quality',+this.value)">
-              <span id="vision-quality-val" style="font-size:11px;width:28px">70</span>
-            </div>
-          </div><!-- /vision-header -->
-
-          <!-- Feeds (raw + rectified + processed) -->
-          <div class="vision-feeds" id="vision-feeds-row">
-            <div class="vision-feed-wrap">
-              <div class="vision-feed-label">
-                Raw
-                <span id="vision-h-badge" class="vision-h-badge">—</span>
-              </div>
-              <img id="vision-raw-img" class="vision-img" alt="Raw feed" draggable="false">
-            </div>
-            <div class="vision-feed-wrap">
-              <div class="vision-feed-label">Rectified (top-down)</div>
-              <img id="vision-rect-img" class="vision-img" alt="Rectified view" draggable="false">
-              <div id="vision-rect-placeholder" class="vision-rect-placeholder">
-                No homography — point camera at the 4 anchor ArUco tags
-              </div>
-            </div>
-            <div class="vision-feed-wrap" id="vision-proc-wrap" style="display:none">
-              <div class="vision-feed-label">
-                Processed
-                <span id="vision-proc-mode-badge" class="vision-proc-badge">—</span>
-              </div>
-              <img id="vision-proc-img" class="vision-img" alt="Processed feed" draggable="false">
-            </div>
-          </div><!-- /vision-feeds -->
-
-          <!-- Processing pipeline -->
-          <details class="vision-section" id="vision-proc-section">
-            <summary>Processing Pipeline</summary>
-            <div class="vision-proc-panel">
-
-              <!-- Mode selector -->
-              <div class="vision-proc-row">
-                <span class="vp-lbl">Mode</span>
-                <select id="vp-mode" class="input-sm" onchange="visionProcModeChanged()">
-                  <option value="none">None (pass-through)</option>
-                  <option value="binarize">Binarize</option>
-                  <option value="color_mask">Color Mask</option>
-                  <option value="canny">Canny Edge</option>
-                  <option value="blur">Gaussian Blur</option>
-                </select>
-              </div>
-
-              <!-- Binarize controls -->
-              <div id="vp-binarize" class="vp-group hidden">
-                <div class="vision-proc-row">
-                  <span class="vp-lbl">Method</span>
-                  <select id="vp-bin-method" class="input-sm" onchange="visionProcCfg()">
-                    <option value="global">Global</option>
-                    <option value="otsu">Otsu (auto)</option>
-                    <option value="adaptive_mean">Adaptive Mean</option>
-                    <option value="adaptive_gaussian">Adaptive Gaussian</option>
-                  </select>
-                  <label class="toggle" style="margin-left:8px">
-                    <input type="checkbox" id="vp-bin-invert" onchange="visionProcCfg()"> Invert
-                  </label>
-                </div>
-                <div class="vision-proc-row" id="vp-bin-thresh-row">
-                  <span class="vp-lbl">Threshold</span>
-                  <input type="range" id="vp-bin-thresh" min="0" max="255" value="128"
-                         oninput="visionProcSlider('vp-bin-thresh','vp-bin-thresh-val');visionProcCfg()">
-                  <span id="vp-bin-thresh-val" class="vp-val">128</span>
-                </div>
-                <div class="vision-proc-row hidden" id="vp-bin-block-row">
-                  <span class="vp-lbl">Block size</span>
-                  <input type="range" id="vp-bin-block" min="3" max="51" step="2" value="11"
-                         oninput="visionProcSlider('vp-bin-block','vp-bin-block-val');visionProcCfg()">
-                  <span id="vp-bin-block-val" class="vp-val">11</span>
-                </div>
-              </div>
-
-              <!-- Color mask controls -->
-              <div id="vp-color" class="vp-group hidden">
-                <div class="vision-proc-row">
-                  <span class="vp-lbl">Preset</span>
-                  <select id="vp-color-preset" class="input-sm" onchange="visionColorPreset()">
-                    <option value="red">Red</option>
-                    <option value="green">Green</option>
-                    <option value="blue">Blue</option>
-                    <option value="yellow">Yellow</option>
-                    <option value="white">White</option>
-                    <option value="black">Black</option>
-                    <option value="brown">Brown</option>
-                    <option value="custom">Custom</option>
-                  </select>
-                  <label class="toggle" style="margin-left:8px">
-                    <input type="checkbox" id="vp-color-masked" checked onchange="visionProcCfg()"> Masked
-                  </label>
-                </div>
-                <div class="vp-hsv-grid">
-                  <span class="vp-lbl" style="grid-column:1/4">H range</span>
-                  <input type="range" id="vp-h-lo" min="0" max="179" value="0"
-                         oninput="visionProcSlider('vp-h-lo','vp-h-lo-val');visionProcCfg()">
-                  <span class="vp-val" id="vp-h-lo-val">0</span>
-                  <span class="vp-sep">–</span>
-                  <input type="range" id="vp-h-hi" min="0" max="179" value="10"
-                         oninput="visionProcSlider('vp-h-hi','vp-h-hi-val');visionProcCfg()">
-                  <span class="vp-val" id="vp-h-hi-val">10</span>
-
-                  <span class="vp-lbl" style="grid-column:1/4">S range</span>
-                  <input type="range" id="vp-s-lo" min="0" max="255" value="80"
-                         oninput="visionProcSlider('vp-s-lo','vp-s-lo-val');visionProcCfg()">
-                  <span class="vp-val" id="vp-s-lo-val">80</span>
-                  <span class="vp-sep">–</span>
-                  <input type="range" id="vp-s-hi" min="0" max="255" value="255"
-                         oninput="visionProcSlider('vp-s-hi','vp-s-hi-val');visionProcCfg()">
-                  <span class="vp-val" id="vp-s-hi-val">255</span>
-
-                  <span class="vp-lbl" style="grid-column:1/4">V range</span>
-                  <input type="range" id="vp-v-lo" min="0" max="255" value="60"
-                         oninput="visionProcSlider('vp-v-lo','vp-v-lo-val');visionProcCfg()">
-                  <span class="vp-val" id="vp-v-lo-val">60</span>
-                  <span class="vp-sep">–</span>
-                  <input type="range" id="vp-v-hi" min="0" max="255" value="255"
-                         oninput="visionProcSlider('vp-v-hi','vp-v-hi-val');visionProcCfg()">
-                  <span class="vp-val" id="vp-v-hi-val">255</span>
-
-                  <!-- 2nd hue range (for red wrap-around) -->
-                  <span class="vp-lbl" style="grid-column:1/4;color:var(--text-dim);font-size:10px">H2 (wrap, -1=off)</span>
-                  <input type="range" id="vp-h2-lo" min="0" max="179" value="160"
-                         oninput="visionProcSlider('vp-h2-lo','vp-h2-lo-val');visionProcCfg()">
-                  <span class="vp-val" id="vp-h2-lo-val">160</span>
-                  <span class="vp-sep">–</span>
-                  <input type="range" id="vp-h2-hi" min="-1" max="179" value="-1"
-                         oninput="visionProcSlider('vp-h2-hi','vp-h2-hi-val');visionProcCfg()">
-                  <span class="vp-val" id="vp-h2-hi-val">off</span>
-                </div>
-              </div>
-
-              <!-- Canny controls -->
-              <div id="vp-canny" class="vp-group hidden">
-                <div class="vision-proc-row">
-                  <span class="vp-lbl">Low</span>
-                  <input type="range" id="vp-canny-lo" min="0" max="300" value="50"
-                         oninput="visionProcSlider('vp-canny-lo','vp-canny-lo-val');visionProcCfg()">
-                  <span class="vp-val" id="vp-canny-lo-val">50</span>
-                </div>
-                <div class="vision-proc-row">
-                  <span class="vp-lbl">High</span>
-                  <input type="range" id="vp-canny-hi" min="0" max="600" value="150"
-                         oninput="visionProcSlider('vp-canny-hi','vp-canny-hi-val');visionProcCfg()">
-                  <span class="vp-val" id="vp-canny-hi-val">150</span>
-                </div>
-              </div>
-
-              <!-- Blur controls -->
-              <div id="vp-blur" class="vp-group hidden">
-                <div class="vision-proc-row">
-                  <span class="vp-lbl">Kernel</span>
-                  <input type="range" id="vp-blur-k" min="1" max="31" step="2" value="5"
-                         oninput="visionProcSlider('vp-blur-k','vp-blur-k-val');visionProcCfg()">
-                  <span class="vp-val" id="vp-blur-k-val">5</span>
-                </div>
-              </div>
-
-              <!-- Morphological post-processing (shared) -->
-              <div class="vision-proc-row" id="vp-morph-row">
-                <span class="vp-lbl">Morph</span>
-                <select id="vp-morph-op" class="input-sm" onchange="visionProcCfg()">
-                  <option value="none">None</option>
-                  <option value="erode">Erode</option>
-                  <option value="dilate">Dilate</option>
-                  <option value="open">Open</option>
-                  <option value="close">Close</option>
-                </select>
-                <input type="range" id="vp-morph-k" min="1" max="15" step="2" value="3"
-                       oninput="visionProcSlider('vp-morph-k','vp-morph-k-val');visionProcCfg()">
-                <span class="vp-val" id="vp-morph-k-val">3</span>
-              </div>
-
-            </div><!-- /vision-proc-panel -->
-          </details>
-
-          <!-- Playback controls (shown only for video file) -->
-          <div class="vision-playback hidden" id="vision-playback">
-            <button class="btn-tiny" id="vision-pp-btn" onclick="visionPlayPause()" title="Play/Pause">❙❙</button>
-            <button class="btn-tiny" onclick="visionStep(-10)" title="-10 frames">◀◀</button>
-            <button class="btn-tiny" onclick="visionStep(-1)"  title="−1 frame">◀</button>
-            <input type="range" id="vision-seek-sl" min="0" max="10000" value="0" step="1"
-                   style="flex:1" oninput="visionSeek(+this.value)">
-            <button class="btn-tiny" onclick="visionStep(1)"   title="+1 frame">▶</button>
-            <button class="btn-tiny" onclick="visionStep(10)"  title="+10 frames">▶▶</button>
-            <select id="vision-speed-sel" class="input-sm" onchange="visionSetSpeed(+this.value)" style="width:60px">
-              <option value="0.25">0.25×</option>
-              <option value="0.5">0.5×</option>
-              <option value="1" selected>1×</option>
-              <option value="2">2×</option>
-              <option value="4">4×</option>
+            <span class="vp-bar-lbl">Pipeline</span>
+            <select id="vp-bar-active" class="input-sm" onchange="visionSetActivePipeline(this.value)">
+              <option value="">— none —</option>
             </select>
-            <span id="vision-frame-info" style="font-size:11px;color:var(--text-dim);white-space:nowrap">0 / 0</span>
-          </div><!-- /vision-playback -->
-
-          <!-- Anchor configuration -->
-          <details class="vision-section">
-            <summary>Anchor Tags (homography)</summary>
-            <div class="vision-anchors-grid">
-              <div class="vision-anchor-cell" id="va-tl">
-                <span class="va-corner">Top-Left</span>
-                <label>ID<input type="number" class="input-sm va-id" data-corner="top_left" value="23" onchange="visionAnchorChanged()"></label>
-                <label>X mm<input type="number" class="input-sm va-x" data-corner="top_left" value="0" onchange="visionAnchorChanged()"></label>
-                <label>Y mm<input type="number" class="input-sm va-y" data-corner="top_left" value="0" onchange="visionAnchorChanged()"></label>
-              </div>
-              <div class="vision-anchor-cell" id="va-tr">
-                <span class="va-corner">Top-Right</span>
-                <label>ID<input type="number" class="input-sm va-id" data-corner="top_right" value="22" onchange="visionAnchorChanged()"></label>
-                <label>X mm<input type="number" class="input-sm va-x" data-corner="top_right" value="3000" onchange="visionAnchorChanged()"></label>
-                <label>Y mm<input type="number" class="input-sm va-y" data-corner="top_right" value="0" onchange="visionAnchorChanged()"></label>
-              </div>
-              <div class="vision-anchor-cell" id="va-bl">
-                <span class="va-corner">Bot-Left</span>
-                <label>ID<input type="number" class="input-sm va-id" data-corner="bottom_left" value="21" onchange="visionAnchorChanged()"></label>
-                <label>X mm<input type="number" class="input-sm va-x" data-corner="bottom_left" value="0" onchange="visionAnchorChanged()"></label>
-                <label>Y mm<input type="number" class="input-sm va-y" data-corner="bottom_left" value="2000" onchange="visionAnchorChanged()"></label>
-              </div>
-              <div class="vision-anchor-cell" id="va-br">
-                <span class="va-corner">Bot-Right</span>
-                <label>ID<input type="number" class="input-sm va-id" data-corner="bottom_right" value="20" onchange="visionAnchorChanged()"></label>
-                <label>X mm<input type="number" class="input-sm va-x" data-corner="bottom_right" value="3000" onchange="visionAnchorChanged()"></label>
-                <label>Y mm<input type="number" class="input-sm va-y" data-corner="bottom_right" value="2000" onchange="visionAnchorChanged()"></label>
-              </div>
-            </div>
-          </details>
-
-          <!-- Detection log -->
-          <details class="vision-section" id="vision-det-section">
-            <summary>Detections <span id="vision-det-count" style="color:var(--text-dim)">0</span></summary>
-            <div id="vision-det-list" class="vision-det-list"></div>
-          </details>
-
-        </div><!-- /vision-main -->
-
-        <!-- ── RIGHT: object registry ───────────────────────────────────────── -->
-        <aside class="vision-sidebar">
-          <div class="vision-sidebar-header">
-            <span style="font-weight:600;font-size:13px">Object Registry</span>
-            <button class="btn-tiny green" onclick="visionNewObject()" title="Add object">＋ Add</button>
-            <button class="btn-tiny"       onclick="visionSaveObjects()" title="Save to disk">💾</button>
+            <button class="btn-tiny" id="vp-bar-default-btn" onclick="visionSetDefaultPipeline()"
+                    title="Auto-activate this pipeline at server startup">
+              ☆ Default
+            </button>
+            <span class="vd-pill" id="vp-bar-worker">worker: —</span>
+            <span class="vd-pill" id="vp-bar-frames">frames: 0</span>
+            <span class="vd-pill" id="vp-bar-age">last: —</span>
+            <span style="flex:1"></span>
+            <span class="vp-bar-status" id="vp-bar-status">no active pipeline</span>
           </div>
 
-          <div id="vision-objects-list" class="vision-objects-list"></div>
+          <!-- Per-node state strip stays right under the toolbar -->
+          <div class="vp-nodestates" id="vp-nodestates"></div>
 
-          <!-- Object editor (shown when an object is selected) -->
-          <div id="vision-obj-editor" class="vision-obj-editor hidden">
-            <div class="vision-obj-editor-title">
-              <span id="voe-title">Edit object</span>
-              <button class="btn-tiny red" onclick="visionDeleteObject()">✕</button>
+          <!-- Feeds: dynamically populated from the active pipeline's output
+               nodes. Layout auto-adapts: 1 feed = fullscreen, otherwise grid
+               (2 columns on wide, 1 column on narrow). -->
+          <div class="vision-feeds-dynamic" id="vision-feeds-grid"
+               data-feed-count="0">
+            <div class="vision-feeds-empty" id="vision-feeds-empty">
+              No active pipeline output — pick an active pipeline above
+              (or add an <code>output</code> node in the editor and set it active).
             </div>
+          </div>
 
-            <div class="mission-meta-row">
-              <span class="mission-meta-lbl">Name</span>
-              <input id="voe-name" class="input-sm" style="flex:1" oninput="visionObjChanged()">
+          <!-- Tracker / match-time info (team, heading, anchors, …) — collapsible. -->
+          <details class="vision-section vision-tracker-collapse">
+            <summary>Tracker info — team, heading offset, anchors, robots</summary>
+            <div class="vision-tracker-status">
+              <div class="vt-row">
+                <span class="vt-lbl">Team</span>
+                <span id="vt-team-readout" class="vt-val">—</span>
+                <span class="vt-lbl" style="margin-left:18px;font-size:10px;color:var(--text-dim)">(set in topbar / via robot switch)</span>
+                <span style="flex:1"></span>
+                <button class="btn-tiny" onclick="visionSyncHeading()" title="Capture heading offset (call after recalage)">Sync heading</button>
+                <button class="btn-tiny" onclick="visionResetHeading()" title="Clear heading offset">Reset</button>
+              </div>
+              <div class="vt-row">
+                <span class="vt-lbl">Heading offset</span>
+                <span id="vt-heading" class="vt-val">—</span>
+                <span class="vt-lbl" style="margin-left:18px">Anchors</span>
+                <span id="vt-anchors" class="vt-val">—</span>
+              </div>
+              <div class="vt-row">
+                <span class="vt-lbl">Own robot</span>
+                <span id="vt-own" class="vt-val">—</span>
+              </div>
+              <div class="vt-row">
+                <span class="vt-lbl">Opponent</span>
+                <span id="vt-opp" class="vt-val">—</span>
+              </div>
+              <div class="vt-row">
+                <span class="vt-lbl">Last correction</span>
+                <span id="vt-last-corr" class="vt-val">—</span>
+              </div>
             </div>
-            <div class="mission-meta-row">
-              <span class="mission-meta-lbl">Type</span>
-              <select id="voe-type" class="input-sm" onchange="visionObjChanged()">
-                <option value="cylinder">Cylinder</option>
-                <option value="can">Can</option>
-                <option value="puck">Puck</option>
-                <option value="plant">Plant</option>
-                <option value="obstacle">Obstacle</option>
-                <option value="other">Other</option>
-              </select>
-            </div>
-            <div class="mission-meta-row">
-              <span class="mission-meta-lbl">ArUco ID</span>
-              <input id="voe-aruco" class="input-sm" style="width:60px" type="number" min="-1"
-                     placeholder="none" oninput="visionObjChanged()">
-            </div>
-            <div class="mission-meta-row">
-              <span class="mission-meta-lbl">Color</span>
-              <select id="voe-color" class="input-sm" onchange="visionObjChanged()">
-                <option value="unknown">Unknown</option>
-                <option value="red">Red</option>
-                <option value="green">Green</option>
-                <option value="blue">Blue</option>
-                <option value="yellow">Yellow</option>
-                <option value="white">White</option>
-                <option value="black">Black</option>
-                <option value="brown">Brown</option>
-              </select>
-            </div>
-            <div class="mission-meta-row">
-              <span class="mission-meta-lbl">Init X (mm)</span>
-              <input id="voe-ix" class="input-sm" type="number" style="width:80px" oninput="visionObjChanged()">
-              <span class="mission-meta-lbl" style="margin-left:6px">Y</span>
-              <input id="voe-iy" class="input-sm" type="number" style="width:80px" oninput="visionObjChanged()">
-            </div>
-            <div class="mission-meta-row">
-              <label class="toggle">
-                <input type="checkbox" id="voe-ontable" onchange="visionObjChanged()">
-                On table
-              </label>
-            </div>
-            <div class="mission-meta-row" style="font-size:10px;color:var(--text-dim)" id="voe-lastseen"></div>
-          </div><!-- /vision-obj-editor -->
+          </details>
 
-        </aside><!-- /vision-sidebar -->
+          <!-- Pipeline log strip pushed to the bottom; collapsible header -->
+          <div class="vp-logs-bottom">
+            <div class="vp-logs-header">
+              <span>Pipeline log</span>
+              <button class="btn-tiny" onclick="visionToggleLogs()" id="vp-logs-toggle"
+                      title="Show/hide log strip">hide</button>
+            </div>
+            <div class="vp-logs" id="vp-logs">
+              <div class="vp-logs-empty">No logs yet — run a pipeline and look here for INFO/ERROR lines</div>
+            </div>
+          </div>
 
-      </div><!-- /vision-layout -->
-    </div><!-- /view-vision -->
+        </div>
+      </div>
+    </div><!-- /view-vision-dashboard -->
+
+    <!-- ════════════════════════════════════════════════════════════════════ -->
+    <!--  VISION · EDITOR — REMOVED                                          -->
+    <!--  The React Flow node editor has been retired in favor of a Python-  -->
+    <!--  defined pipeline (see software/vision_runner/). Original sources   -->
+    <!--  are archived under software/_archive/vision_editor/ in case the    -->
+    <!--  graph UI is needed again.                                          -->
+    <!-- ════════════════════════════════════════════════════════════════════ -->
+    <div id="view-vision-editor" class="view">
+      <div class="vision-editor-page" style="padding:24px;color:#94a3b8;">
+        <h3 style="color:#e2e8f0;">Editor retired</h3>
+        <p>The graph editor is gone — pipelines now live in
+          <code>software/vision_runner/pipeline.py</code> and run via the
+          standalone runner.</p>
+        <pre style="background:#0b1424;padding:10px;border-radius:6px;">cd software
+python -m vision_runner.runner video path/to/your/video.mp4</pre>
+        <p>Then open <a href="http://127.0.0.1:5174/" style="color:#38bdf8;">http://127.0.0.1:5174/</a>.</p>
+      </div>
+    </div><!-- /view-vision-editor -->
+
+    <!-- ════════════════════════════════════════════════════════════════════ -->
+    <!--  VISION · OBJECTS — live tracked detections                          -->
+    <!-- ════════════════════════════════════════════════════════════════════ -->
+    <div id="view-vision-objects" class="view">
+      <div class="vision-objects-page">
+        <div class="vision-objects-header">
+          <h3 style="margin:0">Live detections</h3>
+          <span id="vobj-summary" class="vd-pill">— detections</span>
+          <span style="flex:1"></span>
+          <label class="toggle"><input type="checkbox" id="vobj-keep-stale" checked> show stale</label>
+        </div>
+        <div class="vision-objects-table-wrap">
+          <table class="vision-objects-table" id="vobj-table">
+            <thead>
+              <tr>
+                <th>tag</th>
+                <th>class</th>
+                <th>pixel</th>
+                <th>table&nbsp;mm</th>
+                <th>θ</th>
+                <th>last seen</th>
+              </tr>
+            </thead>
+            <tbody id="vobj-tbody">
+              <tr class="vobj-empty">
+                <td colspan="6" style="text-align:center;color:var(--text-dim);padding:18px">
+                  No detections yet — open Vision · Dashboard, point at some ArUco tags
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div><!-- /view-vision-objects -->
 
     <!-- ════════════════════════════════════════════════════════════════════ -->
     <!--  ACTUATORS VIEW                                                     -->
@@ -1942,6 +1776,8 @@
 <script src="static/js/modules.js"></script>
 <script src="static/js/calibration.js"></script>
 <script src="static/js/vision.js"></script>
+<!-- Vision editor was archived. The React/Babel CDN scripts are no longer
+     loaded; pipelines now live in software/vision_runner/pipeline.py. -->
 <script src="static/js/remote.js"></script>
 <script src="static/js/actuators.js"></script>
 </body>

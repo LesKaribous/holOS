@@ -115,6 +115,34 @@ function connectSim() {
   socket.emit('connect_sim');
   setSerialStatus('Simulator active', 'ok');
   cgSetConnectionMode('sim');
+  _setSimBridgeStatus('running');
+}
+
+// ── Simulator-node panel (in the connectivity graph) ──────────────────────
+// `Start simulator` here means: spin up the in-process VirtualTransport so
+// the brain has someone to talk to. This is distinct from the topbar
+// `▶ Start` (which runs the match strategy).
+function simBridgeStart() {
+  connectSim();
+}
+
+function simBridgeStop() {
+  // The existing serialDisconnect handles both HW + sim disconnects on the
+  // server side (it falls back to idle when no transport is open).
+  if (typeof serialDisconnect === 'function') serialDisconnect();
+  _setSimBridgeStatus('idle');
+}
+
+function _setSimBridgeStatus(state) {
+  const el = document.getElementById('sim-bridge-status');
+  if (!el) return;
+  if (state === 'running') {
+    el.textContent = 'running';
+    el.style.color = 'var(--green)';
+  } else {
+    el.textContent = 'idle';
+    el.style.color = 'var(--text-dim)';
+  }
 }
 
 function setSerialStatus(msg, cls) {

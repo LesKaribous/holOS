@@ -1,0 +1,27 @@
+{
+  "_comment": "Copy this file to data_sources.json (gitignored) and fill in your private URLs. data_download.py reads data_sources.json.",
+  "_format": {
+    "key":  "human-readable id, becomes the destination filename if 'dest' is not set",
+    "url":  "direct download URL (HTTP/HTTPS). Google Drive / Dropbox shareable links work if they redirect to the raw file.",
+    "dest": "(optional) destination path relative to software/vision/data/ — defaults to <key>.<ext>",
+    "sha256": "(optional) hex digest; if set, downloader verifies the file"
+  },
+  "videos": [
+    {
+      "key":  "match_2024_finale",
+      "url":  "https://example.com/private/match.mkv",
+      "dest": "matches/match_2024_finale.mkv"
+    },
+    {
+      "key":  "calibration_table_red",
+      "url":  "https://example.com/private/calibration_red.mp4"
+    }
+  ],
+  "images": [
+    {
+      "key":  "frame_red_table",
+      "url":  "https://example.com/private/frame_red.png",
+      "dest": "frames/frame_red.png"
+    }
+  ]
+}

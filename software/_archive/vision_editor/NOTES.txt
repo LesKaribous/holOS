@@ -1,0 +1,28 @@
+Archived 2026-05-06 — React Flow node editor for the holOS vision pipeline.
+
+Why removed
+  Replaced by a Python-defined pipeline in software/vision_runner/ that
+  is hot-reloaded and easier to reason about. The graph editor was nice
+  for exploration but added a lot of moving parts (JSON persistence, JSX
+  in-browser transpilation, Babel + ReactFlow CDNs, custom port-kind
+  validation, undo/redo, file browser…) for what ended up being a fixed
+  set of pipelines.
+
+What's here
+  vision_editor.jsx
+      Last shipped version of the editor. Babel-transpiled in browser via
+      CDN. Self-contained — drop it back into:
+          software/sim/static/js/vision_editor.jsx
+      and re-add to index.html:
+          <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+          <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+          <script crossorigin src="https://unpkg.com/reactflow@11/dist/umd/index.js"></script>
+          <link rel="stylesheet" href="https://unpkg.com/reactflow@11/dist/style.css" />
+          <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+          <script type="text/babel" data-presets="react" src="static/js/vision_editor.jsx"></script>
+      and restore the #vision-editor-root mount point in the visio-editor view.
+
+What's NOT archived (still alive in main code)
+  - software/services/vision_pipelines/ (the pipeline framework + nodes)
+  - All the /api/vision/pipelines/* endpoints in run.py — they still
+    accept JSON graphs if you need them, they just no longer have a UI.

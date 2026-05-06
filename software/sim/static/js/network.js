@@ -344,11 +344,8 @@ function _ncPanelHW() {
         <button id="np-connect-btn" class="btn green btn-sm" style="flex:1" onclick="_ncDoConnect()">Connect HW</button>
         <button class="btn red btn-sm" style="flex:1" onclick="serialDisconnect()">Disconnect</button>
       </div>
-      <div style="margin-top:8px;padding-top:8px;border-top:1px solid rgba(255,255,255,.1)">
-        <button class="btn btn-sm" style="width:100%;background:#6366f1;color:#fff" onclick="connectSim()">▶ Start Simulator</button>
-      </div>
     </div>
-    <div class="np-hint">Select a COM port and click <b>Connect HW</b>. Firmware auto-detects USB-CDC or XBee (57 600 bps).</div>`;
+    <div class="np-hint">Select a COM port and click <b>Connect HW</b>. Firmware auto-detects USB-CDC or XBee (57 600 bps).<br>To start the simulator, click the Simulator node in the topbar connectivity graph.</div>`;
 }
 
 function _ncPanelHWInit() {
@@ -388,8 +385,10 @@ function _ncPanelSimLink() {
       <div class="np-row"><span>Status</span><span class="np-badge np-${active?'active':'disconnected'}">${active?'Active':'Inactive'}</span></div>
       <div class="np-row"><span>Type</span><span>In-process VirtualTransport</span></div>
     </div>
-    <div class="np-section">
-      <button class="btn btn-sm" style="width:100%;background:#6366f1;color:#fff" onclick="connectSim()">▶ Start Simulator</button>
+    <div class="np-hint" style="margin-top:8px">
+      Start / stop the simulator from the Simulator node in the topbar
+      connectivity graph (right-most node). It hosts ▶&nbsp;Start&nbsp;simulator
+      and ⏹&nbsp;Stop.
     </div>`;
 }
 

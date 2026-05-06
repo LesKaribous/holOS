@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Vision Pipeline Runner</title>
+<link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+
+<header class="topbar">
+  <div class="title">vision-runner</div>
+  <div class="status-line">
+    <span class="badge" id="src-badge">{{ source_kind }} · {{ source_path }}</span>
+    <span class="badge" id="reload-badge">build #—</span>
+    <span class="badge" id="fps-badge">— fps</span>
+    <span class="badge ghost" id="err-badge"></span>
+    <button id="btn-reload" title="Force pipeline rebuild">↻ rebuild</button>
+  </div>
+</header>
+
+<!-- Source playback strip — only visible for video sources -->
+<section id="playback" class="playback hidden">
+  <button class="pb-btn" data-act="step_back_10" title="-10 frames">⏮⏮</button>
+  <button class="pb-btn" data-act="step_back"    title="-1 frame">⏮</button>
+  <button class="pb-btn" data-act="pause"        data-toggle="mode" data-mode="pause" title="Pause">⏸</button>
+  <button class="pb-btn" data-act="play"         data-toggle="mode" data-mode="play"  title="Play">▶</button>
+  <button class="pb-btn" data-act="step"         title="+1 frame">⏭</button>
+  <button class="pb-btn" data-act="step_10"      title="+10 frames">⏭⏭</button>
+  <select id="speed-sel" title="Playback speed">
+    <option value="0.25">0.25×</option>
+    <option value="0.5">0.5×</option>
+    <option value="1" selected>1×</option>
+    <option value="2">2×</option>
+    <option value="4">4×</option>
+    <option value="8">8×</option>
+  </select>
+  <span class="frame-info" id="frame-info"></span>
+</section>
+
+<!-- Output tiles, generated dynamically -->
+<main id="tiles" class="tiles"></main>
+
+<script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
+<script src="/static/app.js"></script>
+</body>
+</html>

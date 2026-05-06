@@ -1,0 +1,29 @@
+# TwinVision / holOS vision — large or personal assets that don't belong
+# in the repo. Track them with software/vision/data_download.py instead.
+
+# Python virtualenv detritus (kept around alongside requirements.txt)
+__pycache__/
+*.pyc
+Lib/
+Scripts/
+Include/
+pyvenv.cfg
+
+# Big media — videos and bulk image dumps
+*.mp4
+*.mkv
+*.avi
+*.mov
+*.webm
+frame*.png
+frame*.jpg
+frame*.jpeg
+
+# Local data folder (downloaded videos, captured calibration frames, etc.)
+# We keep the folder around with a .gitkeep so the path always exists.
+data/*
+!data/.gitkeep
+
+# Personal download manifest — copy data_sources.example.json → data_sources.json
+# and put your private URLs there. The example file IS tracked, the live one is not.
+data_sources.json

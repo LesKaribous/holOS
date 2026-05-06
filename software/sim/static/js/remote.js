@@ -4,7 +4,11 @@
 'use strict';
 
 // ── State ──────────────────────────────────────────────────────────────────────
+// Exposed on window so app.js's socket handler (which runs in a different
+// script scope under 'use strict') can read it. Read via `window._remoteDrawerOpen`,
+// write via the setter below.
 let _remoteDrawerOpen = false;
+window._remoteDrawerOpen = false;
 let _remoteCurDeg     = 0;
 let _remoteTgtDeg     = 0;
 let _remoteSnapDeg    = 5;
@@ -53,6 +57,7 @@ function toggleRemoteDrawer(navBtn) {
   if (!drawer) return;
 
   _remoteDrawerOpen = !_remoteDrawerOpen;
+  window._remoteDrawerOpen = _remoteDrawerOpen;
   drawer.classList.toggle('closed', !_remoteDrawerOpen);
   navBtnEl?.classList.toggle('drawer-open', _remoteDrawerOpen);
 

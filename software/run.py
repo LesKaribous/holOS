@@ -131,6 +131,24 @@ try:
 except Exception as _ve:
     print(f"[Vision] Backend unavailable: {_ve}")
 
+# ── Multi-source pipeline registry (TODO #2) ──────────────────────────────────
+# Independent of the legacy match-time backend. The visio tab's React Flow
+# editor drives this; pipelines persist to data/vision_pipelines.json.
+# NB: package name is 'vision_pipelines' (NOT 'vision') so it doesn't shadow
+# the existing services/vision.py (VisionService) that brain.py imports.
+_pipeline_registry = None
+try:
+    from services.vision_pipelines import PipelineRegistry, Pipeline, NODE_KINDS
+    _pipeline_registry = PipelineRegistry()
+except Exception as _pe:
+    print(f"[Vision] Pipeline registry unavailable: {_pe}")
+
+VISION_PIPELINES_PATH = os.path.join(_HERE, 'data', 'vision_pipelines.json')
+
+# Auto-sync heading state — set when match_start fires; the heading-sync
+# routine then waits for the recalage routine to settle.
+_vision_heading_sync_pending = False
+
 # ── Hardware transport (real robot, optional) ─────────────────────────────────
 # When connected, terminal/actuator/strategy commands are routed here instead
 # of the VirtualTransport.  The physics simulation continues running for map
@@ -1419,8 +1437,149 @@ def api_vision_source():
         return jsonify({'ok': False, 'error': 'Vision backend not available'}), 503
     data   = request.get_json(force=True) or {}
     source = str(data.get('source', '0'))
-    ok     = _vision.set_source(source)
-    return jsonify({'ok': ok, 'source': source})
+    res    = _vision.set_source(source)
+    if not res.get('ok'):
+        brain.log(f"[VISION] Source open failed: {res.get('error')}")
+    else:
+        brain.log(f"[VISION] Source opened: {res.get('source', source)}")
+    return jsonify(res)
+
+
+@app.route('/api/vision/browse')
+def api_vision_browse():
+    """File-browser endpoint for the editor's source-path picker.
+
+    Sandboxed to the holOS root (`software/..`) so the browser can't walk
+    out of the project. Returns the directory listing for the requested
+    relative path, plus the parent ref and an absolute path the caller
+    can pass back to set_params.
+
+    Query params:
+        path: relative path under the project root (default = software/vision)
+        kind: 'video' | 'image' | 'all' (filters files; dirs always shown)
+    """
+    project_root = os.path.abspath(os.path.join(_HERE, '..'))
+    rel = request.args.get('path', 'software/vision') or 'software/vision'
+    kind = request.args.get('kind', 'all')
+    video_ext = ('.mp4', '.mkv', '.avi', '.mov', '.webm')
+    image_ext = ('.png', '.jpg', '.jpeg', '.bmp', '.tif', '.tiff', '.webp')
+    if kind == 'video':
+        allowed = video_ext
+    elif kind == 'image':
+        allowed = image_ext
+    else:
+        allowed = video_ext + image_ext
+
+    # Normalize the requested path. The caller often passes whatever the
+    # source node's `path` param currently holds — that might be a FILE
+    # (e.g. "software/vision/data/foo.mp4"), an absolute path from a
+    # different drive, or just garbage from a stale config. Be lenient:
+    #   - strip leading slashes / drive letters that would break confinement
+    #   - if the path resolves to a file, browse its parent directory
+    #   - if confinement fails, fall back to software/vision
+    rel = rel.replace('\\', '/').lstrip('/').lstrip('\\')
+    # Strip Windows drive prefix if user pasted an abs path
+    if len(rel) >= 2 and rel[1] == ':':
+        rel = rel[2:].lstrip('/').lstrip('\\')
+
+    target = os.path.abspath(os.path.join(project_root, rel))
+    # If user passed a file path, use its parent
+    if os.path.isfile(target):
+        target = os.path.dirname(target)
+
+    try:
+        common = os.path.commonpath([project_root, target])
+    except ValueError:
+        common = ''
+    if common != project_root or not os.path.isdir(target):
+        # Fall back to software/vision so the user always lands somewhere.
+        fallback = os.path.join(project_root, 'software', 'vision')
+        if os.path.isdir(fallback):
+            target = fallback
+        else:
+            target = project_root
+
+    entries = []
+    try:
+        for name in sorted(os.listdir(target), key=str.lower):
+            if name.startswith('.'):
+                continue
+            full = os.path.join(target, name)
+            is_dir = os.path.isdir(full)
+            if not is_dir and not name.lower().endswith(allowed):
+                continue
+            try:
+                size = os.path.getsize(full) if not is_dir else 0
+            except OSError:
+                size = 0
+            entries.append({
+                'name':  name,
+                'is_dir': is_dir,
+                'rel':   os.path.relpath(full, project_root).replace('\\', '/'),
+                'abs':   full,
+                'size_mb': round(size / 1024 / 1024, 2),
+            })
+    except OSError as e:
+        return jsonify({'ok': False, 'error': str(e)}), 500
+
+    rel_norm = os.path.relpath(target, project_root).replace('\\', '/')
+    parent = (
+        os.path.relpath(os.path.dirname(target), project_root).replace('\\', '/')
+        if target != project_root else ''
+    )
+    return jsonify({
+        'ok': True,
+        'project_root': project_root,
+        'cwd':    rel_norm if rel_norm != '.' else '',
+        'parent': parent if parent != '.' else '',
+        'entries': entries,
+    })
+
+
+@app.route('/api/vision/list_files')
+def api_vision_list_files():
+    """List candidate video/image files under software/vision/ + data/ for
+    the datalist autocomplete in the source picker. Browsers can't expose
+    full paths, so we let the user pick from a server-side listing."""
+    kind = request.args.get('kind', 'all')   # 'video' | 'image' | 'all'
+    video_ext = ('.mp4', '.mkv', '.avi', '.mov', '.webm')
+    image_ext = ('.png', '.jpg', '.jpeg', '.bmp', '.tif', '.tiff', '.webp')
+    if kind == 'video':
+        allowed = video_ext
+    elif kind == 'image':
+        allowed = image_ext
+    else:
+        allowed = video_ext + image_ext
+
+    roots = [
+        os.path.join(_HERE, 'vision'),
+        os.path.join(_HERE, 'vision', 'data'),
+    ]
+    seen = set()
+    files = []
+    for root in roots:
+        if not os.path.isdir(root):
+            continue
+        try:
+            for entry in sorted(os.listdir(root)):
+                full = os.path.join(root, entry)
+                if not os.path.isfile(full):
+                    continue
+                if not entry.lower().endswith(allowed):
+                    continue
+                # Display: relative to software/vision/ for compactness.
+                rel = os.path.relpath(full, os.path.join(_HERE, 'vision'))
+                if rel in seen:
+                    continue
+                seen.add(rel)
+                files.append({
+                    'rel': rel,
+                    'abs': full,
+                    'size_mb': round(os.path.getsize(full) / 1024 / 1024, 1),
+                })
+        except OSError:
+            pass
+    return jsonify({'files': files, 'roots': roots, 'kind': kind})
 
 
 @app.route('/api/vision/config', methods=['GET'])
@@ -1439,74 +1598,606 @@ def api_vision_config_set():
     return jsonify({'ok': True})
 
 
-@app.route('/api/vision/calibration', methods=['POST'])
-def api_vision_calibration_set():
+# ── Pipeline registry (multi-source) endpoints ──────────────────────────────
+
+def _pipeline_to_payload(p):
+    return {
+        'name':       p.name,
+        'fps_limit':  p.fps_limit,
+        'enabled':    p.enabled,
+        'is_active':  (_pipeline_registry is not None
+                       and _pipeline_registry.active_name == p.name),
+        'is_default': (_pipeline_registry is not None
+                       and _pipeline_registry.default_name == p.name),
+        'state':      p.state(),
+        'graph':      p.to_dict(),
+    }
+
+
+def _save_pipelines():
+    if _pipeline_registry is None:
+        return
+    try:
+        os.makedirs(os.path.dirname(VISION_PIPELINES_PATH), exist_ok=True)
+        with open(VISION_PIPELINES_PATH, 'w', encoding='utf-8') as f:
+            json.dump({
+                'pipelines': [p.to_dict() for p in _pipeline_registry.all()],
+                'active':    _pipeline_registry.active_name,
+                'default':   _pipeline_registry.default_name,
+            }, f, indent=2, ensure_ascii=False)
+    except Exception as e:
+        brain.log(f'[VISION] Pipeline save failed: {e}')
+
+
+def _build_pipeline_from_dict(d: dict, force_video_paused: bool = False):
+    """Reconstruct a Pipeline from a saved graph dict.
+
+    `force_video_paused`: when True, any source.video node's `playback` is
+    rewritten to `'pause'` regardless of what was saved. We do this on
+    server startup so a previously-running video doesn't start hammering
+    cv2.VideoCapture as soon as the process boots — let the user hit ▶.
+    """
+    p = Pipeline(name=d['name'], fps_limit=int(d.get('fps_limit', 25)))
+    nodes = d.get('nodes', [])
+    # First pass: instantiate all nodes
+    for nd in nodes:
+        kind = nd['kind']
+        if kind not in NODE_KINDS:
+            brain.log(f"[VISION] Unknown node kind {kind!r} in saved pipeline "
+                      f"{d['name']!r} — skipped")
+            continue
+        cls = NODE_KINDS[kind]
+        params = dict(nd.get('params', {}))
+        if force_video_paused and kind == 'source.video':
+            params['playback'] = 'pause'
+        p.add_node(nd['id'], kind, cls(params))
+        # Restore the saved editor position on the record so the next
+        # Pipeline.to_dict() round-trips it back to the editor.
+        pos = nd.get('position')
+        if isinstance(pos, dict) and 'x' in pos and 'y' in pos:
+            rec = p._nodes.get(nd['id'])
+            if rec is not None:
+                rec.position = {'x': float(pos['x']), 'y': float(pos['y'])}
+    # Second pass: wire edges
+    for nd in nodes:
+        for inp in nd.get('inputs', []):
+            try:
+                p.connect(inp['src_node'], inp['src_port'],
+                          nd['id'],        inp['port'])
+            except Exception as e:
+                brain.log(f"[VISION] connect failed: {e}")
+    return p
+
+
+def _load_pipelines():
+    """Load saved pipelines from disk and restore the default-active one.
+    Returns the name of the pipeline that was activated (if any), so the
+    caller can show it in the UI / logs.
+    """
+    if _pipeline_registry is None or not os.path.exists(VISION_PIPELINES_PATH):
+        return None
+    try:
+        with open(VISION_PIPELINES_PATH, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        for d in data.get('pipelines', []):
+            # Boot-time load forces video sources to start in 'pause' so a
+            # previously-running video doesn't auto-play on server boot.
+            p = _build_pipeline_from_dict(d, force_video_paused=True)
+            _pipeline_registry.register(p)
+            _wire_pipeline_feeds(p)
+        # Restore the default name. Falls back to None if the saved name
+        # has since been deleted.
+        default_name = data.get('default')
+        if default_name and _pipeline_registry.get(default_name) is not None:
+            _pipeline_registry.set_default(default_name)
+        # Restore active: prefer 'active' field, else the default.
+        active_name = data.get('active') or _pipeline_registry.default_name
+        if active_name and _pipeline_registry.get(active_name) is not None:
+            _pipeline_registry.set_active(active_name)
+        brain.log(f'[VISION] Loaded {len(data.get("pipelines", []))} '
+                  f'pipeline(s) from {VISION_PIPELINES_PATH}'
+                  + (f' — active: {active_name!r}' if active_name else ''))
+        return active_name
+    except Exception as e:
+        brain.log(f'[VISION] Pipeline load failed: {e}')
+        return None
+
+
+def _wire_pipeline_feeds(p):
+    """Hook every output-kind node's feed onto SocketIO emissions.
+
+    Supports three payload kinds:
+        bytes/bytearray  → 'frame' (base64-encoded JPEG)
+        dict / list      → 'pose_list' or 'json' (decided by meta.kind)
+    The same SocketIO event (`vision_feed`) carries everything; the
+    dashboard inspects `kind` to render appropriately.
+
+    Fall back to the node id when feed_id is empty (matches the output
+    nodes' _effective_feed_id default). Idempotent — clears existing
+    subscribers first.
+    """
+    p.clear_feed_subscribers()
+    OUTPUT_CLASSES = {'OutputNode', 'OutputPoseListNode',
+                      'OutputObjectsNode', 'OutputJsonNode'}
+    for rec_id in p.node_ids():
+        node = p.get_node(rec_id)
+        if node is None:
+            continue
+        if node.__class__.__name__ not in OUTPUT_CLASSES:
+            continue
+        feed_id = (node._effective_feed_id()
+                   if hasattr(node, '_effective_feed_id')
+                   else (node.get_params().get('feed_id') or rec_id))
+        if not feed_id:
+            continue
+        # Default-arg capture so closures are bound BY VALUE, not by
+        # reference (avoids the loop-variable trap when multiple outputs
+        # exist in the same graph).
+        def make_cb(fid=feed_id, pipeline_name=p.name):
+            def cb(payload, meta):
+                import base64 as _b64
+                try:
+                    msg = {
+                        'feed_id':  fid,
+                        'pipeline': pipeline_name,
+                        'meta':     meta or {},
+                    }
+                    if isinstance(payload, (bytes, bytearray)):
+                        msg['kind'] = 'frame'
+                        msg['jpeg'] = _b64.b64encode(bytes(payload)).decode()
+                    else:
+                        # Non-frame payload (pose_list / json). The output
+                        # node sets meta['kind'] so the dashboard knows.
+                        msg['kind'] = (meta or {}).get('kind', 'json')
+                        msg['data'] = payload
+                    socketio.emit('vision_feed', msg)
+                except Exception as e:
+                    print(f'[VISION] feed emit {fid} failed: {e}')
+            return cb
+        p.subscribe_feed(feed_id, make_cb())
+
+
+def _get_latest_own_pose():
+    """Read-only snapshot of the latest 'own'-classified pose from the
+    active pipeline's localization node. Returns None when the pipeline
+    isn't running, no localization node exists, or the latest tick didn't
+    detect the own robot.
+
+    This is a PULL accessor — strategy code (the firmware or the brain)
+    queries it on demand. Vision never auto-pushes the robot pose.
+    """
+    if _pipeline_registry is None:
+        return None
+    p = _pipeline_registry.active()
+    if p is None or not p.enabled:
+        return None
+    with p._lock:
+        for nid, rec in p._nodes.items():
+            if rec.kind != 'localization':
+                continue
+            poses = rec.outputs.get('pose_list')
+            if not poses:
+                return None
+            # Pick the freshest 'own' pose; fall back to None if none.
+            for q in poses:
+                if q.get('classification') != 'own':
+                    continue
+                if q.get('x_mm') is None or q.get('y_mm') is None:
+                    return None
+                return {
+                    'tag_id':    q.get('tag_id'),
+                    'x_mm':      q['x_mm'],
+                    'y_mm':      q['y_mm'],
+                    'theta_rad': q.get('theta_rad'),
+                    'naive_x_mm': q.get('naive_x_mm'),
+                    'naive_y_mm': q.get('naive_y_mm'),
+                }
+            return None   # no own pose in the latest tick
+    return None
+
+
+@app.route('/api/vision/robot_pose', methods=['GET'])
+def api_vision_robot_pose():
+    """Pull endpoint: returns the latest own-team robot pose if available,
+    or 404 when not. The caller (strategy code) decides whether to apply
+    it — vision never auto-updates robot.pos.
+
+    Response on hit: { ok, pose: { tag_id, x_mm, y_mm, theta_rad, … } }
+    Response on miss: 404 with { ok: false, error: '...' }
+    """
+    pose = _get_latest_own_pose()
+    if pose is None:
+        return jsonify({'ok': False, 'error': 'no own-team pose available'}), 404
+    return jsonify({'ok': True, 'pose': pose})
+
+
+@app.route('/api/vision/pipelines', methods=['GET'])
+def api_pipelines_list():
+    if _pipeline_registry is None:
+        return jsonify({'pipelines': [], 'available': False,
+                        'node_kinds': [], 'active': None, 'default': None})
+    return jsonify({
+        'pipelines':   [_pipeline_to_payload(p) for p in _pipeline_registry.all()],
+        'available':   True,
+        'node_kinds':  _node_kinds_payload(),
+        'active':      _pipeline_registry.active_name,
+        'default':     _pipeline_registry.default_name,
+    })
+
+
+def _node_kinds_payload():
+    """Return enough info for the editor to render the node palette + forms."""
+    out = []
+    for kind, cls in NODE_KINDS.items():
+        io = getattr(cls, 'IO', None)
+        out.append({
+            'kind':    kind,
+            'inputs':  [{'name': p.name, 'kind': p.kind,
+                         'description': p.description,
+                         'optional': getattr(p, 'optional', False)}
+                        for p in (io.inputs if io else [])],
+            'outputs': [{'name': p.name, 'kind': p.kind,
+                         'description': p.description}
+                        for p in (io.outputs if io else [])],
+            'params_schema': getattr(cls, 'params_schema', {}),
+        })
+    return sorted(out, key=lambda x: x['kind'])
+
+
+@app.route('/api/vision/pipelines/<name>', methods=['PUT'])
+def api_pipeline_save(name):
+    """Create or replace a pipeline graph. Saving does NOT activate it —
+    use /active separately. This lets you edit a pipeline without
+    disturbing whatever is currently producing dashboard feeds."""
+    if _pipeline_registry is None:
+        return jsonify({'ok': False, 'error': 'registry unavailable'}), 503
+    data = request.get_json(force=True) or {}
+    data['name'] = name
+    try:
+        p = _build_pipeline_from_dict(data)
+    except Exception as e:
+        return jsonify({'ok': False, 'error': str(e)}), 400
+    _pipeline_registry.register(p)
+    _wire_pipeline_feeds(p)
+    # Inject the current global team into team-aware nodes so a freshly
+    # added localization / filter node uses the right classification
+    # without the user having to set it by hand.
+    cur_team = sim_state.get('team', 'blue')
+    with p._lock:
+        for nid, rec in p._nodes.items():
+            schema = getattr(rec.instance.__class__, 'params_schema', {}) or {}
+            if 'team' in schema:
+                try: rec.instance.set_params({'team': cur_team})
+                except Exception: pass
+    _save_pipelines()
+    brain.log(f'[VISION] Pipeline saved: {name} ({len(data.get("nodes", []))} nodes)')
+    return jsonify({'ok': True, 'pipeline': _pipeline_to_payload(p)})
+
+
+@app.route('/api/vision/pipelines/<name>', methods=['DELETE'])
+def api_pipeline_delete(name):
+    if _pipeline_registry is None:
+        return jsonify({'ok': False}), 503
+    if not _pipeline_registry.remove(name):
+        return jsonify({'ok': False, 'error': 'not found'}), 404
+    _save_pipelines()
+    return jsonify({'ok': True})
+
+
+@app.route('/api/vision/active', methods=['POST'])
+def api_pipeline_set_active():
+    """Pick the pipeline that drives the dashboard feeds. Pass {name: null}
+    to deactivate everything."""
+    if _pipeline_registry is None:
+        return jsonify({'ok': False}), 503
+    data = request.get_json(force=True) or {}
+    name = data.get('name')
+    try:
+        _pipeline_registry.set_active(name)
+    except KeyError as e:
+        return jsonify({'ok': False, 'error': str(e)}), 404
+    _save_pipelines()
+    brain.log(f'[VISION] Active pipeline → {name!r}')
+    return jsonify({'ok': True, 'active': _pipeline_registry.active_name})
+
+
+@app.route('/api/vision/pipelines/<name>/logs', methods=['GET'])
+def api_pipeline_logs(name):
+    """Return the pipeline's log ring buffer (recent INFO/ERROR lines).
+    Used by the dashboard's running-pipeline status panel."""
+    if _pipeline_registry is None:
+        return jsonify({'ok': False, 'logs': []}), 503
+    p = _pipeline_registry.get(name)
+    if p is None:
+        return jsonify({'ok': False, 'logs': []}), 404
+    try:
+        n = int(request.args.get('n', 50))
+    except (TypeError, ValueError):
+        n = 50
+    return jsonify({'ok': True, 'logs': p.get_logs(n)})
+
+
+@app.route('/api/vision/snapshot/<name>', methods=['GET'])
+def api_pipeline_snapshot(name):
+    """Capture one frame from the named pipeline's first source.* node and
+    return it as a base64 JPEG. Used by the editor's freeze-frame debug
+    view.
+
+    Resolution order:
+      1. _last_frame cached on the source instance (populated on start()
+         and refreshed on every successful process()).
+      2. rec.outputs['frame'] from the latest tick.
+      3. Read one frame on-demand from the underlying VideoSource (without
+         changing playback state).
+    """
+    if _pipeline_registry is None:
+        return jsonify({'ok': False, 'error': 'registry unavailable'}), 503
+    p = _pipeline_registry.get(name)
+    if p is None:
+        return jsonify({'ok': False, 'error': f'pipeline {name!r} not found'}), 404
+    import cv2 as _cv2, base64 as _b64
+    # Snapshot the source-kind records under the pipeline lock — the
+    # worker thread can otherwise mutate _nodes mid-iteration.
+    with p._lock:
+        source_records = [
+            (nid, rec) for nid, rec in p._nodes.items()
+            if rec.kind.startswith('source.')
+        ]
+    for nid, rec in source_records:
+        node = rec.instance
+        # 1. cached frame from a previous read
+        frame = getattr(node, '_last_frame', None)
+        # 2. last output produced
+        if frame is None:
+            frame = rec.outputs.get('frame')
+        # 3. last-resort: read on demand without flipping playback. We hold
+        #    the pipeline lock so the worker thread doesn't race us.
+        if frame is None:
+            try:
+                with p._lock:
+                    s = getattr(node, '_source', None)
+                    if s is not None and s.is_open:
+                        f = s.read()
+                        if f is not None:
+                            node._last_frame = f
+                            frame = f
+                            try:
+                                s.seek(0)
+                            except Exception:
+                                pass
+            except Exception as e:
+                return jsonify({'ok': False, 'error': f'read on demand: {e}'}), 500
+        if frame is None:
+            return jsonify({
+                'ok': False,
+                'error': 'no frame yet — open the source (load a video / connect a camera) first',
+            }), 503
+        try:
+            ok, buf = _cv2.imencode('.jpg', frame, [_cv2.IMWRITE_JPEG_QUALITY, 70])
+            if not ok:
+                return jsonify({'ok': False, 'error': 'encode failed'}), 500
+            return jsonify({
+                'ok': True, 'source_node': nid,
+                'jpeg': _b64.b64encode(bytes(buf)).decode(),
+                'shape': list(frame.shape),
+            })
+        except Exception as e:
+            return jsonify({'ok': False, 'error': str(e)}), 500
+    return jsonify({'ok': False, 'error': 'no source node in pipeline'}), 404
+
+
+@app.route('/api/vision/debug_run', methods=['POST'])
+def api_pipeline_debug_run():
+    """Run an arbitrary pipeline graph ONCE against a snapshot frame and
+    return per-node frame outputs as base64 JPEGs.
+
+    Body:
+        graph: full pipeline dict (same shape as PUT /pipelines/<n>)
+        snapshot_jpeg: base64 PNG/JPEG bytes — used as the source frame for
+                       any source.* node (we substitute the source with a
+                       canned frame).
+
+    Response: { ok, frames: { node_id: {jpeg, shape} }, errors: { node_id: msg } }
+    """
+    if _pipeline_registry is None:
+        return jsonify({'ok': False, 'error': 'registry unavailable'}), 503
+    body = request.get_json(force=True) or {}
+    graph = body.get('graph') or {}
+    snapshot_b64 = body.get('snapshot_jpeg')
+    if not snapshot_b64:
+        return jsonify({'ok': False, 'error': 'snapshot_jpeg required'}), 400
+    try:
+        import cv2 as _cv2, numpy as _np, base64 as _b64
+        buf = _b64.b64decode(snapshot_b64)
+        snap = _cv2.imdecode(_np.frombuffer(buf, dtype=_np.uint8), _cv2.IMREAD_COLOR)
+        if snap is None:
+            return jsonify({'ok': False, 'error': 'snapshot decode failed'}), 400
+    except Exception as e:
+        return jsonify({'ok': False, 'error': f'snapshot decode: {e}'}), 400
+
+    # Build a temporary pipeline (separate from the registry's named ones,
+    # so we don't disturb anything that's running).
+    try:
+        tmp = _build_pipeline_from_dict(graph)
+    except Exception as e:
+        return jsonify({'ok': False, 'error': f'graph build: {e}'}), 400
+
+    # Replace each source.* node's process() with a canned-frame returner.
+    # We don't call .start() so no real cameras / files get opened.
+    # The frame IS copied here (despite the per-tick perf cost) because
+    # debug_run may be invoked while a preprocess node is still tweaked
+    # by the user, and an in-place op would corrupt the snapshot for
+    # subsequent runs.
+    class _CannedSource:
+        def __init__(self, frame): self._f = frame
+        def process(self, inputs): return {'frame': self._f.copy()}
+        def get_state(self): return {}
+        def shutdown(self): pass
+        # Mimic Node attach() so any helper code that touches it is happy.
+        def attach(self, pipeline, node_id): pass
+        def start(self): pass
+        def get_params(self): return {}
+        def set_params(self, p): pass
+
+    # Walk the topological order once, ferrying outputs by hand.
+    tmp._reorder()
+    nodes = list(tmp._nodes.values())
+    for rec in nodes:
+        if rec.kind.startswith('source.'):
+            rec.instance = _CannedSource(snap)
+        else:
+            try:
+                rec.instance.start()
+            except Exception:
+                pass
+
+    frames_out = {}
+    errors_out = {}
+    for nid in tmp._order:
+        rec = tmp._nodes.get(nid)
+        if rec is None:
+            continue
+        # Build inputs dict from upstream outputs
+        inp = {}
+        for port, (src_nid, src_port) in rec.inputs.items():
+            src = tmp._nodes.get(src_nid)
+            inp[port] = (src.outputs.get(src_port) if src else None)
+        try:
+            rec.outputs = rec.instance.process(inp) or {}
+        except Exception as e:
+            errors_out[nid] = f'{type(e).__name__}: {e}'
+            rec.outputs = {}
+            continue
+        # Find any frame-typed outputs and JPEG-encode them
+        try:
+            import cv2 as _cv2
+            for port_name, val in rec.outputs.items():
+                if val is None:
+                    continue
+                # numpy ndarray with 2 or 3 dims → treat as a frame
+                if hasattr(val, 'shape') and 2 <= len(val.shape) <= 3:
+                    ok, jb = _cv2.imencode('.jpg', val,
+                                           [_cv2.IMWRITE_JPEG_QUALITY, 60])
+                    if ok:
+                        frames_out.setdefault(nid, {})
+                        frames_out[nid][port_name] = {
+                            'jpeg':  _b64.b64encode(bytes(jb)).decode(),
+                            'shape': list(val.shape),
+                        }
+            # "main" preference: preview > frame > first-other.
+            # Inline node-card pulls main, so the user sees the annotated
+            # version when the node exposes one.
+            if nid in frames_out:
+                bag = frames_out[nid]
+                if 'preview' in bag:
+                    bag['main'] = bag['preview']
+                elif 'frame' in bag:
+                    bag['main'] = bag['frame']
+                else:
+                    # Pick whatever frame-port slot we have
+                    for k, v in bag.items():
+                        if k != 'main':
+                            bag['main'] = v
+                            break
+        except Exception as e:
+            errors_out[nid] = f'encode: {e}'
+
+    # Cleanup
+    for rec in nodes:
+        try:
+            rec.instance.shutdown()
+        except Exception:
+            pass
+
+    return jsonify({
+        'ok': True,
+        'frames': frames_out,
+        'errors': errors_out,
+    })
+
+
+@app.route('/api/vision/pipelines/<name>/node/<node_id>/params', methods=['POST'])
+def api_pipeline_node_params(name, node_id):
+    """Update a single node's params live (e.g. flip playback live↔pause↔step
+    without going through a full pipeline save). Body: { params: {key: val} }.
+    """
+    if _pipeline_registry is None:
+        return jsonify({'ok': False}), 503
+    p = _pipeline_registry.get(name)
+    if p is None:
+        return jsonify({'ok': False, 'error': 'pipeline not found'}), 404
+    node = p.get_node(node_id)
+    if node is None:
+        return jsonify({'ok': False, 'error': 'node not found'}), 404
+    body = request.get_json(force=True) or {}
+    params = body.get('params', {})
+    if not isinstance(params, dict):
+        return jsonify({'ok': False, 'error': 'params must be a dict'}), 400
+    try:
+        node.set_params(params)
+    except Exception as e:
+        return jsonify({'ok': False, 'error': str(e)}), 400
+    # If feed_id (or any param on an output node) changed, re-wire feeds
+    # so the new feed_id has a SocketIO subscriber. Cheap — just iterates
+    # the graph's output nodes once.
+    if node.__class__.__name__ == 'OutputNode' or 'feed_id' in params:
+        _wire_pipeline_feeds(p)
+    return jsonify({'ok': True, 'state': node.get_state()})
+
+
+@app.route('/api/vision/default', methods=['POST'])
+def api_pipeline_set_default():
+    """Mark a pipeline as default — auto-activated on server startup.
+    Pass {name: null} to clear."""
+    if _pipeline_registry is None:
+        return jsonify({'ok': False}), 503
+    data = request.get_json(force=True) or {}
+    name = data.get('name')
+    try:
+        _pipeline_registry.set_default(name)
+    except KeyError as e:
+        return jsonify({'ok': False, 'error': str(e)}), 404
+    _save_pipelines()
+    brain.log(f'[VISION] Default pipeline → {name!r}')
+    return jsonify({'ok': True, 'default': _pipeline_registry.default_name})
+
+
+@app.route('/api/vision/team', methods=['POST'])
+def api_vision_team():
+    """Set the team color (drives which tag IDs are tracked as own/opp).
+    Body: { team: 'blue'|'yellow' }"""
     if _vision is None:
         return jsonify({'ok': False}), 503
     data = request.get_json(force=True) or {}
-    _vision.set_calibration_dict(data.get('calibration'))
-    return jsonify({'ok': True})
+    team = str(data.get('team', 'blue')).lower()
+    _vision.set_team(team)
+    return jsonify({'ok': True, 'team': _vision.team})
 
 
-@app.route('/api/vision/playback', methods=['POST'])
-def api_vision_playback():
+@app.route('/api/vision/sync_heading', methods=['POST'])
+def api_vision_sync_heading():
+    """Capture the heading offset between OTOS and the robot tag.
+    Called once after the robot's recalage routine completes."""
+    if _vision is None:
+        return jsonify({'ok': False, 'error': 'vision backend unavailable'}), 503
+    res = _vision.sync_heading()
+    if res.get('ok'):
+        brain.log(f"[VISION] Heading synced: offset = "
+                  f"{res['offset_deg']:+.2f} deg "
+                  f"(tag={math.degrees(res['tag_theta_rad']):+.1f}°, "
+                  f"otos={math.degrees(res['otos_theta_rad']):+.1f}°)")
+    else:
+        brain.log(f"[VISION] Heading sync failed: {res.get('reason')}")
+    return jsonify(res)
+
+
+@app.route('/api/vision/reset_heading', methods=['POST'])
+def api_vision_reset_heading():
     if _vision is None:
         return jsonify({'ok': False}), 503
-    data = request.get_json(force=True) or {}
-    action = data.get('action', '')
-    if action == 'play_pause':
-        _vision.play_pause()
-    elif action == 'seek':
-        _vision.seek(int(data.get('frame', 0)))
-    elif action == 'step':
-        _vision.step(int(data.get('delta', 1)))
-    elif action == 'speed':
-        _vision.set_speed(float(data.get('speed', 1.0)))
+    _vision.reset_heading_offset()
+    brain.log('[VISION] Heading offset cleared')
     return jsonify({'ok': True})
-
-
-# ── Object registry API ───────────────────────────────────────────────────────
-
-@app.route('/api/vision/objects', methods=['GET'])
-def api_vision_objects_get():
-    if _vision is None:
-        return jsonify([])
-    return jsonify(_vision.get_objects())
-
-
-@app.route('/api/vision/objects', methods=['PUT'])
-def api_vision_objects_put():
-    if _vision is None:
-        return jsonify({'ok': False}), 503
-    objects = request.get_json(force=True) or []
-    _vision.set_objects(objects)
-    return jsonify({'ok': True})
-
-
-@app.route('/api/vision/objects/<obj_id>', methods=['PATCH'])
-def api_vision_object_patch(obj_id):
-    if _vision is None:
-        return jsonify({'ok': False}), 503
-    patch = request.get_json(force=True) or {}
-    _vision.update_object(obj_id, patch)
-    return jsonify({'ok': True})
-
-
-@app.route('/api/vision/objects/<obj_id>', methods=['DELETE'])
-def api_vision_object_delete(obj_id):
-    if _vision is None:
-        return jsonify({'ok': False}), 503
-    _vision.delete_object(obj_id)
-    return jsonify({'ok': True})
-
-
-@app.route('/api/vision/objects/<obj_id>/color', methods=['POST'])
-def api_vision_object_color(obj_id):
-    """Query endpoint: robot/strategy asks for color of a specific object."""
-    if _vision is None:
-        return jsonify({'color': 'unknown'})
-    color = _vision.get_object_color(obj_id)
-    return jsonify({'id': obj_id, 'color': color})
 
 
 # ── Vision frame push loop (25 fps max, SocketIO) ────────────────────────────
@@ -1514,22 +2205,28 @@ def api_vision_object_color(obj_id):
 _vision_clients = 0   # count of clients with vision view open
 
 def _vision_push_loop():
-    """Push vision frames to all connected clients at up to 25 fps."""
-    import base64 as _b64
+    """Push vision frames + tracker state to subscribed clients at up to 25 fps.
+    JPEG encoding inside the backend is gated by the same client count, so
+    when nobody is watching the visio tab the encoder stage is skipped."""
     while True:
         try:
             if _vision and _vision.enabled and _vision_clients > 0:
-                raw_b64, rect_b64, proc_b64 = _vision.get_latest_frames_b64()
+                raw_b64, rect_b64 = _vision.get_latest_frames_b64()
+                state = _vision.get_state()
                 if raw_b64:
                     socketio.emit('vision_frame', {
                         'raw':  raw_b64,
                         'rect': rect_b64,
-                        'proc': proc_b64,
-                        **_vision.get_frame_info(),
-                        'detections': _vision.get_state().get('detections', []),
-                        'has_h': _vision.get_state().get('has_homography', False),
-                        'h_fresh': _vision.get_state().get('homography_fresh', False),
-                        'proc_mode': _vision.get_config().get('proc_mode', 'none'),
+                        **state.get('frame_info', {}),
+                        'detections':    state.get('detections', []),
+                        'anchor_status': state.get('anchor_status', {}),
+                        'robot_pose':    state.get('robot_pose'),
+                        'opponent_pose': state.get('opponent_pose'),
+                        'heading_offset_deg': state.get('heading_offset_deg'),
+                        'last_correction':    state.get('last_correction'),
+                        'has_h':   state.get('has_homography', False),
+                        'h_fresh': state.get('homography_fresh', False),
+                        'team':    state.get('team', 'blue'),
                     })
         except Exception:
             pass
@@ -1539,10 +2236,90 @@ def _vision_push_loop():
 @socketio.on('vision_view_active')
 def on_vision_view_active(data):
     global _vision_clients
+    if _vision is None:
+        return
     if data.get('active'):
         _vision_clients += 1
+        _vision.add_stream_client()
     else:
         _vision_clients = max(0, _vision_clients - 1)
+        _vision.remove_stream_client()
+
+
+def _auto_sync_vision_heading():
+    """Wait for the robot's recalage routine to deliver a stable OTOS pose
+    AND for the OWN robot tag to be visible, then capture the heading
+    offset. Retries for up to 15 s — if the tag never shows up, gives up
+    and logs a warning (the user can still trigger a manual sync from the
+    visio tab).
+
+    The premise: recalage takes a few seconds. Once it's done OTOS reports
+    a sane absolute pose. We sync as soon as both signals are available
+    (vision OWN tag + OTOS pose), so the heading offset is locked in
+    before any vision-driven correction can fire."""
+    if _vision is None:
+        return
+    deadline = time.monotonic() + 15.0
+    last_log_t = 0.0
+    while time.monotonic() < deadline:
+        if not _match_running:
+            return
+        res = _vision.sync_heading()
+        if res.get('ok'):
+            socketio.emit('vision_heading_synced', {
+                'offset_deg': res['offset_deg'],
+            })
+            return
+        # Throttle the noisy logs to once per 2 s
+        now = time.monotonic()
+        if now - last_log_t > 2.0:
+            brain.log(f"[VISION] Heading sync waiting "
+                      f"({res.get('reason', '?')})…")
+            last_log_t = now
+        time.sleep(0.5)
+    brain.log('[VISION] Heading sync gave up after 15 s — '
+              'no robot tag visible; correction disabled until manual sync')
+
+
+# ── Vision-OTOS fusion: long-term drift correction ───────────────────────────
+# When the match is running and the vision backend has a fresh corrected
+# pose ready, push it to the firmware via setAbsPosition(...). The throttling
+# (min distance, min period) is handled inside the backend itself.
+
+def _vision_correction_loop():
+    """Polls the vision backend for ready corrections and applies them via
+    the active hardware transport. Idle when no match is running."""
+    while True:
+        time.sleep(0.1)   # 10 Hz polling — actual correction rate is gated
+                          #                 inside the backend
+        if _vision is None or not _vision.enabled:
+            continue
+        if not _match_running:
+            continue
+        t = _active_transport()
+        if t is None or not t.is_connected:
+            continue
+        try:
+            corr = _vision.pop_correction()
+        except Exception as e:
+            brain.log(f'[VISION] pop_correction error: {e}')
+            continue
+        if corr is None:
+            continue
+        x_mm, y_mm, theta_rad = corr
+        theta_deg = math.degrees(theta_rad)
+        cmd = f"setAbsPosition({x_mm:.0f},{y_mm:.0f},{theta_deg:.2f})"
+        try:
+            t.fire(cmd)
+            brain.log(f'[VISION] corr → ({x_mm:.0f}, {y_mm:.0f}, '
+                      f'{theta_deg:+.1f}°)')
+            socketio.emit('vision_correction', {
+                'x_mm': round(x_mm, 1),
+                'y_mm': round(y_mm, 1),
+                'theta_deg': round(theta_deg, 2),
+            })
+        except Exception as e:
+            brain.log(f'[VISION] correction send failed: {e}')
 
 
 # ── Serial ports API ───────────────────────────────────────────────────────────
@@ -1741,10 +2518,94 @@ def on_reset():
 
 @socketio.on('set_team')
 def on_set_team(data):
+    """Set the team color (sim mode only; in HW mode the robot's
+    physical switch is the source of truth and the topbar buttons are
+    disabled — see cgSetConnectionMode in app.js)."""
     team = data['team']
+    _apply_team(team, source='ui')
+
+
+def _apply_team(team: str, source: str = 'ui') -> None:
+    """Single source of truth for team color. Called by:
+        - on_set_team    (UI button in sim mode)
+        - _hw_team_poll  (HW telemetry every 5 s)
+    Updates sim_state, the simulator robot, the legacy vision backend,
+    and pushes the new team into every team-aware node in every saved
+    pipeline (so the localization classification stays correct).
+    """
+    if team not in ('blue', 'yellow'):
+        return
+    if sim_state.get('team') == team:
+        return   # already there — don't spam logs / save
     sim_state['team'] = team
-    robot.reset_to_start(team)
-    brain.log(f"Team → {team}")
+    try:
+        robot.reset_to_start(team)
+    except Exception:
+        pass
+    brain.log(f'Team → {team} (source: {source})')
+    # Legacy match-time backend
+    if _vision is not None:
+        try: _vision.set_team(team)
+        except Exception: pass
+    # Pipeline registry: push the team into every team-aware node so
+    # downstream filter.classification etc. classify correctly without
+    # the user having to hand-edit each node's `team` param.
+    if _pipeline_registry is not None:
+        for p in _pipeline_registry.all():
+            try:
+                with p._lock:
+                    for nid, rec in p._nodes.items():
+                        # Localization is the producer of `classification`;
+                        # any other node that takes `team` (we look it up
+                        # by params_schema rather than hard-coding kinds)
+                        # also gets updated.
+                        schema = getattr(rec.instance.__class__, 'params_schema', {}) or {}
+                        if 'team' in schema:
+                            try: rec.instance.set_params({'team': team})
+                            except Exception: pass
+            except Exception as e:
+                brain.log(f'[VISION] team-sync failed for {p.name}: {e}')
+
+
+def _start_hw_team_poller():
+    """In HW mode, the team color is set by a physical switch on the
+    robot. We poll the firmware every ~5 s and mirror it locally so the
+    UI + vision stay in sync.
+
+    NOTE: requires firmware to expose the team via a telemetry channel
+    or a `team_get` bridge command. Until that's wired this poller is a
+    no-op stub — it logs once at startup so Jules sees the path is
+    plumbed, then idles.
+    """
+    def _loop():
+        first = True
+        while True:
+            time.sleep(5.0)
+            try:
+                if _connection_mode not in ('usb', 'xbee'):
+                    continue   # sim / idle: topbar UI drives team
+                t = _active_transport()
+                if t is None or not t.is_connected:
+                    continue
+                # Try the bridge command. Firmware should respond with
+                # 'blue' or 'yellow'. Until implemented, this errors out
+                # gracefully and the poller stays dormant.
+                ok, res = t.execute('team_get', timeout_ms=500)
+                if not ok or not res:
+                    if first:
+                        brain.log('[VISION] team_get not implemented in firmware '
+                                  '— falling back to UI-set team')
+                        first = False
+                    continue
+                team = res.strip().lower()
+                if team in ('blue', 'yellow'):
+                    _apply_team(team, source='telemetry')
+            except Exception as e:
+                if first:
+                    brain.log(f'[VISION] team poller: {e}')
+                    first = False
+    threading.Thread(target=_loop, daemon=True,
+                     name='vision-team-poller').start()
 
 
 @socketio.on('set_mode')
@@ -1870,6 +2731,12 @@ def _do_connect(port: str):
                         kv = dict(k.split('=') for k in data_str.split(','))
                         robot.pos   = Vec2(float(kv['x']), float(kv['y']))
                         robot.theta = float(kv['theta'])
+                    # Forward to vision backend for sync_heading() and
+                    # correction-distance gating.
+                    if _vision is not None:
+                        _vision.update_otos_pose(
+                            robot.pos.x, robot.pos.y, robot.theta,
+                        )
                 except Exception as e:
                     print(f"[TELEMETRY] pos parsing error: {e}")
             t.subscribe_telemetry('p', _on_pos)
@@ -2455,6 +3322,14 @@ def on_match_start():
     brain.log('[MATCH] Firmware match started ✓')
     socketio.emit('match_state', {'running': True, 'paused': False})
 
+    # Schedule auto heading-sync: the robot will execute its recalage
+    # routine first; we retry every 500 ms until the OWN tag is seen and
+    # an OTOS pose is available, capping at 15 s.
+    if _vision is not None:
+        _vision.reset_heading_offset()
+        threading.Thread(target=_auto_sync_vision_heading,
+                         daemon=True, name='vision-sync-heading').start()
+
     # Now check strategy switch to decide whether to also run the Python brain.
     h_ok, h_res = t.execute('health', timeout_ms=2000)
     if h_ok and 'strat=1' in (h_res or ''):
@@ -2636,8 +3511,23 @@ def main():
     brain.start_hot_reload(on_reload=lambda: socketio.emit(
         'reload', {'msg': 'strategy/match.py reloaded ✓'}
     ))
+    # Propagate the initial team to the vision tracker
+    if _vision is not None:
+        _vision.set_team(sim_state.get('team', 'blue'))
+    # Load saved pipelines + activate the default one (if any). Feed
+    # callbacks are wired inside _load_pipelines.
+    # NB: vision pose updates are PULL-based now — the strategy queries
+    # /api/vision/robot_pose on demand. We no longer spawn a driver
+    # thread that auto-mutates robot.pos / robot.theta from vision.
+    if _pipeline_registry is not None:
+        _load_pipelines()
+        # On boot, also push the current team into pre-loaded pipelines.
+        _apply_team(sim_state.get('team', 'blue'), source='boot')
+    # Start the HW team-color poller (no-op in sim/idle).
+    _start_hw_team_poller()
     socketio.start_background_task(_physics_loop)
     socketio.start_background_task(_vision_push_loop)
+    socketio.start_background_task(_vision_correction_loop)
 
     # ── Auto-connect to hardware ─────────────────────────────────────────────
     if connect_port:
