@@ -124,6 +124,16 @@ socket.on('state', state => {
     if (typeof _updateStartStopUI === 'function') _updateStartStopUI();
   }
 
+  // Mirror server-side team onto the topbar Y/B buttons. In HW mode this
+  // reflects the team_get poll of the robot's physical switch (so the
+  // operator can sanity-check whether the robot is reporting the right
+  // team without unlocking anything). In sim mode it just keeps the
+  // .active class consistent across reloads.
+  if (state.team === 'yellow' || state.team === 'blue') {
+    document.getElementById('btn-yellow')?.classList.toggle('active', state.team === 'yellow');
+    document.getElementById('btn-blue')  ?.classList.toggle('active', state.team === 'blue');
+  }
+
   // Update "PC" label to "Jetson" when server reports it's running on Jetson
   if (state.is_jetson !== undefined) {
     const lbl = document.getElementById('cg-lbl-client');

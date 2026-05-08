@@ -2755,10 +2755,15 @@ def _start_hw_team_poller():
     def _loop():
         first = True
         while True:
-            time.sleep(5.0)
+            time.sleep(3.0)
             try:
                 if _connection_mode not in ('usb', 'xbee'):
                     continue   # sim / idle: topbar UI drives team
+                # Match input freeze on the robot side: once the strategy is
+                # running, the IHM color switch is locked and team_get would
+                # just return the same value forever — no point hammering it.
+                if globals().get('_match_running'):
+                    continue
                 t = _active_transport()
                 if t is None or not t.is_connected:
                     continue

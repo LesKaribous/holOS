@@ -74,6 +74,15 @@ html, body { height: 100%; overflow: hidden; margin: 0;
   border-color: rgba(255,255,255,.7); }
 .team-btn:disabled { cursor: not-allowed; opacity: .35; }
 .team-btn:disabled:hover { background: rgba(255,255,255,.12); color: rgba(255,255,255,.75); }
+/* When locked, the .active button must stay readable so the operator can
+   visually confirm which team the robot's physical switch is reporting
+   (mirrored from team_get poll). Override the dim of :disabled. */
+.team-btn:disabled.active {
+  opacity: 1; color: #fff;
+  background: rgba(125,235,143,.22);
+  border-color: rgba(125,235,143,.85);
+  box-shadow: 0 0 0 1px rgba(125,235,143,.45) inset;
+}
 .team-toggle.disabled::after {
   content: '🔒';
   font-size: 9px;

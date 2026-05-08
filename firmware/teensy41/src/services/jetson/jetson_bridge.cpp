@@ -369,6 +369,15 @@ FLASHMEM void JetsonBridge::handleRequest(Request& req) {
         return;
     }
 
+    // ── Team color (read by holOS team poller every 5 s) ──────────────────────
+    // Returns the physical IHM team-switch state. holOS mirrors this onto its
+    // UI / vision pipeline. Locked while the match runs (input freeze) — the
+    // last value read sticks.
+    if (cmd == "team_get") {
+        req.reply(ihm.isColor(Settings::BLUE) ? "blue" : "yellow");
+        return;
+    }
+
     // ── Telemetry snapshot ────────────────────────────────────────────────────
     if (cmd == "tel") {
         char tel_buf[64];
