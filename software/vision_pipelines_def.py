@@ -51,10 +51,10 @@ WORLD_FLIP_THETA    = True
 # rectifier's homography). Don't rename. Set WORLD_ORIGIN_CORNER above to
 # pick which corner is your world (0, 0).
 ANCHORS = {
-    'top_left':     {'tag_id': 23, 'x_mm':  600, 'y_mm':  600},
-    'top_right':    {'tag_id': 22, 'x_mm': 2400, 'y_mm':  600},
-    'bottom_right': {'tag_id': 20, 'x_mm': 2400, 'y_mm': 1400},
-    'bottom_left':  {'tag_id': 21, 'x_mm':  600, 'y_mm': 1400},
+    'top_left':     {'tag_id': 22, 'x_mm':  600, 'y_mm':  600},
+    'top_right':    {'tag_id': 23, 'x_mm': 2400, 'y_mm':  600},
+    'bottom_right': {'tag_id': 21, 'x_mm': 2400, 'y_mm': 1400},
+    'bottom_left':  {'tag_id': 20, 'x_mm':  600, 'y_mm': 1400},
 }
 
 

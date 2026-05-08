@@ -158,6 +158,8 @@ class RectifyNode(Node):
     def __init__(self, params=None):
         super().__init__(params)
         self._rect = None
+        self._mode_active = None       # which path actually fired this tick
+        self._live_anchor_count = 0    # how many of the 4 anchors were detected
 
     def start(self):
         if not _CV2_OK:
@@ -206,13 +208,35 @@ class RectifyNode(Node):
         sim_b = int(self._params.get('sim_tag_b_id', 22))
 
         def _do_sim2():
+            # Force the rectify() priority order to use _H by clearing the
+            # pose-based cache. Without this, any prior tick that ran h4
+            # while intrinsics were loaded would have set _pose_H, and
+            # rectify() prefers _pose_H → our sim2 H gets ignored, the
+            # warp keeps using the stale 4-anchor solvePnP result.
+            try:
+                self._rect._pose_H = None
+                self._rect._pose_rvec = None
+                self._rect._pose_tvec = None
+            except Exception:
+                pass
             self._rect.update_2pt_similarity(det, sim_a, sim_b)
+            self._mode_active = 'sim2'
 
         def _do_h4():
             if self._rect.intrinsics is not None:
                 self._rect.update_pose(det)
+                self._mode_active = 'h4_pose'
             else:
                 self._rect.update(det)
+                self._mode_active = 'h4_findH'
+
+        try:
+            anchor_ids = [a.tag_id for a in self._rect.config.anchors()]
+        except Exception:
+            anchor_ids = []
+        live = sum(1 for tid in anchor_ids
+                   if det.get_center_for_id(tid) is not None)
+        self._live_anchor_count = live
 
         if mode == 'sim2':
             _do_sim2()
@@ -223,12 +247,6 @@ class RectifyNode(Node):
             # (perspective, more accurate when all are visible). 2-3 → fall
             # back to similarity from sim_tag_a / sim_tag_b. 0-1 → try h4
             # anyway so the rectifier can lean on its cache.
-            try:
-                anchor_ids = [a.tag_id for a in self._rect.config.anchors()]
-            except Exception:
-                anchor_ids = []
-            live = sum(1 for tid in anchor_ids
-                       if det.get_center_for_id(tid) is not None)
             if live >= 4:
                 _do_h4()
             elif live >= 2 and (det.get_center_for_id(sim_a) is not None
@@ -275,10 +293,16 @@ class RectifyNode(Node):
         origin = str(self._params.get('world_origin_corner', 'top_left'))
         fx, fy = self._flips_for_origin(origin)
         return {
-            'has_homography': bool(r and r.has_homography),
-            'has_intrinsics': bool(r and r.has_intrinsics),
-            'origin_corner':  origin,
-            'flip_x':         fx,
-            'flip_y':         fy,
-            'last_error':     self._last_error,
+            'has_homography':    bool(r and r.has_homography),
+            'has_intrinsics':    bool(r and r.has_intrinsics),
+            # Which path actually ran on the latest tick. Useful to confirm
+            # auto-mode is doing what you think: 'sim2' (2-anchor similarity),
+            # 'h4_pose' (4-anchor + solvePnP), 'h4_findH' (4-anchor pure).
+            'mode_param':        str(self._params.get('homography_mode', 'auto')),
+            'mode_active':       self._mode_active,
+            'live_anchor_count': self._live_anchor_count,
+            'origin_corner':     origin,
+            'flip_x':            fx,
+            'flip_y':            fy,
+            'last_error':        self._last_error,
         }
