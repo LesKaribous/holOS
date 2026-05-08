@@ -47,16 +47,34 @@ BEV_PX_PER_MM = 0.20
 # ---------------------------------------------------------------------------
 # Détection
 # ---------------------------------------------------------------------------
+# OpenCV ≥ 4.7 has cv2.aruco.ArucoDetector; older builds (Jetson NVIDIA
+# cv2 4.5.x) use the legacy functional API. detect_tags() handles both.
+_HAS_NEW_ARUCO_API = hasattr(cv2.aruco, 'ArucoDetector')
+
+
 def make_detector():
-    d = cv2.aruco.getPredefinedDictionary(ARUCO_DICT)
-    p = cv2.aruco.DetectorParameters()
+    if hasattr(cv2.aruco, 'getPredefinedDictionary'):
+        d = cv2.aruco.getPredefinedDictionary(ARUCO_DICT)
+    else:
+        d = cv2.aruco.Dictionary_get(ARUCO_DICT)
+    if _HAS_NEW_ARUCO_API:
+        p = cv2.aruco.DetectorParameters()
+    else:
+        p = cv2.aruco.DetectorParameters_create()
     p.adaptiveThreshConstant = 7
-    return cv2.aruco.ArucoDetector(d, p)
+    if _HAS_NEW_ARUCO_API:
+        return cv2.aruco.ArucoDetector(d, p)
+    # Legacy: return a tuple (dict, params). detect_tags branches on type.
+    return (d, p)
 
 
 def detect_tags(img, detector):
     """Retourne {id: {'corners': (4,2), 'center': (2,)}}."""
-    corners, ids, _ = detector.detectMarkers(img)
+    if isinstance(detector, tuple):
+        d, p = detector
+        corners, ids, _ = cv2.aruco.detectMarkers(img, d, parameters=p)
+    else:
+        corners, ids, _ = detector.detectMarkers(img)
     out = {}
     if ids is None:
         return out
