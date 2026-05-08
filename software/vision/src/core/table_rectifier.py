@@ -154,6 +154,14 @@ class TableRectifier:
         self._margin_mm = float(margin_mm)
         self._H: Optional[np.ndarray] = None
         self._H_is_fresh: bool = False
+        # When True, _H was fitted on UNDISTORTED pixel coordinates (corner
+        # points were pushed through cv2.undistortPoints with K + dist before
+        # the findHomography call). The rectify() priority-3 path must then
+        # undistort the input frame before applying _H — otherwise the frame
+        # we warp is distorted but the H expects undistorted input → tags
+        # would still land at the right BEV positions but the rest of the
+        # image would be subtly off and lens curvature stays visible.
+        self._H_input_is_undistorted: bool = False
         # Output spans table + 2*margin so the rectif shows a small border
         # around the table edges.
         self._out_w = int((TABLE_W_MM + 2 * self._margin_mm) * scale)
