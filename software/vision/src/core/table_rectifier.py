@@ -76,13 +76,25 @@ MARGIN_MM = 100.0
 
 @dataclass
 class TagAnchor:
-    """ArUco tag id paired with its known position on the table (mm)."""
+    """ArUco tag id paired with its known position on the table (mm) and
+    its in-plane orientation. yaw_deg = rotation of the tag's own axes
+    relative to the BEV-native frame (TwinVision: X→right, Y→down).
+    Positive = clockwise as seen from the camera. Used by the 2-tag
+    perspective rectification (update_2pt_corners) so the 4 detected
+    corners line up with the right BEV-native mm positions even when
+    tags are placed at non-zero yaw."""
     tag_id: int
     x_mm: float
     y_mm: float
+    yaw_deg: float = 0.0
 
     def to_dict(self) -> dict:
-        return {"tag_id": self.tag_id, "x_mm": self.x_mm, "y_mm": self.y_mm}
+        return {
+            "tag_id":  self.tag_id,
+            "x_mm":    self.x_mm,
+            "y_mm":    self.y_mm,
+            "yaw_deg": self.yaw_deg,
+        }
 
     @classmethod
     def from_dict(cls, d: dict) -> "TagAnchor":
@@ -90,6 +102,7 @@ class TagAnchor:
             tag_id=int(d["tag_id"]),
             x_mm=float(d["x_mm"]),
             y_mm=float(d["y_mm"]),
+            yaw_deg=float(d.get("yaw_deg", 0.0)),
         )
 
 
@@ -362,28 +375,34 @@ class TableRectifier:
             return self._H is not None
         m = self._margin_mm
         scale = self._scale
+        import math as _m
 
         src_pts: list = []
         dst_pts: list = []
         for anc in (anchor_a, anchor_b):
             c = result.get_corners_for_id(anc.tag_id)   # (4, 2) pixels
             if c is None:
-                # Fall back to whole-tag center via cache? Centers don't
-                # carry corner orientation, so we just bail and let the
-                # caller / rectifier cache deal with it.
+                # Centers without corners aren't enough for an 8-pt fit.
                 self._H_is_fresh = False
                 return self._H is not None
             for p in c:
                 src_pts.append([float(p[0]), float(p[1])])
             cx, cy = float(anc.x_mm), float(anc.y_mm)
-            # Standard ArUco corner ordering (in marker frame): TL, TR, BR, BL.
-            bev_mm = [
-                [cx - s / 2.0, cy - s / 2.0],   # TL
-                [cx + s / 2.0, cy - s / 2.0],   # TR
-                [cx + s / 2.0, cy + s / 2.0],   # BR
-                [cx - s / 2.0, cy + s / 2.0],   # BL
-            ]
-            for x_mm, y_mm in bev_mm:
+            # Standard ArUco corner offsets in the marker's OWN frame:
+            # TL, TR, BR, BL. Half-edge values, then rotated by yaw_deg
+            # (clockwise in BEV-native, matching the image-Y-down convention).
+            half = s / 2.0
+            offsets = [(-half, -half),
+                       ( half, -half),
+                       ( half,  half),
+                       (-half,  half)]
+            yaw_rad = _m.radians(float(getattr(anc, 'yaw_deg', 0.0)))
+            cos_y, sin_y = _m.cos(yaw_rad), _m.sin(yaw_rad)
+            for ox, oy in offsets:
+                # Clockwise rotation in BEV-native frame (Y-axis points down).
+                rx = cos_y * ox - sin_y * oy
+                ry = sin_y * ox + cos_y * oy
+                x_mm, y_mm = cx + rx, cy + ry
                 dst_pts.append([(x_mm + m) * scale, (y_mm + m) * scale])
 
         src_arr = np.array(src_pts, dtype=np.float32)

@@ -53,14 +53,23 @@ WORLD_FLIP_THETA    = True
 # ANCHORS keys = BEV-native corner (top-left = (0,0) in TwinVision frame).
 # x_mm / y_mm = position in BEV-native mm (NOT world). With
 # world_origin_corner='bottom_right', world_xy = (table_w − x_mm, table_h − y_mm).
+# yaw_deg = rotation of the tag's own axes relative to BEV-native (X→right,
+# Y→down). Positive = clockwise as seen from the camera. Used by the 2-tag
+# perspective rectification — set this to whatever angle each tag is
+# physically printed/glued at, otherwise the BEV will come out rotated.
+# Common values:
+#   0   = tag's "top edge" points to BEV top (TwinVision native)
+#   90  = tag rotated 90° clockwise (its top edge points to BEV right)
+#   180 = tag upside-down
+#   270 = tag rotated 90° counter-clockwise
 # Reference physical layout (Jules' table — confirmed):
 #   tag 20 → world (600, 600)   = BEV (2400, 1400)  bottom-right of image
 #   tag 22 → world (600, 1400)  = BEV (2400, 600)   top-right of image
 ANCHORS = {
-    'top_left':     {'tag_id': 23, 'x_mm':  600, 'y_mm':  600},
-    'top_right':    {'tag_id': 22, 'x_mm': 2400, 'y_mm':  600},
-    'bottom_right': {'tag_id': 20, 'x_mm': 2400, 'y_mm': 1400},
-    'bottom_left':  {'tag_id': 21, 'x_mm':  600, 'y_mm': 1400},
+    'top_left':     {'tag_id': 23, 'x_mm':  600, 'y_mm':  600, 'yaw_deg':   0},
+    'top_right':    {'tag_id': 22, 'x_mm': 2400, 'y_mm':  600, 'yaw_deg':   0},
+    'bottom_right': {'tag_id': 20, 'x_mm': 2400, 'y_mm': 1400, 'yaw_deg':   0},
+    'bottom_left':  {'tag_id': 21, 'x_mm':  600, 'y_mm': 1400, 'yaw_deg':   0},
 }
 
 
