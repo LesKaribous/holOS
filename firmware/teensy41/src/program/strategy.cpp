@@ -527,8 +527,22 @@ FLASHMEM void recalage(){
     }
     //motion.disengage();
     motion.setFeedrate(1.0);
-    
-    initPump(); //TODO : Integrate into Actuators 
+
+    // ── Vision recalage ──────────────────────────────────────────────────
+    // Robot is now stationary at a known pose. Hand it to holOS so vision
+    // can lock the closest ArUco as our OWN tag (and infer team from the
+    // tag id range). Then sync OTOS to whatever vision reports — gives us
+    // the real pose in the same world frame the strategy expects, even if
+    // the tag is mounted at an arbitrary orientation on the robot.
+    waitMs(300);   // settle so the camera sees a still frame
+    localisation.requestVisionCalibration(localisation.getPosition());
+    waitMs(400);   // give holOS a beat to reply with vis_cal_done(...)
+    if (localisation.isVisionCalibrated()) {
+        Vec3 offset = localisation.syncToVision();
+        (void)offset;   // syncToVision logs the vision − otos delta itself
+    }
+
+    initPump(); //TODO : Integrate into Actuators
 }
 
 
@@ -671,27 +685,6 @@ FLASHMEM void probeBorder(TableCompass tc, RobotCompass rc, float clearance, flo
 }
 
 
-// ═══════════════════════════════════════════════════════════════════════════════
-//  calibrateStall — Auto-tune de la détection de collision par stagnation.
-//
-//  Procédure (en boucle, jusqu'à 2 phases OK ou maxIter atteint) :
-//
-//    ① Recalage WEST   : probeBorder pour se placer à x≈clearance du mur.
-//    ② Phase A (VP)    : goPolar(face, +PROBE_BUMP) avec stall actif.
-//                          → doit stall. Sinon : params trop rigides → assouplir.
-//    ③ Phase B (FP)    : goPolar(face, -PROBE_REVERSE) dans zone libre.
-//                          → NE doit PAS stall. Sinon : trop sensible → durcir.
-//
-//  Détection stall vs timeout : on lit motion.getLastStats().stalled après
-//  chaque async — clean, pas besoin de proxy sur millis().
-//
-//  Pendant la calibration, velocity-mismatch est désactivé (velCmdMin → 1e6)
-//  pour isoler la contribution de la stagnation. Restauré en fin.
-//
-//  Les probeBorder intermédiaires utilisent toujours les params ORIGINELS
-//  (lambda safeProbeBorder) pour ne pas faire foirer le recalage lui-même
-//  avec un jeu de params extrême.
-// ═══════════════════════════════════════════════════════════════════════════════
 FLASHMEM StallCalibResult calibrateStall(RobotCompass face, int maxIter) {
     // ─── Paramètres de la procédure ─────────────────────────────────────────
     // Flux par itération :

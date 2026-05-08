@@ -39,7 +39,7 @@ import platform
 IS_JETSON = (platform.system() == 'Linux')
 print(f"[run.py] Detected platform: {platform.system()} (IS_JETSON={IS_JETSON})")
 
-_DEFAULT_JETSON_PORT  = '/dev/ttyTHS1'
+_DEFAULT_JETSON_PORT  = '/dev/ttyUSB0'
 # Jetson 40-pin header pins 8 & 10 → UART2 (ttyTHS1).
 # Not enumerated by list_ports.comports(), so we inject it manually.
 _ONBOARD_UART         = '/dev/ttyTHS1'
