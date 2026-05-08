@@ -84,16 +84,37 @@ class VirtualCamera:
         self._stop = threading.Event()
         self._slow_acc = 0.0
         self._last_error: Optional[str] = None
+        # Live-source reader (jetson + USB camera): a dedicated thread reads
+        # cv2 at full source rate and stores the latest BGR frame here. The
+        # _loop worker then samples this slot at target_fps for JPEG encoding,
+        # so we encode at most `fps` frames/s regardless of how fast the
+        # camera produces. Eliminates the backlog we saw when target_fps was
+        # below the capture rate.
+        self._latest_bgr = None
+        self._reader_thread: Optional[threading.Thread] = None
+        self._reader_stop = threading.Event()
+        self._reader_lock = threading.Lock()
 
     # -- lifecycle -------------------------------------------------
 
     def start(self):
         self._open()
+        # Spin up the dedicated cv2 reader for live sources BEFORE the
+        # output worker, so by the time _loop runs it can already pull a
+        # fresh BGR frame from the slot.
+        self._start_reader()
         self._thread = threading.Thread(target=self._loop, daemon=True,
                                         name='virtual-camera')
         self._thread.start()
 
     def shutdown(self):
+        # Stop the reader BEFORE releasing _cap — otherwise it'd race a final
+        # read() against release().
+        self._reader_stop.set()
+        rt = self._reader_thread
+        if rt is not None and rt.is_alive():
+            rt.join(timeout=1.0)
+        self._reader_thread = None
         self._stop.set()
         t = self._thread
         if t is not None and t.is_alive():
@@ -101,6 +122,39 @@ class VirtualCamera:
         if self._cap is not None:
             self._cap.release()
             self._cap = None
+
+    def _is_live_source(self) -> bool:
+        return self.source_kind in ('jetson', 'camera')
+
+    def _reader_loop(self):
+        """Drain the cv2 capture at full speed, keep latest BGR frame.
+        Used only for live sources (jetson / camera). Decouples the camera
+        capture rate from the JPEG output rate (`target_fps`) so a slow
+        output never builds up a frame backlog inside cv2/GStreamer."""
+        cap = self._cap
+        if cap is None:
+            return
+        while not self._reader_stop.is_set():
+            try:
+                ok, f = cap.read()
+            except Exception as e:
+                self._last_error = f'reader: {e}'
+                time.sleep(0.05)
+                continue
+            if not ok or f is None:
+                time.sleep(0.005)
+                continue
+            with self._reader_lock:
+                self._latest_bgr = f
+
+    def _start_reader(self):
+        if not self._is_live_source() or self._cap is None:
+            return
+        self._reader_stop.clear()
+        self._reader_thread = threading.Thread(
+            target=self._reader_loop, daemon=True,
+            name=f'vc-reader:{self.source_path}')
+        self._reader_thread.start()
 
     def _open(self):
         if self.source_kind == 'image':
@@ -171,7 +225,17 @@ class VirtualCamera:
             self._evt.set()
 
     def _read_one(self):
-        """Read next frame from the capture, with looping."""
+        """Encode the next frame. For live sources (jetson / camera) the
+        dedicated reader thread maintains a fresh BGR slot; we just sample
+        it here so the output rate is decoupled from the capture rate. For
+        video files we read sequentially from cv2 so playback / step / seek
+        all keep their semantics."""
+        if self._is_live_source():
+            with self._reader_lock:
+                f = self._latest_bgr
+            if f is not None:
+                self._encode(f)
+            return
         ok, f = self._cap.read()
         if not ok and self.source_kind == 'video':
             try:

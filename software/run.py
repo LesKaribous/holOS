@@ -1711,6 +1711,10 @@ def _load_pipelines():
                 p.name = name
             _pipeline_registry.register(p)
             _wire_pipeline_feeds(p)
+            # Skip the JPEG encode + emit when nobody is watching. Big CPU
+            # win on the Jetson when holOS runs headless or the user has no
+            # browser tab open.
+            p.set_feed_gate(lambda _feed_id: _socketio_clients_count() > 0)
             # Auto-enable every registered pipeline. Each runs in its own
             # worker thread so they don't fight for CPU at the Python level
             # (cv2 ops release the GIL anyway).
@@ -2625,10 +2629,32 @@ def api_motion_mode():
 
 # ── SocketIO events ───────────────────────────────────────────────────────────
 
+_socketio_clients = 0           # live count, incremented on connect/decremented on disconnect
+_socketio_clients_lock = threading.Lock()
+
+
+def _socketio_clients_count() -> int:
+    with _socketio_clients_lock:
+        return _socketio_clients
+
+
 @socketio.on('connect')
 def on_connect():
+    global _socketio_clients
+    with _socketio_clients_lock:
+        _socketio_clients += 1
+        n = _socketio_clients
     emit('state', _build_state())
-    brain.log("Web client connected")
+    brain.log(f"Web client connected ({n} total)")
+
+
+@socketio.on('disconnect')
+def on_disconnect():
+    global _socketio_clients
+    with _socketio_clients_lock:
+        _socketio_clients = max(0, _socketio_clients - 1)
+        n = _socketio_clients
+    brain.log(f"Web client disconnected ({n} remaining)")
 
 
 @socketio.on('field_click')

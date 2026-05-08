@@ -113,6 +113,12 @@ class Pipeline:
         # Subscribers for dashboard feeds: feed_id → callback(jpeg_bytes, meta)
         # Set by the backend; nodes call self._publish_feed(feed_id, jpeg, meta)
         self._feed_subscribers: dict[str, Callable] = {}
+        # Optional gate consulted by output nodes BEFORE the JPEG encode.
+        # When the backend installs a "is anyone listening?" callable here
+        # (e.g. socketio_client_count > 0), output nodes can short-circuit
+        # the expensive imencode + base64 + emit path when no client is
+        # connected. Default lets every encode through (back-compat).
+        self._feed_gate: Callable[[str], bool] = lambda feed_id: True
         # Per-feed rate-limiting (avoids flooding SocketIO when the worker
         # produces feeds faster than the network / browser can consume).
         # feed_id → last-emit monotonic timestamp.
@@ -383,6 +389,21 @@ class Pipeline:
         SocketIO emissions."""
         with self._lock:
             self._feed_subscribers[feed_id] = callback
+
+    def set_feed_gate(self, gate: Callable[[str], bool]) -> None:
+        """Install a "should we encode/emit this feed?" predicate. The
+        output node calls it BEFORE imencode so when no SocketIO client
+        is connected we skip the entire JPEG path (the expensive part)."""
+        with self._lock:
+            self._feed_gate = gate
+
+    def is_feed_active(self, feed_id: str) -> bool:
+        """Output nodes consult this to decide whether to do the encode.
+        Cheap (just a callable) — defaults to True for back-compat."""
+        try:
+            return bool(self._feed_gate(feed_id))
+        except Exception:
+            return True
 
     def clear_feed_subscribers(self) -> None:
         """Drop all feed subscribers. Used by the backend before re-wiring

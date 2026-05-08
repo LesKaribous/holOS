@@ -72,6 +72,13 @@ class OutputNode(Node):
         feed_id = self._effective_feed_id()
         if not feed_id:
             return {}
+        # Skip the entire JPEG path when no SocketIO client is connected —
+        # imencode + base64 + emit add up fast on the Jetson and there's
+        # nobody to consume the bytes anyway. Gate is set by the backend
+        # (run.py wires it to the live client count).
+        pipe = getattr(self, '_pipeline', None)
+        if pipe is not None and not pipe.is_feed_active(feed_id):
+            return {}
         # Rate-limit the encode (separate from the pipeline's own fps_limit
         # so output nodes can run slower than detection if needed).
         fps_lim = max(1, int(self._params.get('fps_limit', 25)))

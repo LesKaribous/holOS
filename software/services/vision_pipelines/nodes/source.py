@@ -220,13 +220,27 @@ class VideoSourceNode(Node):
     def _is_live_stream(self, path: str) -> bool:
         return path.lower().startswith(('rtsp://', 'http://', 'https://'))
 
+    # Rate cap on the drainer. 10 Hz is plenty for "keep latest frame fresh"
+    # (worst-case staleness ≤ 100 ms even at a 1 FPS pipeline tick) while
+    # avoiding 30 JPEG-decodes/s of pure waste on the Jetson CPU.
+    _DRAINER_HZ = 10.0
+
     def _drainer_loop(self):
-        """Read frames as fast as the source produces them; keep only the
-        latest. Pipeline tick reads from the cached slot."""
+        """Read frames as fast as the source produces them (capped at
+        _DRAINER_HZ); keep only the latest. Pipeline tick reads from the
+        cached slot."""
         s = self._source
         if s is None:
             return
+        period = 1.0 / self._DRAINER_HZ
+        next_read = time.monotonic()
         while not self._drainer_stop.is_set():
+            now = time.monotonic()
+            wait = next_read - now
+            if wait > 0:
+                time.sleep(min(wait, 0.1))
+                continue
+            next_read = now + period
             try:
                 f = s.read()
             except Exception as e:

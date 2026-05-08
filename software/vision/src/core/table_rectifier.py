@@ -12,6 +12,53 @@ import numpy as np
 
 from core.aruco_detector import DetectionResult
 
+# CUDA offload — Jetson Orin Nano builds of OpenCV ship with CUDA support.
+# When available, warpPerspective + remap are both ~3-5× faster than the CPU
+# path on 1080p frames. The check is one-shot at import; failures fall back
+# silently to the CPU path so a non-CUDA build (or a runtime API mismatch)
+# never breaks rectification.
+try:
+    _HAS_CUDA = (cv2.cuda.getCudaEnabledDeviceCount() > 0)
+except Exception:
+    _HAS_CUDA = False
+
+
+def _warp_perspective(frame, H, dsize, flags=cv2.INTER_LINEAR,
+                      borderMode=cv2.BORDER_CONSTANT, borderValue=(0, 0, 0)):
+    """warpPerspective with CUDA fast path + CPU fallback. Same call sig as
+    cv2.warpPerspective so callers don't care which path runs."""
+    if _HAS_CUDA:
+        try:
+            g = cv2.cuda_GpuMat()
+            g.upload(frame)
+            out = cv2.cuda.warpPerspective(
+                g, H, dsize, flags=flags,
+                borderMode=borderMode, borderValue=borderValue)
+            return out.download()
+        except Exception:
+            pass   # silent fallback — CPU path below
+    return cv2.warpPerspective(
+        frame, H, dsize, flags=flags,
+        borderMode=borderMode, borderValue=borderValue)
+
+
+def _remap(frame, mx, my, interpolation=cv2.INTER_LINEAR,
+           borderMode=cv2.BORDER_CONSTANT, borderValue=(0, 0, 0)):
+    """remap with CUDA fast path + CPU fallback."""
+    if _HAS_CUDA:
+        try:
+            g = cv2.cuda_GpuMat();   g.upload(frame)
+            gx = cv2.cuda_GpuMat();  gx.upload(mx)
+            gy = cv2.cuda_GpuMat();  gy.upload(my)
+            out = cv2.cuda.remap(
+                g, gx, gy, interpolation,
+                borderMode=borderMode, borderValue=borderValue)
+            return out.download()
+        except Exception:
+            pass
+    return cv2.remap(frame, mx, my, interpolation,
+                     borderMode=borderMode, borderValue=borderValue)
+
 if TYPE_CHECKING:
     from core.poly_calibration import PolyCalibration
 
@@ -363,7 +410,7 @@ class TableRectifier:
             #    (the homography is a pinhole model, it does not absorb radial
             #    distortion).
             if self._undist_mx is not None and self._undist_my is not None:
-                frame_und = cv2.remap(
+                frame_und = _remap(
                     frame, self._undist_mx, self._undist_my,
                     cv2.INTER_LINEAR,
                     borderMode=cv2.BORDER_CONSTANT, borderValue=(0, 0, 0),
@@ -380,7 +427,7 @@ class TableRectifier:
                 [0.0,                0.0,                1.0],
             ], dtype=np.float64)
             H_total = self._pose_H @ S
-            return cv2.warpPerspective(
+            return _warp_perspective(
                 frame_und, H_total, (self._out_w, self._out_h),
                 flags=cv2.WARP_INVERSE_MAP | cv2.INTER_LINEAR,
                 borderMode=cv2.BORDER_CONSTANT, borderValue=(0, 0, 0),
@@ -394,14 +441,14 @@ class TableRectifier:
             except Exception:
                 if self._H is None:
                     return None
-                return cv2.warpPerspective(frame, self._H, (self._out_w, self._out_h))
-            return cv2.remap(frame, mx, my, cv2.INTER_LINEAR,
-                             borderMode=cv2.BORDER_CONSTANT, borderValue=(0, 0, 0))
+                return _warp_perspective(frame, self._H, (self._out_w, self._out_h))
+            return _remap(frame, mx, my, cv2.INTER_LINEAR,
+                          borderMode=cv2.BORDER_CONSTANT, borderValue=(0, 0, 0))
 
         # Priority 3 : 4-tag homography fallback.
         if self._H is None:
             return None
-        return cv2.warpPerspective(frame, self._H, (self._out_w, self._out_h))
+        return _warp_perspective(frame, self._H, (self._out_w, self._out_h))
 
     def draw_grid(self, image: np.ndarray, step_mm: float = 200.0,
                   color: tuple = (0, 200, 80), thickness: int = 1,
