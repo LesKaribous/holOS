@@ -84,6 +84,12 @@ class LocalizationNode(Node):
         inputs=[
             Port('detection',       PortKind.DETECTION),
             Port('rectifier_state', PortKind.JSON, optional=True),
+            Port('rectifier',       PortKind.JSON, optional=True,
+                 description='wire from rectify.rectifier to share the same '
+                             'TableRectifier instance (so the homography is '
+                             'computed once, in the rectify node, instead of '
+                             'duplicated here — keeps sim2 / h4 / auto modes '
+                             'consistent between the two nodes).'),
             Port('frame',           PortKind.FRAME, optional=True),
             Port('cam_xyz',         PortKind.JSON, optional=True,
                  description='override the internal solvePnP camera estimate'),
@@ -241,14 +247,23 @@ class LocalizationNode(Node):
         frame = inputs.get('frame')
         if det is None or getattr(self, '_tracker', None) is None:
             return {}
-        # Refresh anchor pose every frame (parallax math + naive_xy depend
-        # on this). Same logic as the legacy match-time backend.
-        if self._rect.intrinsics is not None:
-            self._rect.update_pose(det)
+        # Prefer the rectifier wired in from the rectify node (single source
+        # of truth — already updated this tick with the right homography
+        # mode: h4, sim2 or auto). Fall back to our own when not wired so
+        # legacy graphs without the wire keep working.
+        wired_rect = inputs.get('rectifier')
+        if wired_rect is not None:
+            rect = wired_rect
         else:
-            self._rect.update(det)
+            rect = self._rect
+            # No upstream rectifier — refresh anchor pose ourselves. Same
+            # logic as the legacy match-time backend.
+            if rect.intrinsics is not None:
+                rect.update_pose(det)
+            else:
+                rect.update(det)
 
-        if not self._rect.has_homography:
+        if not rect.has_homography:
             return {}
 
         # If a cam_xyz override is wired in, push it into the tracker as
@@ -277,7 +292,7 @@ class LocalizationNode(Node):
 
         h, w = (frame.shape[:2] if frame is not None else (1080, 1920))
         try:
-            states = self._tracker.process(det, self._rect, (w, h))
+            states = self._tracker.process(det, rect, (w, h))
         except Exception as e:
             self._last_error = f'tracker: {e}'
             return {}

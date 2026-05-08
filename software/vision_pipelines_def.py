@@ -175,6 +175,7 @@ def build_localization() -> Pipeline:
     p.connect(aru, 'detection',        loc_naive, 'detection')
     p.connect(rec, 'frame',            loc_naive, 'frame')
     p.connect(rec, 'homography_state', loc_naive, 'rectifier_state')
+    p.connect(rec, 'rectifier',        loc_naive, 'rectifier')
     p.connect(rec, 'coord_state',      loc_naive, 'coord_state')
 
     cam = _add(p, 'camera.manual', 'cam',

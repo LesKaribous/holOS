@@ -80,6 +80,10 @@ class RectifyNode(Node):
                  'world frame definition — wire to localization, '
                  'parallax, overlay so downstream coords are flipped '
                  'into the user frame'),
+            Port('rectifier',        PortKind.JSON,
+                 'shared TableRectifier instance — wire to localization '
+                 'so it reuses the same H without re-running the homography '
+                 '(keeps the two nodes in sync, especially in sim2 mode)'),
         ],
     )
     params_schema = {
@@ -239,6 +243,8 @@ class RectifyNode(Node):
             'fresh':  self._rect.homography_is_fresh,
             'cached': self._rect.homography_is_cached,
         }
+        # Share the rectifier instance so downstream nodes reuse the same H.
+        out['rectifier'] = self._rect
 
         # ── BEV rectify (image stays in BEV-native orientation) ─────
         if self._rect.has_homography:
