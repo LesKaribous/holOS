@@ -63,19 +63,10 @@ WORLD_FLIP_THETA    = True
 # Build helper in §4 converts these world-frame values to BEV-native
 # automatically using WORLD_ORIGIN_CORNER + table dimensions.
 ANCHORS = {
-    'top_left':     {'tag_id': 23, 'x_mm': 2400, 'y_mm': 1400, 'yaw_deg': 180},
-    'top_right':    {'tag_id': 22, 'x_mm':  600, 'y_mm': 1400, 'yaw_deg': 180},
-    'bottom_right': {'tag_id': 20, 'x_mm':  600, 'y_mm':  600, 'yaw_deg': 180},
-    'bottom_left':  {'tag_id': 21, 'x_mm': 2400, 'y_mm':  600, 'yaw_deg': 180},
-    # Extras = anchors outside the 4 corner slots. Used by the corner-based
-    # homography (multi-tag findHomography) so we can drop in additional
-    # reference points — handy when only 2 of the 4 corners are physically
-    # placed (avoids the colinearity degeneracy of a 2-tag fit).
-    # Tag 0 sits at the table center as a 3rd reference. ArUco id 0 is
-    # never used during the match so there's no risk of collision.
-    'extras': [
-        {'tag_id': 0, 'x_mm': 1400, 'y_mm': 1400, 'yaw_deg': 180},
-    ],
+    'top_left':     {'tag_id': 23, 'x_mm': 1400, 'y_mm': 1400, 'yaw_deg': 0},
+    'top_right':    {'tag_id': 22, 'x_mm':  600, 'y_mm': 1400, 'yaw_deg': 0},
+    'bottom_right': {'tag_id': 20, 'x_mm':  600, 'y_mm':  600, 'yaw_deg': 0},
+    'bottom_left':  {'tag_id': 21, 'x_mm': 1400, 'y_mm':  600, 'yaw_deg': 0},
 }
 
 
@@ -105,15 +96,15 @@ INTRINSICS_PATH = None
 # anchors are detected this tick. 'h4' / 'sim2' force one mode.
 # All ids in SIM_TAG_IDS must be present in ANCHORS (corners or extras).
 # Use ≥ 3 non-collinear ids — 2 colinear tags give a degenerate H.
-HOMOGRAPHY_MODE = 'auto'
-SIM_TAG_IDS     = [20, 22, 0]
-SIM_TAG_A_ID    = 20    # legacy fallback when SIM_TAG_IDS is empty
-SIM_TAG_B_ID    = 22    # legacy fallback when SIM_TAG_IDS is empty
-# Edge length of every printed ArUco tag, in mm (black border to black
-# border). MUST match what's physically on the table — a wrong value
-# warps the corner-based homography (RANSAC either rejects most points
-# and returns None, or fits a scaled H that looks "almost right but off").
-TAG_SIZE_MM     = 100.0
+# Standard 4-anchor mode. With intrinsics loaded the rectifier runs
+# update_pose() per tick (solvePnP + lens undistortion → priority-1 path
+# in TableRectifier.rectify), which gives the cleanest BEV. 'auto' /
+# 'sim2' fallbacks are still implemented but unused with this layout.
+HOMOGRAPHY_MODE = 'h4'
+SIM_TAG_IDS     = []     # unused in h4 mode; kept for back-compat
+SIM_TAG_A_ID    = 20
+SIM_TAG_B_ID    = 22
+TAG_SIZE_MM     = 100.0  # only consulted by sim2 corner-based path
 
 # Camera position (manual override) — entered in WORLD frame.
 CAMERA_X_MM = 1275.0
