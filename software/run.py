@@ -1824,6 +1824,35 @@ def _get_localization_node():
     return None, None
 
 
+def _get_pose_source_record():
+    """Return the record whose `pose_list` output is the most-corrected
+    one available in the active pipeline. Preference order:
+        parallax  → standalone parallax node, applies an EXPLICIT
+                    cam_xyz correction on top of the tracker output.
+                    This is the pose we send to the firmware and show
+                    on the debug page.
+        localization → tracker-internal correction (camera estimated
+                    via solvePnP). Fallback when no parallax node is
+                    wired in the graph.
+    Returns (record, kind_str) or (None, None)."""
+    if _pipeline_registry is None:
+        return None, None
+    p = _pipeline_registry.active()
+    if p is None or not p.enabled:
+        return None, None
+    with p._lock:
+        nodes = dict(p._nodes)
+    # Prefer parallax over localization. Walking the dict twice is fine —
+    # we have at most a handful of nodes in any pipeline.
+    for nid, rec in nodes.items():
+        if rec.kind == 'parallax':
+            return rec, 'parallax'
+    for nid, rec in nodes.items():
+        if rec.kind == 'localization':
+            return rec, 'localization'
+    return None, None
+
+
 def _get_rectify_node():
     """Walk the active pipeline, return its rectify node + record (or None).
     The rectify node owns the TableRectifier; locking the homography during
@@ -1850,10 +1879,19 @@ def _wrap_pi(angle_rad: float) -> float:
 
 def _recalage_pick_own_tag(known_x_mm, known_y_mm,
                            known_theta_rad=None,
-                           tolerance_mm: float = 400.0):
+                           tolerance_mm: float = 600.0):
     """At recalage time the robot is at a known (x, y, theta) world-frame
-    pose. Find the ArUco closest to that position and lock it as the
-    OWN tag; infer team from the tag id range (1-5 = blue, 6-10 = yellow).
+    pose. Find the OWN-team ArUco closest to that position and lock it
+    as the OWN tag.
+
+    The team is read from `sim_state['team']` (set by the IHM team
+    poller — single source of truth, the physical color switch on the
+    robot). We DO NOT infer the team from the picked tag id, because
+    that race-conditions with the team poller: if the user mounts a
+    blue-range tag on a yellow-IHM robot, inferring would flip the team
+    until the next poller tick re-flips it back. So the team is fixed
+    by the IHM and we only ever pick a tag that's already in the OWN
+    range.
 
     When `known_theta_rad` is provided, also capture the heading offset
     between the robot frame and the (arbitrarily mounted) tag frame:
@@ -1865,72 +1903,97 @@ def _recalage_pick_own_tag(known_x_mm, known_y_mm,
     Returns dict {tag_id, team, vision_pose: {x_mm, y_mm, theta_rad}}
     on success (theta_rad is the corrected/robot-frame heading when
     known_theta_rad was provided, else the raw tag heading), None on
-    failure (no candidate within tolerance, no pipeline, etc.).
-    Side effects: updates the localization node's `team` + `track_ids`
-    so subsequent ticks only emit the picked tag, sets
+    failure (logs the reason). Side effects: locks track_ids to
+    [tag_id] + opp_ids on the localization node, sets
     `_vision_heading_offset_rad`, and writes a full diagnostic
     snapshot to `_vision_calibration_snapshot` for the debug page."""
     global _vision_heading_offset_rad, _vision_calibration_snapshot
     inst, rec = _get_localization_node()
     if inst is None:
+        brain.log('[VISION] recalage failed: no localization node in active pipeline')
         return None
-    # Snapshot the current pose list (worker thread may be writing).
     p = _pipeline_registry.active()
+
+    # Pull pose_list from the most-corrected source (parallax > localization).
+    src_rec, src_kind = _get_pose_source_record()
+    if src_rec is None:
+        src_rec, src_kind = rec, 'localization'
     with p._lock:
-        poses = list(rec.outputs.get('pose_list') or [])
+        poses = list(src_rec.outputs.get('pose_list') or [])
     if not poses:
+        brain.log(f'[VISION] recalage failed: no poses emitted by {src_kind} '
+                  f'node yet (homography locked? localization running?)')
         return None
-    # Pick the closest tag to the known position. Use naive_xy when
-    # present (matches the BEV-aligned position; corrected x_mm has
-    # already been parallax-shifted and may be further from the actual
-    # BEV marker). Fall back to x_mm.
+
+    # Determine OWN range from current team (IHM-driven). 'blue' →
+    # [1..5], 'yellow' → [6..10]. Default 'blue' matches the topbar.
+    team = sim_state.get('team', 'blue')
+    if team == 'yellow':
+        own_range = set(range(6, 11))
+        opp_ids   = list(range(1, 6))
+    else:
+        own_range = set(range(1, 6))
+        opp_ids   = list(range(6, 11))
+
+    # Pick the closest OWN-range tag to the known position. Use the
+    # parallax-corrected x_mm (post-correction is what the firmware
+    # consumes downstream); fall back to naive only if missing.
     best, best_d2 = None, float('inf')
+    candidates = []   # for diag log
     for q in poses:
         if not isinstance(q, dict):
+            continue
+        tid = q.get('tag_id')
+        if tid is None:
             continue
         x = q.get('x_mm') if q.get('x_mm') is not None else q.get('naive_x_mm')
         y = q.get('y_mm') if q.get('y_mm') is not None else q.get('naive_y_mm')
         if x is None or y is None:
             continue
         d2 = (float(x) - known_x_mm) ** 2 + (float(y) - known_y_mm) ** 2
+        in_own = int(tid) in own_range
+        candidates.append((int(tid), d2 ** 0.5, in_own))
+        if not in_own:
+            continue
         if d2 < best_d2:
             best_d2, best = d2, q
+
+    cand_str = ', '.join(f"#{tid}@{d:.0f}mm{'(own)' if own else '(other)'}"
+                          for tid, d, own in sorted(candidates, key=lambda c: c[1]))
     if best is None:
+        brain.log(f'[VISION] recalage failed: no OWN-range tag detected for '
+                  f'team={team} (own range {sorted(own_range)}). '
+                  f'Candidates this tick: [{cand_str or "none"}]')
         return None
     if best_d2 > tolerance_mm * tolerance_mm:
-        brain.log(f"[VISION] recalage: closest tag {best.get('tag_id')} is "
-                  f"{best_d2 ** 0.5:.0f}mm from known pos — > tolerance "
-                  f"{tolerance_mm:.0f}mm, refusing to lock")
+        brain.log(f'[VISION] recalage failed: closest OWN tag #{best.get("tag_id")} '
+                  f'is {best_d2 ** 0.5:.0f}mm from known pos '
+                  f'({known_x_mm:.0f}, {known_y_mm:.0f}) — > tolerance '
+                  f'{tolerance_mm:.0f}mm. Source: {src_kind}. '
+                  f'All candidates: [{cand_str}]')
         return None
     tag_id = int(best.get('tag_id', 0))
     if tag_id <= 0:
+        brain.log(f'[VISION] recalage failed: best candidate has invalid tag_id={tag_id}')
         return None
-    # Tag-id-range → team. Match what _TEAM_RANGES does in localization.py.
-    if 1 <= tag_id <= 5:
-        team = 'blue'
-        opp_ids = list(range(6, 11))
-    elif 6 <= tag_id <= 10:
-        team = 'yellow'
-        opp_ids = list(range(1, 6))
-    else:
-        team = 'blue'   # anchors etc. — fall back to current
-        opp_ids = []
-    # Lock down: only track this specific own tag + the opponent range.
-    # That nukes any other own-team candidate (e.g. tag 2 sitting on the
-    # bench while tag 1 is the actual robot).
+
+    # Lock down: only track the picked OWN tag + the opponent range.
+    # Drops every other OWN-range tag (eg a spare on the bench) so the
+    # tracker won't confuse the actual robot with stray markers.
     new_track = [tag_id] + opp_ids
     try:
         inst.set_params({'team': team, 'track_ids': new_track})
     except Exception as e:
-        brain.log(f"[VISION] recalage: set_params failed: {e}")
-    # Also push the new team into sim_state + topbar so the UI agrees.
-    try:
-        _apply_team(team, source='recalage')
-    except Exception:
-        pass
+        brain.log(f'[VISION] recalage: set_params failed: {e}')
+    # No _apply_team call: the team came from sim_state in the first
+    # place, so the topbar / pipelines are already consistent.
 
-    raw_tag_x = float(best.get('x_mm', 0) or 0)
-    raw_tag_y = float(best.get('y_mm', 0) or 0)
+    corrected_x = float(best.get('x_mm', 0) or 0)
+    corrected_y = float(best.get('y_mm', 0) or 0)
+    naive_x = (float(best['naive_x_mm'])
+               if best.get('naive_x_mm') is not None else corrected_x)
+    naive_y = (float(best['naive_y_mm'])
+               if best.get('naive_y_mm') is not None else corrected_y)
     raw_tag_theta = float(best.get('theta_rad') or 0.0)
     # Capture the robot↔tag heading offset when the firmware sent its
     # known orientation. The tag is mounted on the robot at an arbitrary
@@ -1964,20 +2027,37 @@ def _recalage_pick_own_tag(known_x_mm, known_y_mm,
         'captured_at_t':     time.monotonic(),
         'tag_id':            tag_id,
         'team':              team,
+        'pose_source':       src_kind,
         'known_pose': {
             'x_mm':      float(known_x_mm),
             'y_mm':      float(known_y_mm),
             'theta_rad': (float(known_theta_rad)
                           if known_theta_rad is not None else None),
         },
-        'tag_pose_vision_raw': {
-            'x_mm':      raw_tag_x,
-            'y_mm':      raw_tag_y,
+        # naive_xy = raw projection of the tag pixel through the locked
+        # H, no parallax correction. Reflects where the marker LOOKS to
+        # be on the BEV image. The (naive − known) delta is mostly the
+        # parallax bias caused by the tag's height above the table.
+        'tag_pose_naive': {
+            'x_mm':      naive_x,
+            'y_mm':      naive_y,
+        },
+        # corrected_xy = parallax-corrected pose (what the firmware
+        # consumes downstream). The (corrected − known) delta is the
+        # residual error after parallax: ideally close to zero, larger
+        # numbers point to bad cam_xyz / robot_z_mm or a tilted camera.
+        'tag_pose_corrected': {
+            'x_mm':      corrected_x,
+            'y_mm':      corrected_y,
             'theta_rad': raw_tag_theta,
         },
-        'xy_offset_mm': {
-            'dx_mm': raw_tag_x - float(known_x_mm),
-            'dy_mm': raw_tag_y - float(known_y_mm),
+        'xy_offset_naive_mm': {
+            'dx_mm': naive_x - float(known_x_mm),
+            'dy_mm': naive_y - float(known_y_mm),
+        },
+        'xy_offset_corrected_mm': {
+            'dx_mm': corrected_x - float(known_x_mm),
+            'dy_mm': corrected_y - float(known_y_mm),
         },
         'heading_offset_rad': _vision_heading_offset_rad,
         'robot_z_mm':         robot_z_mm,
@@ -1987,8 +2067,8 @@ def _recalage_pick_own_tag(known_x_mm, known_y_mm,
         'tag_id': tag_id,
         'team':   team,
         'vision_pose': {
-            'x_mm':      raw_tag_x,
-            'y_mm':      raw_tag_y,
+            'x_mm':      corrected_x,
+            'y_mm':      corrected_y,
             'theta_rad': corrected_theta,
         },
     }
@@ -1996,9 +2076,15 @@ def _recalage_pick_own_tag(known_x_mm, known_y_mm,
 
 def _get_latest_own_pose():
     """Read-only snapshot of the latest 'own'-classified pose from the
-    active pipeline's localization node. Returns None when the pipeline
-    isn't running, no localization node exists, or the latest tick didn't
-    detect the own robot.
+    most-corrected pose source in the active pipeline. Returns None when
+    the pipeline isn't running, no pose-emitting node exists, or the
+    latest tick didn't detect the own robot.
+
+    Source preference: parallax node (explicit cam_xyz correction) >
+    localization node (tracker-internal solvePnP correction). Both nodes
+    expose the same pose_list shape; the parallax node only overrides
+    x_mm / y_mm. classification + tag_id + theta_rad are forwarded from
+    upstream.
 
     When the heading offset has been captured (via a successful
     cal_request), the returned `theta_rad` is corrected to the robot
@@ -2008,42 +2094,40 @@ def _get_latest_own_pose():
     This is a PULL accessor — strategy code (the firmware or the brain)
     queries it on demand. Vision never auto-pushes the robot pose.
     """
-    if _pipeline_registry is None:
+    rec, source_kind = _get_pose_source_record()
+    if rec is None:
         return None
     p = _pipeline_registry.active()
-    if p is None or not p.enabled:
+    if p is None:
         return None
     with p._lock:
-        for nid, rec in p._nodes.items():
-            if rec.kind != 'localization':
-                continue
-            poses = rec.outputs.get('pose_list')
-            if not poses:
-                return None
-            # Pick the freshest 'own' pose; fall back to None if none.
-            for q in poses:
-                if q.get('classification') != 'own':
-                    continue
-                if q.get('x_mm') is None or q.get('y_mm') is None:
-                    return None
-                tag_theta = q.get('theta_rad')
-                if (tag_theta is not None
-                        and _vision_heading_offset_rad is not None):
-                    robot_theta = _wrap_pi(
-                        float(tag_theta) + _vision_heading_offset_rad)
-                else:
-                    robot_theta = tag_theta
-                return {
-                    'tag_id':        q.get('tag_id'),
-                    'x_mm':          q['x_mm'],
-                    'y_mm':          q['y_mm'],
-                    'theta_rad':     robot_theta,
-                    'theta_tag_rad': tag_theta,
-                    'naive_x_mm':    q.get('naive_x_mm'),
-                    'naive_y_mm':    q.get('naive_y_mm'),
-                }
-            return None   # no own pose in the latest tick
-    return None
+        poses = list(rec.outputs.get('pose_list') or [])
+    if not poses:
+        return None
+    # Pick the freshest 'own' pose; fall back to None if none.
+    for q in poses:
+        if q.get('classification') != 'own':
+            continue
+        if q.get('x_mm') is None or q.get('y_mm') is None:
+            return None
+        tag_theta = q.get('theta_rad')
+        if (tag_theta is not None
+                and _vision_heading_offset_rad is not None):
+            robot_theta = _wrap_pi(
+                float(tag_theta) + _vision_heading_offset_rad)
+        else:
+            robot_theta = tag_theta
+        return {
+            'tag_id':        q.get('tag_id'),
+            'x_mm':          q['x_mm'],
+            'y_mm':          q['y_mm'],
+            'theta_rad':     robot_theta,
+            'theta_tag_rad': tag_theta,
+            'naive_x_mm':    q.get('naive_x_mm'),
+            'naive_y_mm':    q.get('naive_y_mm'),
+            'source':        source_kind,
+        }
+    return None   # no own pose in the latest tick
 
 
 @app.route('/api/vision/robot_pose', methods=['GET'])

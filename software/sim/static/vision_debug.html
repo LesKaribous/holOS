@@ -99,13 +99,6 @@
     </div>
   </section>
   <section class="tile">
-    <header class="tile-head">Localization — naive (BEV)
-      <span class="tile-meta" id="m-naive"></span></header>
-    <div class="tile-body" id="t-naive">
-      <div class="empty">waiting for feed_id <code>loc_naive</code></div>
-    </div>
-  </section>
-  <section class="tile">
     <header class="tile-head">Localization — corrected (BEV+grid)
       <span class="tile-meta" id="m-corr"></span></header>
     <div class="tile-body" id="t-corr">
@@ -138,7 +131,6 @@
 const socket = io();
 const slots = {
   aruco:           {body: document.getElementById('t-aruco'),  meta: document.getElementById('m-aruco')},
-  loc_naive:       {body: document.getElementById('t-naive'),  meta: document.getElementById('m-naive')},
   loc_corrected:   {body: document.getElementById('t-corr'),   meta: document.getElementById('m-corr')},
   poses_corrected: {body: document.getElementById('t-poses'),  meta: document.getElementById('m-poses')},
 };
@@ -240,10 +232,14 @@ function renderCompare() {
   const dnorm = (dx !== null && dy !== null)
               ? Math.sqrt(dx*dx + dy*dy) : null;
   const tagId = v && v.tag_id != null ? `tag #${v.tag_id}` : '';
+  // Source label: which node the vision pose came from. parallax →
+  // standalone parallax-corrected (the most accurate). localization →
+  // tracker-internal correction (fallback).
+  const src = v && v.source ? ` ${v.source}` : '';
   c.innerHTML = `
     <div class="tlm">
       <span></span>
-      <span class="col-head vision">vision ${tagId ? '— '+tagId : ''}</span>
+      <span class="col-head vision">vision${src ? '·'+v.source : ''} ${tagId ? '— '+tagId : ''}</span>
       <span class="col-head robot">robot (otos)</span>
       <span class="col-head delta">Δ (vision − robot)</span>
 
@@ -306,12 +302,14 @@ function renderCalib() {
     html += '<div class="section">Recalage snapshot</div>';
     html += `<span class="k">tag id</span>
              <span class="v">#${snap.tag_id} <span class="k">(${snap.team})</span></span>`;
+    html += `<span class="k">pose source</span>
+             <span class="v">${snap.pose_source || '—'}</span>`;
     html += `<span class="k">captured</span>
              <span class="v">${snap.captured_age_s.toFixed(1)} s ago</span>`;
     html += `<span class="k">robot_z_mm</span>
              <span class="v">${snap.robot_z_mm != null ? snap.robot_z_mm.toFixed(0) : '—'} mm</span>`;
 
-    html += '<div class="section">Known robot pose</div>';
+    html += '<div class="section">Known robot pose (otos)</div>';
     const k = snap.known_pose || {};
     html += `<span class="k">x</span>
              <span class="v">${fmt(k.x_mm, 1)} mm</span>`;
@@ -320,21 +318,27 @@ function renderCalib() {
     html += `<span class="k">theta</span>
              <span class="v">${fmtDeg(k.theta_rad)}</span>`;
 
-    html += '<div class="section">Vision tag pose at recalage (raw)</div>';
-    const t = snap.tag_pose_vision_raw || {};
-    html += `<span class="k">x</span>
-             <span class="v">${fmt(t.x_mm, 1)} mm</span>`;
-    html += `<span class="k">y</span>
-             <span class="v">${fmt(t.y_mm, 1)} mm</span>`;
+    html += '<div class="section">Vision tag pose at recalage</div>';
+    const tn = snap.tag_pose_naive || {};
+    const tc = snap.tag_pose_corrected || {};
+    html += `<span class="k">x — naive (BEV pixel proj)</span>
+             <span class="v">${fmt(tn.x_mm, 1)} mm</span>`;
+    html += `<span class="k">y — naive</span>
+             <span class="v">${fmt(tn.y_mm, 1)} mm</span>`;
+    html += `<span class="k">x — parallax-corrected</span>
+             <span class="v">${fmt(tc.x_mm, 1)} mm</span>`;
+    html += `<span class="k">y — parallax-corrected</span>
+             <span class="v">${fmt(tc.y_mm, 1)} mm</span>`;
     html += `<span class="k">theta (raw tag)</span>
-             <span class="v">${fmtDeg(t.theta_rad)}</span>`;
+             <span class="v">${fmtDeg(tc.theta_rad)}</span>`;
 
-    html += '<div class="section">Calibration offsets</div>';
-    const xy = snap.xy_offset_mm || {};
-    html += `<span class="k">Δx (vision − known)</span>
-             <span class="v">${fmt(xy.dx_mm, 1)} mm</span>`;
-    html += `<span class="k">Δy (vision − known)</span>
-             <span class="v">${fmt(xy.dy_mm, 1)} mm</span>`;
+    html += '<div class="section">Calibration deltas</div>';
+    const xyN = snap.xy_offset_naive_mm || {};
+    const xyC = snap.xy_offset_corrected_mm || {};
+    html += `<span class="k">Δxy naive (parallax bias)</span>
+             <span class="v">(${fmt(xyN.dx_mm, 1)}, ${fmt(xyN.dy_mm, 1)}) mm</span>`;
+    html += `<span class="k">Δxy corrected (residual)</span>
+             <span class="v">(${fmt(xyC.dx_mm, 1)}, ${fmt(xyC.dy_mm, 1)}) mm</span>`;
     html += `<span class="k">Δheading (robot − tag)</span>
              <span class="v">${fmtDeg(snap.heading_offset_rad)}</span>`;
   }
