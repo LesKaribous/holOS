@@ -178,8 +178,11 @@ class RectifyNode(Node):
     def __init__(self, params=None):
         super().__init__(params)
         self._rect = None
-        self._mode_active = None       # which path actually fired this tick
-        self._live_anchor_count = 0    # how many of the 4 anchors were detected
+        self._mode_active = None             # which path actually fired this tick
+        self._live_anchor_count = 0          # how many anchors detected total
+        self._detected_anchor_ids = []       # ids actually seen this tick
+        self._configured_sim_ids = []        # sim_tag_ids resolved
+        self._detected_sim_ids = []          # subset of sim_tag_ids seen this tick
 
     def start(self):
         if not _CV2_OK:
@@ -295,13 +298,18 @@ class RectifyNode(Node):
             anchor_ids = [a.tag_id for a in self._rect.config.anchors()]
         except Exception:
             anchor_ids = []
-        live = sum(1 for tid in anchor_ids
-                   if det.get_center_for_id(tid) is not None)
+        detected_anchor_ids = [tid for tid in anchor_ids
+                               if det.get_center_for_id(tid) is not None]
+        live = len(detected_anchor_ids)
         self._live_anchor_count = live
+        self._detected_anchor_ids = list(detected_anchor_ids)
 
-        # How many of the user-listed sim2 anchors are actually detected.
-        live_sim_ids = sum(1 for tid in sim_ids
-                           if det.get_center_for_id(int(tid)) is not None)
+        # Which of the user-listed sim2 anchors are actually detected.
+        detected_sim_ids = [int(tid) for tid in sim_ids
+                            if det.get_center_for_id(int(tid)) is not None]
+        self._detected_sim_ids = detected_sim_ids
+        self._configured_sim_ids = list(sim_ids)
+        live_sim_ids = len(detected_sim_ids)
 
         if mode == 'sim2':
             _do_sim2()
@@ -362,9 +370,12 @@ class RectifyNode(Node):
             # Which path actually ran on the latest tick. Useful to confirm
             # auto-mode is doing what you think: 'sim2' (2-anchor similarity),
             # 'h4_pose' (4-anchor + solvePnP), 'h4_findH' (4-anchor pure).
-            'mode_param':        str(self._params.get('homography_mode', 'auto')),
-            'mode_active':       self._mode_active,
-            'live_anchor_count': self._live_anchor_count,
+            'mode_param':           str(self._params.get('homography_mode', 'auto')),
+            'mode_active':          self._mode_active,
+            'live_anchor_count':    self._live_anchor_count,
+            'detected_anchor_ids':  list(self._detected_anchor_ids),
+            'configured_sim_ids':   list(self._configured_sim_ids),
+            'detected_sim_ids':     list(self._detected_sim_ids),
             'origin_corner':     origin,
             'flip_x':            fx,
             'flip_y':            fy,
