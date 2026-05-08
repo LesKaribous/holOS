@@ -245,6 +245,23 @@ FLASHMEM void JetsonBridge::handleRequest(Request& req) {
         return;
     }
 
+    // ── Vision homography lock reply: vis_h_locked(ok=1)
+    //  Sent by holOS in response to our T:vis homography_capture (or release).
+    //  ok=1 means the homography is now frozen until match end.
+    if (cmd.startsWith("vis_h_locked(")) {
+        int o = cmd.indexOf('(') + 1, c = cmd.lastIndexOf(')');
+        String body = cmd.substring(o, c);
+        bool ok = false;
+        int p = body.indexOf("ok=");
+        if (p >= 0) {
+            int e = body.indexOf(',', p); if (e < 0) e = body.length();
+            ok = (body.substring(p + 3, e).toInt() != 0);
+        }
+        localisation.onHomographyLockReply(ok);
+        req.reply("ok");
+        return;
+    }
+
     // ── Vision recalage reply: vis_cal_done(own=N,team=blue,x=...,y=...,t=...)
     //  Sent by holOS in response to our T:vis cal_request. Fields:
     //    own  : ArUco tag id locked as the OWN robot, or 0 on failure

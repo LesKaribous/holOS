@@ -149,6 +149,18 @@ VISION_PIPELINES_PATH = os.path.join(_HERE, 'data', 'vision_pipelines.json')
 # routine then waits for the recalage routine to settle.
 _vision_heading_sync_pending = False
 
+# Vision-pipeline recalage state. Populated by `T:vis cal_request` (sent by
+# the firmware once the robot has reached its known starting pose) and
+# consumed by every subsequent `T:vis pose_request` so the corrected pose
+# returned to the firmware is in the ROBOT frame, not the (arbitrarily
+# mounted) tag frame.
+#
+#   theta_robot = wrap_pi(theta_tag_vision + heading_offset_rad)
+#
+# None until cal_request succeeds. Reset by `T:vis homography_release` or
+# by a fresh cal_request.
+_vision_heading_offset_rad: 'Optional[float]' = None
+
 # ── Hardware transport (real robot, optional) ─────────────────────────────────
 # When connected, terminal/actuator/strategy commands are routed here instead
 # of the VirtualTransport.  The physics simulation continues running for map
@@ -1802,17 +1814,52 @@ def _get_localization_node():
     return None, None
 
 
+def _get_rectify_node():
+    """Walk the active pipeline, return its rectify node + record (or None).
+    The rectify node owns the TableRectifier; locking the homography during
+    the preparation phase happens on its rectifier instance."""
+    if _pipeline_registry is None:
+        return None, None
+    p = _pipeline_registry.active()
+    if p is None or not p.enabled:
+        return None, None
+    with p._lock:
+        for nid, rec in p._nodes.items():
+            if rec.kind == 'rectify':
+                return rec.instance, rec
+    return None, None
+
+
+def _wrap_pi(angle_rad: float) -> float:
+    """Wrap an angle to (-π, π]."""
+    a = math.fmod(angle_rad + math.pi, 2.0 * math.pi)
+    if a <= 0:
+        a += 2.0 * math.pi
+    return a - math.pi
+
+
 def _recalage_pick_own_tag(known_x_mm, known_y_mm,
+                           known_theta_rad=None,
                            tolerance_mm: float = 400.0):
-    """At recalage time the robot is at a known (x, y) world-frame
-    position. Find the ArUco closest to that position and lock it as the
+    """At recalage time the robot is at a known (x, y, theta) world-frame
+    pose. Find the ArUco closest to that position and lock it as the
     OWN tag; infer team from the tag id range (1-5 = blue, 6-10 = yellow).
 
+    When `known_theta_rad` is provided, also capture the heading offset
+    between the robot frame and the (arbitrarily mounted) tag frame:
+        heading_offset_rad = wrap_pi(known_theta_rad - tag_theta_rad)
+    Stored in the module-level `_vision_heading_offset_rad`; applied on
+    every subsequent `pose_request` so the firmware always receives a
+    pose in the ROBOT frame.
+
     Returns dict {tag_id, team, vision_pose: {x_mm, y_mm, theta_rad}}
-    on success, None on failure (no candidate within tolerance, no
-    pipeline, etc.). Side effects: updates the localization node's
-    `team` + `track_ids` so subsequent ticks only emit the picked tag
-    (other own-team candidates are filtered out)."""
+    on success (theta_rad is the corrected/robot-frame heading when
+    known_theta_rad was provided, else the raw tag heading), None on
+    failure (no candidate within tolerance, no pipeline, etc.).
+    Side effects: updates the localization node's `team` + `track_ids`
+    so subsequent ticks only emit the picked tag, and sets
+    `_vision_heading_offset_rad`."""
+    global _vision_heading_offset_rad
     inst, rec = _get_localization_node()
     if inst is None:
         return None
@@ -1870,15 +1917,36 @@ def _recalage_pick_own_tag(known_x_mm, known_y_mm,
         _apply_team(team, source='recalage')
     except Exception:
         pass
-    brain.log(f"[VISION] recalage OK — own tag #{tag_id}, team={team}, "
-              f"d={best_d2 ** 0.5:.0f}mm from known pos")
+
+    raw_tag_theta = float(best.get('theta_rad') or 0.0)
+    # Capture the robot↔tag heading offset when the firmware sent its
+    # known orientation. The tag is mounted on the robot at an arbitrary
+    # angle; this offset is what we apply to every subsequent vision
+    # pose so the firmware sees its own heading, not the tag's.
+    if known_theta_rad is not None:
+        _vision_heading_offset_rad = _wrap_pi(
+            float(known_theta_rad) - raw_tag_theta)
+        corrected_theta = float(known_theta_rad)
+        brain.log(
+            f"[VISION] recalage OK — own tag #{tag_id}, team={team}, "
+            f"d={best_d2 ** 0.5:.0f}mm  Δheading="
+            f"{math.degrees(_vision_heading_offset_rad):+.1f}° "
+            f"(tag={math.degrees(raw_tag_theta):+.1f}°, "
+            f"robot={math.degrees(known_theta_rad):+.1f}°)")
+    else:
+        # Caller didn't pass a known theta — leave the offset alone (may be
+        # set from a previous recalage) and echo back the raw tag heading.
+        corrected_theta = raw_tag_theta
+        brain.log(f"[VISION] recalage OK — own tag #{tag_id}, team={team}, "
+                  f"d={best_d2 ** 0.5:.0f}mm  (no heading sync)")
+
     return {
         'tag_id': tag_id,
         'team':   team,
         'vision_pose': {
             'x_mm':      float(best.get('x_mm', 0) or 0),
             'y_mm':      float(best.get('y_mm', 0) or 0),
-            'theta_rad': float(best.get('theta_rad', 0) or 0),
+            'theta_rad': corrected_theta,
         },
     }
 
@@ -1888,6 +1956,11 @@ def _get_latest_own_pose():
     active pipeline's localization node. Returns None when the pipeline
     isn't running, no localization node exists, or the latest tick didn't
     detect the own robot.
+
+    When the heading offset has been captured (via a successful
+    cal_request), the returned `theta_rad` is corrected to the robot
+    frame. `theta_tag_rad` is the raw vision tag heading (useful for
+    debug). Without an offset, theta_rad == theta_tag_rad.
 
     This is a PULL accessor — strategy code (the firmware or the brain)
     queries it on demand. Vision never auto-pushes the robot pose.
@@ -1910,13 +1983,21 @@ def _get_latest_own_pose():
                     continue
                 if q.get('x_mm') is None or q.get('y_mm') is None:
                     return None
+                tag_theta = q.get('theta_rad')
+                if (tag_theta is not None
+                        and _vision_heading_offset_rad is not None):
+                    robot_theta = _wrap_pi(
+                        float(tag_theta) + _vision_heading_offset_rad)
+                else:
+                    robot_theta = tag_theta
                 return {
-                    'tag_id':    q.get('tag_id'),
-                    'x_mm':      q['x_mm'],
-                    'y_mm':      q['y_mm'],
-                    'theta_rad': q.get('theta_rad'),
-                    'naive_x_mm': q.get('naive_x_mm'),
-                    'naive_y_mm': q.get('naive_y_mm'),
+                    'tag_id':        q.get('tag_id'),
+                    'x_mm':          q['x_mm'],
+                    'y_mm':          q['y_mm'],
+                    'theta_rad':     robot_theta,
+                    'theta_tag_rad': tag_theta,
+                    'naive_x_mm':    q.get('naive_x_mm'),
+                    'naive_y_mm':    q.get('naive_y_mm'),
                 }
             return None   # no own pose in the latest tick
     return None
@@ -2990,18 +3071,34 @@ def _do_connect(port: str):
 
             # ── T:vis → vision recalage / pose request from Teensy ─────
             #
-            #   "cal_request x=600.0 y=500.0 t=0.000"
-            #     Robot is at known (x, y, t) world position. Pick the
-            #     closest ArUco, lock it as OWN, infer team. Reply via
-            #     vis_cal_done(...) or vis_cal_failed(...).
+            # Three subcommands, all sent by the firmware as telemetry
+            # frames `T:vis <subcommand> [k=v ...]`. Replies are framed
+            # commands sent back to T41 (handled in JetsonBridge::handleRequest).
+            #
+            #   "homography_capture"
+            #     Lock the active rectify node's homography on the next
+            #     available frame so subsequent frames don't re-fit it.
+            #     Sent at the start of recalage(), while the static anchor
+            #     tags are still visible and before the robot moves into
+            #     view (which would partially occlude the anchors).
+            #     Reply: vis_h_locked(ok=1) | vis_h_locked(ok=0,reason=...)
+            #
+            #   "cal_request x=<mm> y=<mm> t=<rad>"
+            #     Robot is at known (x, y, t) world pose. Pick the closest
+            #     ArUco, lock it as OWN, infer team, and capture the
+            #     heading offset between the robot frame and the (random)
+            #     tag-mount orientation.
+            #     Reply: vis_cal_done(own=..,team=..,x=..,y=..,t=..)
+            #          | vis_cal_failed(reason=..)
             #
             #   "pose_request"
-            #     Send back the latest own-team vision pose:
-            #     vis_pose(x=...,y=...,t=...,valid=0|1)
+            #     Send back the latest own-team vision pose with the
+            #     heading offset applied (so theta is in the robot frame).
+            #     Reply: vis_pose(x=..,y=..,t=..,valid=0|1)
             #
-            # Replies are sent as commands TO T41 (it expects them in
-            # JetsonBridge::handleRequest). Don't block — kick off in a
-            # daemon thread so the telemetry pipe stays unblocked.
+            # Replies are sent as commands TO T41. Don't block in the
+            # subscribe callback — kick off daemon threads so the
+            # telemetry pipe stays unblocked.
             def _on_vis(data_str):
                 line = (data_str or '').strip()
                 def _kv(s, key, cast=float, default=None):
@@ -3018,12 +3115,45 @@ def _do_connect(port: str):
                         t.execute(reply_cmd, timeout_ms=2000)
                     except Exception as e:
                         print(f"[T:vis] reply failed: {e}")
-                if line.startswith('cal_request'):
+                if line.startswith('homography_capture'):
+                    def _do_lock():
+                        global _vision_heading_offset_rad
+                        rect_node, _ = _get_rectify_node()
+                        rect = getattr(rect_node, '_rect', None) if rect_node else None
+                        if rect is None:
+                            _send('vis_h_locked(ok=0,reason=no_rectify_node)')
+                            return
+                        if rect.lock():
+                            # New homography → previous heading offset is
+                            # tied to the previous H, drop it so we can't
+                            # accidentally apply a stale one.
+                            _vision_heading_offset_rad = None
+                            brain.log('[VISION] homography locked '
+                                      '(prep phase capture)')
+                            _send('vis_h_locked(ok=1)')
+                        else:
+                            _send('vis_h_locked(ok=0,reason=no_homography)')
+                    threading.Thread(target=_do_lock, daemon=True,
+                                     name='vis-hlock').start()
+                elif line.startswith('homography_release'):
+                    def _do_unlock():
+                        global _vision_heading_offset_rad
+                        rect_node, _ = _get_rectify_node()
+                        rect = getattr(rect_node, '_rect', None) if rect_node else None
+                        if rect is not None:
+                            rect.unlock()
+                        _vision_heading_offset_rad = None
+                        brain.log('[VISION] homography released')
+                        _send('vis_h_locked(ok=0,reason=released)')
+                    threading.Thread(target=_do_unlock, daemon=True,
+                                     name='vis-hunlock').start()
+                elif line.startswith('cal_request'):
                     kx = _kv(line, 'x', float, 0.0)
                     ky = _kv(line, 'y', float, 0.0)
-                    kt = _kv(line, 't', float, 0.0)
+                    kt = _kv(line, 't', float, None)
                     def _do_cal():
-                        result = _recalage_pick_own_tag(kx, ky)
+                        result = _recalage_pick_own_tag(
+                            kx, ky, known_theta_rad=kt)
                         if result is None:
                             _send('vis_cal_failed(reason=no_candidate)')
                             return

@@ -214,6 +214,12 @@ class TableRectifier:
         # True when the last computed pose used at least one cached anchor
         # (signals the UI that the pose is not 100% live).
         self._pose_used_cache: bool = False
+        # When True, every update_* method becomes a no-op that returns the
+        # current homography state. Use this to freeze H once it has been
+        # captured during the preparation phase so that occluded anchors
+        # during the match never alter it. lock() refuses to engage if no
+        # homography is available yet.
+        self._locked: bool = False
 
     @property
     def poly(self) -> Optional["PolyCalibration"]:
@@ -262,12 +268,31 @@ class TableRectifier:
         """Drop all cached anchor positions (e.g. when the camera moves)."""
         self._anchor_pixels_cache.clear()
 
+    @property
+    def is_locked(self) -> bool:
+        return self._locked
+
+    def lock(self) -> bool:
+        """Freeze the current homography. All subsequent update_* calls become
+        no-ops until unlock() is called. Returns False if no homography is
+        available to lock (caller should retry once a frame has been processed).
+        """
+        if not self.has_homography:
+            return False
+        self._locked = True
+        return True
+
+    def unlock(self):
+        self._locked = False
+
     def update_pose(self, result: DetectionResult) -> bool:
         """When intrinsics are set, detect 4 anchor centers and run solvePnP
         to get a per-frame homography H mapping (X_mm, Y_mm, 1) -> UNDISTORTED
         pixel (the pose is computed using K + dist on the distorted detected
         centers, but the resulting H is built with K_new because the frame is
         undistorted before the warp). Returns True if pose computed."""
+        if self._locked:
+            return self.has_homography
         if self._intrinsics is None:
             return False
         # Refresh cache with whatever is detected this frame.
@@ -355,6 +380,8 @@ class TableRectifier:
         return self._H is not None and not self._H_is_fresh
 
     def update(self, result: DetectionResult) -> bool:
+        if self._locked:
+            return self.has_homography
         src_pts: list = []
         dst_pts: list = []
         m = self._margin_mm
@@ -402,6 +429,8 @@ class TableRectifier:
         disappears). Returns False if intrinsics aren't loaded, < 3 tags
         are detected, or solvePnP fails.
         """
+        if self._locked:
+            return self.has_homography
         if self._intrinsics is None:
             return False
         anchors_by_id = {a.tag_id: a for a in self._config.anchors()}
@@ -462,6 +491,8 @@ class TableRectifier:
         tag_size_mm: edge length of the printed marker (black border to
         black border) in mm. Same value for all tags.
         """
+        if self._locked:
+            return self.has_homography
         anchors_by_id = {a.tag_id: a for a in self._config.anchors()}
         s = float(tag_size_mm)
         if s <= 0:
@@ -563,6 +594,8 @@ class TableRectifier:
         Returns True on success and writes self._H. Marks fresh iff both
         anchors were detected live this frame.
         """
+        if self._locked:
+            return self.has_homography
         anchors_by_id = {a.tag_id: a for a in self._config.anchors()}
         anchor_a = anchors_by_id.get(int(tag_a_id))
         anchor_b = anchors_by_id.get(int(tag_b_id))

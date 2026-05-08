@@ -484,13 +484,23 @@ FLASHMEM void waitMs(unsigned long time){
 }
 
 FLASHMEM void recalage(){
+    // ── Homography capture (preparation phase) ───────────────────────────
+    // Ask holOS to freeze the table↔camera homography NOW, before the
+    // robot moves into the field of view and partially occludes the
+    // anchor tags. The request is async — the lock will be acknowledged
+    // by the time we reach the vision-recalage block at the end of this
+    // routine. No need to wait synchronously: even on the slow XBee
+    // path, the next-frame capture finishes in well under a second
+    // while the motion sequence below takes several seconds.
+    localisation.requestHomographyCapture();
+
     motion.engage();
     //motion.disableCruiseMode();
     motion.setFeedrate(0.3);
     waitMs(600);
 
     if(ihm.isColor(Settings::BLUE)){
-        
+
         motion.setAbsPosition(Vec3( Vec2(3000-140,100), 150 * DEG_TO_RAD));
         motion.goAlign(Vec2(3000-350, 300), RobotCompass::AB, getCompassOrientation(TableCompass::WEST));
         actuators.moveElevator(RobotCompass::CA, ElevatorPose::DOWN);
@@ -530,10 +540,12 @@ FLASHMEM void recalage(){
 
     // ── Vision recalage ──────────────────────────────────────────────────
     // Robot is now stationary at a known pose. Hand it to holOS so vision
-    // can lock the closest ArUco as our OWN tag (and infer team from the
-    // tag id range). Then sync OTOS to whatever vision reports — gives us
-    // the real pose in the same world frame the strategy expects, even if
-    // the tag is mounted at an arbitrary orientation on the robot.
+    // can lock the closest ArUco as our OWN tag, infer team from the tag
+    // id range, and capture the heading offset between the robot frame
+    // and the (random) tag-mount orientation. Then sync OTOS to whatever
+    // vision reports — every subsequent vision pose is corrected by that
+    // offset so the firmware always sees its own heading in the table
+    // frame, even though the tag itself can be glued on at any angle.
     waitMs(300);   // settle so the camera sees a still frame
     localisation.requestVisionCalibration(localisation.getPosition());
     waitMs(400);   // give holOS a beat to reply with vis_cal_done(...)

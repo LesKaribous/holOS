@@ -136,6 +136,17 @@ FLASHMEM void Localisation::setAngularScale(float value){
 //  Vision recalage / sync
 // ─────────────────────────────────────────────────────────────────────────
 
+// Push a "freeze the homography on the next frame" request to holOS. Async —
+// the response comes back via onHomographyLockReply(). Call this at the
+// start of the recalage routine, while the static anchor tags are still
+// visible to the camera (before the robot moves into the field of view).
+FLASHMEM void Localisation::requestHomographyCapture() {
+    m_homographyLocked = false;   // set true by reply handler
+    jetsonBridge.pushVisionFrame("T:vis homography_capture");
+    Console::info("Localisation")
+        << "Homography capture requested" << Console::endl;
+}
+
 // Push a "calibrate me at this known position" frame to holOS. Async —
 // the response comes back asynchronously via onVisionCalibrationReply().
 FLASHMEM void Localisation::requestVisionCalibration(Vec3 known_pos) {
@@ -209,6 +220,18 @@ FLASHMEM Vec3 Localisation::syncToVision(unsigned long timeout_ms) {
 }
 
 // Reply handlers — called by JetsonBridge after parsing an inbound frame.
+FLASHMEM void Localisation::onHomographyLockReply(bool ok) {
+    m_homographyLocked = ok;
+    if (ok) {
+        Console::success("Localisation")
+            << "Homography locked by holOS" << Console::endl;
+    } else {
+        Console::warn("Localisation")
+            << "Homography lock refused (no H ready or no rectify node)"
+            << Console::endl;
+    }
+}
+
 FLASHMEM void Localisation::onVisionCalibrationReply(int own_tag,
                                                      const char* team,
                                                      Vec3 vision_pos) {

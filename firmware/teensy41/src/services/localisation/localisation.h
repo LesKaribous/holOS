@@ -29,13 +29,23 @@ public:
 
     // ── Vision recalage / sync ──────────────────────────────────────
     //
+    // requestHomographyCapture()
+    //   Tell holOS to capture and freeze the table↔camera homography
+    //   from the next available frame. Sent at the start of recalage()
+    //   while the static anchor tags are still fully visible. Once
+    //   locked, holOS stops re-fitting the homography even if anchors
+    //   are later occluded by the robot or operator. Asynchronous —
+    //   completion polled via isHomographyLocked().
+    //
     // requestVisionCalibration(known_pos)
-    //   Send the robot's known starting position to holOS at the end of
+    //   Send the robot's known starting pose to holOS at the end of
     //   the recalage procedure. holOS picks the ArUco closest to that
-    //   position, locks it as the OWN robot tag, and infers team color
-    //   from the tag id.  Asynchronous: completion is signalled via
-    //   isVisionCalibrated() flipping to true (or staying false on
-    //   timeout / no candidate).
+    //   position, locks it as the OWN robot tag, infers team color
+    //   from the tag id, and captures the heading offset between the
+    //   robot frame and the (arbitrarily mounted) tag frame so all
+    //   subsequent vision poses are returned in the robot frame.
+    //   Asynchronous: completion is signalled via isVisionCalibrated()
+    //   flipping to true (or staying false on timeout / no candidate).
     //
     // queryVisionPose(out_pose, timeout_ms)
     //   Blocking-with-timeout: ask holOS for the current vision pose of
@@ -49,13 +59,16 @@ public:
     //   Convenience: queryVisionPose() then setPosition() to overwrite
     //   OTOS with the vision fix.  Returns the offset (vision − otos)
     //   for logging.  Vec3{0,0,0} on failure.
+    void requestHomographyCapture();
+    bool isHomographyLocked() const { return m_homographyLocked; }
     void requestVisionCalibration(Vec3 known_pos);
     bool isVisionCalibrated() const { return m_visionCalibrated; }
     bool queryVisionPose(Vec3& out_pose, unsigned long timeout_ms = 300);
     Vec3 syncToVision(unsigned long timeout_ms = 500);
 
-    // Called by JetsonBridge when a "vis_cal_done" or "vis_pose"
-    // response arrives from holOS.  Not called by user code.
+    // Called by JetsonBridge when a vision reply arrives from holOS.
+    // Not called by user code.
+    void onHomographyLockReply(bool ok);
     void onVisionCalibrationReply(int own_tag, const char* team,
                                   Vec3 vision_pos);
     void onVisionPoseReply(Vec3 pos, bool valid);
@@ -82,6 +95,11 @@ private :
     QwiicOTOS otos;
 
     // ── Vision sync state ─────────────────────────────────────────
+    // Set by onHomographyLockReply() once holOS has frozen the H.
+    // Survives the whole match — the only legitimate way to clear it
+    // is to request `homography_release` (not done in normal flow).
+    bool   m_homographyLocked = false;
+
     // Set by onVisionCalibrationReply() once holOS has identified the
     // OWN tag at our reported starting position.
     bool   m_visionCalibrated = false;

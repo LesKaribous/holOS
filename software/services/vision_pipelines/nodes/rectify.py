@@ -367,6 +367,7 @@ class RectifyNode(Node):
         return {
             'has_homography':    bool(r and r.has_homography),
             'has_intrinsics':    bool(r and r.has_intrinsics),
+            'homography_locked': bool(r and r.is_locked),
             # Which path actually ran on the latest tick. Useful to confirm
             # auto-mode is doing what you think: 'sim2' (2-anchor similarity),
             # 'h4_pose' (4-anchor + solvePnP), 'h4_findH' (4-anchor pure).
