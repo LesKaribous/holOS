@@ -1,4 +1,4 @@
-#include "Stepper.h"
+#include "stepper.h"
 #include <Arduino.h>
 
 #include "stepper.h"

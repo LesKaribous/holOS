@@ -180,7 +180,7 @@ FLASHMEM bool Localisation::queryVisionPose(Vec3& out_pose,
         // Timed out
         m_pendingPoseReply = false;
         Console::warn("Localisation")
-            << "queryVisionPose timeout after " << timeout_ms << "ms"
+            << "queryVisionPose timeout after " << long(timeout_ms) << "ms"
             << Console::endl;
         return false;
     }

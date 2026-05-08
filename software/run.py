@@ -3754,6 +3754,14 @@ def main():
         _apply_team(sim_state.get('team', 'blue'), source='boot')
     # Start the HW team-color poller (no-op in sim/idle).
     _start_hw_team_poller()
+    # Auto-start the virtual-camera server (port 5174). Config lives in
+    # software/data/vision_camera_config.json — set auto_start=false to
+    # disable, or change source_kind/source_path to switch input.
+    try:
+        from vision_camera.supervisor import start as _start_vision_camera
+        _start_vision_camera()
+    except Exception as _vc_err:
+        print(f"[holOS] vision-camera supervisor failed: {_vc_err}")
     socketio.start_background_task(_physics_loop)
     socketio.start_background_task(_vision_push_loop)
     socketio.start_background_task(_vision_correction_loop)
