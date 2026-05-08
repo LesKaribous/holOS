@@ -128,6 +128,7 @@ html, body { height: 100%; overflow: hidden; margin: 0;
 }
 .cg-dot.connected    { background: #7deb8f; }
 .cg-dot.connecting   { background: #fbbf24; animation: cg-blink .9s ease-in-out infinite; }
+.cg-dot.disconnected { background: #ef4444; }
 .cg-dot.hw-active    { background: #fbbf24; }
 .cg-dot.sim-active   { background: #7ec8f0; }
 @keyframes cg-blink { 0%,100%{opacity:1} 50%{opacity:.35} }

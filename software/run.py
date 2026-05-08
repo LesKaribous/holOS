@@ -1427,6 +1427,17 @@ def api_vision_state():
     return jsonify(_vision.get_state())
 
 
+@app.route('/api/vision_camera/status')
+def api_vision_camera_status():
+    """Snapshot of the auto-spawned virtual-camera subprocess. The topbar
+    polls this to show a green/red dot + crash reason."""
+    try:
+        from vision_camera.supervisor import status as _vc_status
+        return jsonify(_vc_status())
+    except Exception as e:
+        return jsonify({'state': 'unknown', 'last_error': str(e)})
+
+
 @app.route('/api/vision/enable', methods=['POST'])
 def api_vision_enable():
     if _vision is None:
@@ -3757,9 +3768,10 @@ def main():
     # Auto-start the virtual-camera server (port 5174). Config lives in
     # software/data/vision_camera_config.json — set auto_start=false to
     # disable, or change source_kind/source_path to switch input.
+    # Lifecycle events (start, crash, exit) are forwarded into the holOS log.
     try:
         from vision_camera.supervisor import start as _start_vision_camera
-        _start_vision_camera()
+        _start_vision_camera(on_exit=brain.log)
     except Exception as _vc_err:
         print(f"[holOS] vision-camera supervisor failed: {_vc_err}")
     socketio.start_background_task(_physics_loop)

@@ -369,13 +369,80 @@ document.addEventListener('click', e => {
 function togglePanel(id) {
   const el = document.getElementById(id); if (!el) return;
   const wasHidden = el.classList.contains('hidden');
-  ['wifi-panel','serial-panel','server-panel','robot-panel','color-popup']
+  ['wifi-panel','serial-panel','server-panel','robot-panel','cam-panel','color-popup']
     .forEach(i => document.getElementById(i)?.classList.add('hidden'));
   if (wasHidden) {
     el.classList.remove('hidden');
     if (id === 'robot-panel' || id === 'serial-panel') serialRefreshPorts();
   }
 }
+
+// ── Vision-camera subprocess status poll ───────────────────────────────────
+// Calls /api/vision_camera/status every 2 s and reflects the state on the
+// "Cam" pill in the topbar + the click-through details panel. The dot
+// colours mirror the cg-dot CSS used by the WS / Robot pills:
+//   running / external → connected (green)
+//   starting           → connecting (amber)
+//   failed / unreachable / exited → red
+//   disabled / idle    → grey
+function _camDotClass(state) {
+  switch (state) {
+    case 'running':
+    case 'external':     return 'cg-dot connected';
+    case 'starting':     return 'cg-dot connecting';
+    case 'failed':
+    case 'unreachable':
+    case 'exited':       return 'cg-dot disconnected';
+    default:             return 'cg-dot';
+  }
+}
+function _camSubLabel(s) {
+  switch (s.state) {
+    case 'running':      return 'live';
+    case 'external':     return 'ext';
+    case 'starting':     return '…';
+    case 'failed':       return 'crash';
+    case 'unreachable':  return 'down';
+    case 'exited':       return 'off';
+    case 'disabled':     return 'off';
+    default:             return '—';
+  }
+}
+async function pollVisionCamera() {
+  try {
+    const r = await fetch('/api/vision_camera/status', {cache: 'no-store'});
+    if (!r.ok) return;
+    const s = await r.json();
+    const dot = document.getElementById('cg-dot-cam');
+    const sub = document.getElementById('cg-sub-cam');
+    if (dot) dot.className = _camDotClass(s.state);
+    if (sub) sub.textContent = _camSubLabel(s);
+    const node = document.getElementById('cg-node-cam');
+    if (node) {
+      const tip = (s.last_error
+        ? `${s.state} — ${s.last_error}`
+        : `${s.state} ${s.host || ''}:${s.port || ''}`);
+      node.title = tip;
+    }
+    // Panel content
+    const setText = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
+    setText('cam-state-val',  s.state || '—');
+    setText('cam-source-val', s.source_kind && s.source_path
+                              ? `${s.source_kind} → ${s.source_path}` : '—');
+    setText('cam-url-val',    s.host ? `http://${s.host}:${s.port}/` : '—');
+    setText('cam-pid-val',    s.pid != null ? String(s.pid) : '—');
+    const errRow = document.getElementById('cam-error-row');
+    const errVal = document.getElementById('cam-error-val');
+    if (s.last_error) {
+      if (errRow) errRow.style.display = '';
+      if (errVal) errVal.textContent = s.last_error;
+    } else {
+      if (errRow) errRow.style.display = 'none';
+    }
+  } catch (e) { /* network blip — try again next tick */ }
+}
+setInterval(pollVisionCamera, 2000);
+window.addEventListener('load', pollVisionCamera);
 
 // ── Init ───────────────────────────────────────────────────────────────────────
 window.addEventListener('load', () => {

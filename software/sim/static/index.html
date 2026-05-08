@@ -71,8 +71,44 @@
       <span class="cg-sub" id="cg-sub-robot">idle</span>
     </button>
 
+    <!-- Node: vision_camera subprocess status. Click → details panel. -->
+    <button class="cg-node cg-node-btn" id="cg-node-cam"
+            onclick="togglePanel('cam-panel')" title="Vision camera subprocess">
+      <span class="cg-dot" id="cg-dot-cam"></span>
+      <span class="cg-lbl">Cam</span>
+      <span class="cg-sub" id="cg-sub-cam">…</span>
+    </button>
+
   </div>
 </header>
+
+<!-- ── Vision-camera subprocess panel ─────────────────────────────────────── -->
+<div id="cam-panel" class="conn-panel hidden">
+  <div class="conn-panel-title">Vision camera</div>
+  <div class="conn-panel-row">
+    <span class="conn-panel-lbl">State</span>
+    <span id="cam-state-val">—</span>
+  </div>
+  <div class="conn-panel-row">
+    <span class="conn-panel-lbl">Source</span>
+    <span id="cam-source-val">—</span>
+  </div>
+  <div class="conn-panel-row">
+    <span class="conn-panel-lbl">URL</span>
+    <span id="cam-url-val">—</span>
+  </div>
+  <div class="conn-panel-row">
+    <span class="conn-panel-lbl">PID</span>
+    <span id="cam-pid-val">—</span>
+  </div>
+  <div class="conn-panel-row" id="cam-error-row" style="display:none">
+    <span class="conn-panel-lbl">Last error</span>
+    <span id="cam-error-val" style="font:11px ui-monospace,monospace; color:var(--err); white-space:pre-wrap; word-break:break-word;">—</span>
+  </div>
+  <div class="conn-panel-row" style="font:11px ui-monospace,monospace; color:var(--text-dim);">
+    <span id="cam-log-hint">log: software/data/vision_camera.log</span>
+  </div>
+</div>
 
 <!-- ── Server info panel ──────────────────────────────────────────────────── -->
 <div id="server-panel" class="conn-panel hidden">
