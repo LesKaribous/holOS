@@ -67,6 +67,15 @@ ANCHORS = {
     'top_right':    {'tag_id': 22, 'x_mm':  600, 'y_mm': 1400, 'yaw_deg': 180},
     'bottom_right': {'tag_id': 20, 'x_mm':  600, 'y_mm':  600, 'yaw_deg': 180},
     'bottom_left':  {'tag_id': 21, 'x_mm': 2400, 'y_mm':  600, 'yaw_deg': 180},
+    # Extras = anchors outside the 4 corner slots. Used by the corner-based
+    # homography (multi-tag findHomography) so we can drop in additional
+    # reference points — handy when only 2 of the 4 corners are physically
+    # placed (avoids the colinearity degeneracy of a 2-tag fit).
+    # Tag 0 sits at the table center as a 3rd reference. ArUco id 0 is
+    # never used during the match so there's no risk of collision.
+    'extras': [
+        {'tag_id': 0, 'x_mm': 1400, 'y_mm': 1400, 'yaw_deg': 180},
+    ],
 }
 
 
@@ -92,12 +101,14 @@ ARUCO_REFINE = 'subpix'
 INTRINSICS_PATH = None
 
 # Homography mode — 'auto' (default) tries 4-anchor findHomography and
-# falls back to 2-anchor similarity (SIM_TAG_A/B_ID) when fewer than 4
-# anchors are detected this tick. 'h4' / 'sim2' force one mode. SIM ids
-# must be present in ANCHORS.
+# falls back to the corner-based fit (SIM_TAG_IDS) when fewer than 4
+# anchors are detected this tick. 'h4' / 'sim2' force one mode.
+# All ids in SIM_TAG_IDS must be present in ANCHORS (corners or extras).
+# Use ≥ 3 non-collinear ids — 2 colinear tags give a degenerate H.
 HOMOGRAPHY_MODE = 'auto'
-SIM_TAG_A_ID    = 20
-SIM_TAG_B_ID    = 22
+SIM_TAG_IDS     = [20, 22, 0]
+SIM_TAG_A_ID    = 20    # legacy fallback when SIM_TAG_IDS is empty
+SIM_TAG_B_ID    = 22    # legacy fallback when SIM_TAG_IDS is empty
 
 # Camera position (manual override) — entered in WORLD frame.
 CAMERA_X_MM = 1275.0
@@ -126,8 +137,8 @@ def _world_to_bev_anchors(anchors_world: dict, origin_corner: str,
     writes / reads world-frame numbers."""
     flip_x = origin_corner in ('top_right', 'bottom_right')
     flip_y = origin_corner in ('bottom_left', 'bottom_right')
-    out = {}
-    for slot, v in anchors_world.items():
+
+    def _convert(v: dict) -> dict:
         x = (table_w - v['x_mm']) if flip_x else v['x_mm']
         y = (table_h - v['y_mm']) if flip_y else v['y_mm']
         # Reflections compose as: a flip on X mirrors yaw about Y axis
@@ -142,10 +153,17 @@ def _world_to_bev_anchors(anchors_world: dict, origin_corner: str,
             yaw_bev = -yaw
         else:
             yaw_bev = yaw
-        out[slot] = {'tag_id':  int(v['tag_id']),
-                     'x_mm':    float(x),
-                     'y_mm':    float(y),
-                     'yaw_deg': yaw_bev}
+        return {'tag_id':  int(v['tag_id']),
+                'x_mm':    float(x),
+                'y_mm':    float(y),
+                'yaw_deg': yaw_bev}
+
+    out = {}
+    for slot, v in anchors_world.items():
+        if slot == 'extras':
+            out['extras'] = [_convert(x) for x in (v or [])]
+        else:
+            out[slot] = _convert(v)
     return out
 
 
@@ -208,6 +226,7 @@ def build_localization() -> Pipeline:
                   'world_table_h_mm':     WORLD_TABLE_H_MM,
                   'world_flip_theta':     WORLD_FLIP_THETA,
                   'homography_mode':      HOMOGRAPHY_MODE,
+                  'sim_tag_ids':          list(SIM_TAG_IDS),
                   'sim_tag_a_id':         SIM_TAG_A_ID,
                   'sim_tag_b_id':         SIM_TAG_B_ID,
                   'draw_grid':            False}

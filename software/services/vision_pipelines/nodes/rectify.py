@@ -143,15 +143,24 @@ class RectifyNode(Node):
         },
         'sim_tag_a_id': {
             'type': 'int', 'default': 20,
-            'label': 'sim2 anchor A',
-            'description': 'first of the 2 anchor tags used by sim2 mode '
-                           '(or by auto when forced into sim2 fallback). '
-                           'Must appear in the anchors dict.',
+            'label': 'sim2 anchor A (legacy)',
+            'description': 'used only when sim_tag_ids is empty. Prefer '
+                           'sim_tag_ids for new configs.',
         },
         'sim_tag_b_id': {
             'type': 'int', 'default': 22,
-            'label': 'sim2 anchor B',
-            'description': 'second of the 2 anchor tags used by sim2 mode.',
+            'label': 'sim2 anchor B (legacy)',
+            'description': 'same back-compat note as sim_tag_a_id.',
+        },
+        'sim_tag_ids': {
+            'type': 'json', 'default': [],
+            'label': 'sim2 anchor ids',
+            'description': 'list of anchor tag ids whose 4 corners feed '
+                           'the corner-based homography. ≥ 2 visible tags '
+                           'are required per tick. Use 3+ non-collinear '
+                           'tags (e.g. add a 5th tag at the table center) '
+                           'to avoid the 2-tag colinearity trap. Empty = '
+                           'fall back to [sim_tag_a_id, sim_tag_b_id].',
         },
         'tag_size_mm': {
             'type': 'float', 'default': 100.0,
@@ -217,6 +226,22 @@ class RectifyNode(Node):
         mode = str(self._params.get('homography_mode', 'auto'))
         sim_a = int(self._params.get('sim_tag_a_id', 20))
         sim_b = int(self._params.get('sim_tag_b_id', 22))
+        # Resolve the effective list of anchor ids the corner-based fit
+        # should use. Prefer the new `sim_tag_ids` list; fall back to the
+        # legacy 2-id pair for back-compat.
+        sim_ids_param = self._params.get('sim_tag_ids', [])
+        if isinstance(sim_ids_param, str):
+            try:
+                sim_ids = [int(x.strip()) for x in sim_ids_param.split(',') if x.strip()]
+            except ValueError:
+                sim_ids = []
+        else:
+            try:
+                sim_ids = [int(x) for x in (sim_ids_param or [])]
+            except (TypeError, ValueError):
+                sim_ids = []
+        if not sim_ids:
+            sim_ids = [sim_a, sim_b]
 
         def _do_sim2():
             # Force the rectify() priority order to use _H by clearing the
@@ -232,14 +257,18 @@ class RectifyNode(Node):
                 pass
             tag_size = float(self._params.get('tag_size_mm', 100.0))
             if tag_size > 0:
-                ok = self._rect.update_2pt_corners(det, sim_a, sim_b, tag_size)
-                self._mode_active = 'sim2_corners' if ok else 'sim2_corners_fail'
-                if not ok:
-                    # Fall back to the centers-only path so we still get
-                    # *something* if the corners API hiccupped.
-                    self._rect.update_2pt_similarity(det, sim_a, sim_b)
+                ok = self._rect.update_corners_homography(
+                    det, sim_ids, tag_size)
+                self._mode_active = ('corners_h' if ok
+                                     else 'corners_h_fail')
+                if not ok and len(sim_ids) >= 2:
+                    # Final fallback to the centers-only similarity using
+                    # whatever the first two requested ids are.
+                    self._rect.update_2pt_similarity(det, sim_ids[0], sim_ids[1])
+                    self._mode_active = 'sim2'
             else:
-                self._rect.update_2pt_similarity(det, sim_a, sim_b)
+                if len(sim_ids) >= 2:
+                    self._rect.update_2pt_similarity(det, sim_ids[0], sim_ids[1])
                 self._mode_active = 'sim2'
 
         def _do_h4():
@@ -258,19 +287,22 @@ class RectifyNode(Node):
                    if det.get_center_for_id(tid) is not None)
         self._live_anchor_count = live
 
+        # How many of the user-listed sim2 anchors are actually detected.
+        live_sim_ids = sum(1 for tid in sim_ids
+                           if det.get_center_for_id(int(tid)) is not None)
+
         if mode == 'sim2':
             _do_sim2()
         elif mode == 'h4':
             _do_h4()
         else:
             # 'auto' — count live anchors detected this tick. >= 4 → 4-anchor
-            # (perspective, more accurate when all are visible). 2-3 → fall
-            # back to similarity from sim_tag_a / sim_tag_b. 0-1 → try h4
-            # anyway so the rectifier can lean on its cache.
+            # (perspective, more accurate when all are visible). Else if the
+            # user-listed sim2 ids give us ≥ 2 detections, use the corner
+            # homography. Otherwise try h4 cached.
             if live >= 4:
                 _do_h4()
-            elif live >= 2 and (det.get_center_for_id(sim_a) is not None
-                                or det.get_center_for_id(sim_b) is not None):
+            elif live_sim_ids >= 2:
                 _do_sim2()
             else:
                 _do_h4()   # cache-driven fallback inside update()

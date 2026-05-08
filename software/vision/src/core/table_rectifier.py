@@ -114,17 +114,26 @@ class CornerConfig:
     top_right:    TagAnchor = field(default_factory=lambda: TagAnchor(22, 2400,  600))
     bottom_right: TagAnchor = field(default_factory=lambda: TagAnchor(20, 2400, 1400))
     bottom_left:  TagAnchor = field(default_factory=lambda: TagAnchor(21,  600, 1400))
+    # Optional additional anchors not bound to the 4 corner slots (e.g. a
+    # center tag added physically to give the corner-based homography a
+    # 3rd non-collinear point). They participate in update_corners_homography
+    # the same way as the 4 corner anchors but are NOT used by the legacy
+    # `update()` (4-anchor RANSAC) — that one is hard-wired to the 4 slots.
+    extras: list = field(default_factory=list)
 
     def anchors(self) -> list[TagAnchor]:
-        return [self.top_left, self.top_right, self.bottom_right, self.bottom_left]
+        return [self.top_left, self.top_right, self.bottom_right, self.bottom_left] + list(self.extras)
 
     def to_dict(self) -> dict:
-        return {
+        out = {
             "top_left":     self.top_left.to_dict(),
             "top_right":    self.top_right.to_dict(),
             "bottom_right": self.bottom_right.to_dict(),
             "bottom_left":  self.bottom_left.to_dict(),
         }
+        if self.extras:
+            out["extras"] = [a.to_dict() for a in self.extras]
+        return out
 
     @classmethod
     def from_dict(cls, d: dict) -> "CornerConfig":
@@ -133,6 +142,7 @@ class CornerConfig:
             top_right=    TagAnchor.from_dict(d["top_right"]),
             bottom_right= TagAnchor.from_dict(d["bottom_right"]),
             bottom_left=  TagAnchor.from_dict(d["bottom_left"]),
+            extras=[TagAnchor.from_dict(x) for x in (d.get("extras") or [])],
         )
 
 
@@ -345,30 +355,23 @@ class TableRectifier:
         self._H_is_fresh = all_live
         return True
 
-    def update_2pt_corners(self, result: DetectionResult,
-                           tag_a_id: int, tag_b_id: int,
-                           tag_size_mm: float) -> bool:
-        """Full 8-point perspective homography from the 4 corners of each
-        of 2 anchor tags. Better than update_2pt_similarity because it
-        recovers yaw + perspective (8 DOF) instead of just similarity (4 DOF).
+    def update_corners_homography(self, result: DetectionResult,
+                                  tag_ids: list,
+                                  tag_size_mm: float) -> bool:
+        """Multi-tag perspective homography from the 4 corners of each
+        detected anchor tag. Uses whichever ids in `tag_ids` are visible
+        this tick (need at least 2 for an 8-point findHomography fit;
+        more is better — 3+ non-collinear tags makes the H well-conditioned
+        and immune to the colinearity trap that 2 colinear tags hit).
 
-        Assumes the tags are placed flat on the table, all sharing the same
-        orientation aligned with the table axes (their TL corner toward TL
-        of the table). If tags are physically rotated by an arbitrary yaw,
-        the resulting BEV will be rotated by that same yaw — fix by either
-        re-mounting the tags or upgrading this routine with a per-tag yaw.
+        Each anchor must already exist in the rectifier's CornerConfig
+        (either as one of the 4 corner slots or as an `extras` entry) so
+        we know its world-mm position + per-tag yaw.
 
         tag_size_mm: edge length of the printed marker (black border to
-        black border) in mm.
+        black border) in mm. Same value for all tags.
         """
         anchors_by_id = {a.tag_id: a for a in self._config.anchors()}
-        anchor_a = anchors_by_id.get(int(tag_a_id))
-        anchor_b = anchors_by_id.get(int(tag_b_id))
-        if anchor_a is None or anchor_b is None:
-            self._H_is_fresh = False
-            return self._H is not None
-        self._observe_anchors(result)
-
         s = float(tag_size_mm)
         if s <= 0:
             self._H_is_fresh = False
@@ -379,18 +382,18 @@ class TableRectifier:
 
         src_pts: list = []
         dst_pts: list = []
-        for anc in (anchor_a, anchor_b):
-            c = result.get_corners_for_id(anc.tag_id)   # (4, 2) pixels
+        used_ids: list = []
+        for raw_tid in (tag_ids or []):
+            tid = int(raw_tid)
+            anc = anchors_by_id.get(tid)
+            if anc is None:
+                continue
+            c = result.get_corners_for_id(tid)   # (4, 2) pixels
             if c is None:
-                # Centers without corners aren't enough for an 8-pt fit.
-                self._H_is_fresh = False
-                return self._H is not None
+                continue
             for p in c:
                 src_pts.append([float(p[0]), float(p[1])])
             cx, cy = float(anc.x_mm), float(anc.y_mm)
-            # Standard ArUco corner offsets in the marker's OWN frame:
-            # TL, TR, BR, BL. Half-edge values, then rotated by yaw_deg
-            # (clockwise in BEV-native, matching the image-Y-down convention).
             half = s / 2.0
             offsets = [(-half, -half),
                        ( half, -half),
@@ -399,12 +402,18 @@ class TableRectifier:
             yaw_rad = _m.radians(float(getattr(anc, 'yaw_deg', 0.0)))
             cos_y, sin_y = _m.cos(yaw_rad), _m.sin(yaw_rad)
             for ox, oy in offsets:
-                # Clockwise rotation in BEV-native frame (Y-axis points down).
                 rx = cos_y * ox - sin_y * oy
                 ry = sin_y * ox + cos_y * oy
                 x_mm, y_mm = cx + rx, cy + ry
                 dst_pts.append([(x_mm + m) * scale, (y_mm + m) * scale])
+            used_ids.append(tid)
 
+        # findHomography needs ≥ 4 src/dst pairs. With 1 tag (4 corners)
+        # the fit is degenerate (a single planar marker carries no
+        # perspective info beyond a similarity); require ≥ 2 tags.
+        if len(used_ids) < 2:
+            self._H_is_fresh = False
+            return self._H is not None
         src_arr = np.array(src_pts, dtype=np.float32)
         dst_arr = np.array(dst_pts, dtype=np.float32)
         H, _ = cv2.findHomography(src_arr, dst_arr, cv2.RANSAC, 5.0)
@@ -414,6 +423,13 @@ class TableRectifier:
         self._H = H
         self._H_is_fresh = True
         return True
+
+    def update_2pt_corners(self, result: DetectionResult,
+                           tag_a_id: int, tag_b_id: int,
+                           tag_size_mm: float) -> bool:
+        """Back-compat wrapper. Delegates to the generic N-tag method."""
+        return self.update_corners_homography(
+            result, [tag_a_id, tag_b_id], tag_size_mm)
 
     def update_2pt_similarity(self, result: DetectionResult,
                               tag_a_id: int, tag_b_id: int) -> bool:
