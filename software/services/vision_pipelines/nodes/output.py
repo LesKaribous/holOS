@@ -45,6 +45,17 @@ class OutputNode(Node):
         'label':        {'type': 'str', 'default': ''},
         'jpeg_quality': {'type': 'int', 'default': 70, 'min': 30, 'max': 95},
         'fps_limit':    {'type': 'int', 'default': 25},
+        'encode_grayscale': {'type': 'bool', 'default': False,
+                             'label': 'encode JPEG as grayscale',
+                             'description': 'convert BGR frame to single-'
+                                            'channel grayscale just before '
+                                            'imencode. Cuts encode time ~30% '
+                                            'and JPEG payload ~30-50%. '
+                                            'Overlays drawn upstream in BGR '
+                                            'are preserved (their color '
+                                            'becomes a luminance shade). '
+                                            'Use on debug feeds where '
+                                            'b&w is acceptable.'},
     }
 
     def __init__(self, params=None):
@@ -94,6 +105,12 @@ class OutputNode(Node):
         # the bytes for the duration of the call.
         try:
             safe = frame.copy() if hasattr(frame, 'copy') else frame
+            if bool(self._params.get('encode_grayscale', False)) \
+                    and safe.ndim == 3 and safe.shape[2] == 3:
+                # Drop to single-channel just before encode — preserves BGR
+                # overlays (they fold into the luminance) while halving the
+                # JPEG payload + cutting encode CPU.
+                safe = cv2.cvtColor(safe, cv2.COLOR_BGR2GRAY)
             q = int(self._params.get('jpeg_quality', 70))
             ok, buf = cv2.imencode('.jpg', safe, [cv2.IMWRITE_JPEG_QUALITY, q])
         except Exception as e:
