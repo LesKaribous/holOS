@@ -25,8 +25,8 @@
 #include "esp_http_server.h"
 
 //Replace with your network credentials
-const char* ssid = "hotspotpi5";
-const char* password = "876a6@4T";
+const char* ssid = "TP-Link_F0FC";
+const char* password = "kaamelott80";
 
 #define PART_BOUNDARY "123456789000000000000987654321"
 
