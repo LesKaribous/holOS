@@ -6,7 +6,7 @@
   "port": 5174,
   "fps": 30,
   "quality": 80,
-  "gst_width": 1280,
-  "gst_height": 720,
+  "gst_width": 1920,
+  "gst_height": 1080,
   "gst_fps": 30
 }
