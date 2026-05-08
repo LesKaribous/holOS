@@ -2970,17 +2970,30 @@ def on_set_team(data):
     _apply_team(team, source='ui')
 
 
-def _apply_team(team: str, source: str = 'ui') -> None:
+def _apply_team(team: str, source: str = 'ui',
+                force: bool = False) -> None:
     """Single source of truth for team color. Called by:
         - on_set_team    (UI button in sim mode)
         - _hw_team_poll  (HW telemetry every 5 s)
+        - boot path      (force=True so the pipelines get an initial
+                          team push even when sim_state already happens
+                          to equal the new value)
+
     Updates sim_state, the simulator robot, the legacy vision backend,
     and pushes the new team into every team-aware node in every saved
     pipeline (so the localization classification stays correct).
+
+    Without force, an unchanged team short-circuits — that's how we
+    avoid spamming the log + sim_state writes every 3 s when the team
+    poller keeps reporting the same value. The boot path needs force=True
+    because vision_pipelines_def.py picks its own TEAM default which
+    can differ from sim_state's, and a no-op _apply_team would leave
+    the pipeline classifying with the wrong team until the user toggles
+    the topbar by hand.
     """
     if team not in ('blue', 'yellow'):
         return
-    if sim_state.get('team') == team:
+    if not force and sim_state.get('team') == team:
         return   # already there — don't spam logs / save
     sim_state['team'] = team
     try:
@@ -4117,8 +4130,16 @@ def main():
     # thread that auto-mutates robot.pos / robot.theta from vision.
     if _pipeline_registry is not None:
         _load_pipelines()
-        # On boot, also push the current team into pre-loaded pipelines.
-        _apply_team(sim_state.get('team', 'blue'), source='boot')
+        # On boot, force-push the current team into the freshly built
+        # pipelines. force=True is required: sim_state['team'] defaults
+        # to 'yellow' but vision_pipelines_def.py builds the pipeline
+        # with TEAM='blue', so the values often don't differ from the
+        # bare-equality check's POV — yet the pipeline still needs to
+        # be told. Without force, the localization node would keep
+        # classifying with its build-time team until the user toggles
+        # the topbar by hand.
+        _apply_team(sim_state.get('team', 'blue'),
+                    source='boot', force=True)
     # Start the HW team-color poller (no-op in sim/idle).
     _start_hw_team_poller()
     socketio.start_background_task(_physics_loop)
