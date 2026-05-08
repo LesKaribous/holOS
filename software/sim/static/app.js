@@ -419,9 +419,10 @@ async function pollVisionCamera() {
     if (sub) sub.textContent = _camSubLabel(s);
     const node = document.getElementById('cg-node-cam');
     if (node) {
+      const url = s.port ? `${window.location.hostname}:${s.port}` : '';
       const tip = (s.last_error
         ? `${s.state} — ${s.last_error}`
-        : `${s.state} ${s.host || ''}:${s.port || ''}`);
+        : `${s.state} ${url}`);
       node.title = tip;
     }
     // Panel content
@@ -429,7 +430,20 @@ async function pollVisionCamera() {
     setText('cam-state-val',  s.state || '—');
     setText('cam-source-val', s.source_kind && s.source_path
                               ? `${s.source_kind} → ${s.source_path}` : '—');
-    setText('cam-url-val',    s.host ? `http://${s.host}:${s.port}/` : '—');
+    // Build a URL the *browser* can hit. The server's bind addr is often
+    // 0.0.0.0 (so LAN clients can connect) — that's not a valid URL host;
+    // also if the user is browsing remotely, "127.0.0.1" would point to
+    // their own machine, not the Jetson. Use the same hostname we used to
+    // reach holOS itself.
+    const urlEl = document.getElementById('cam-url-val');
+    if (urlEl) {
+      if (s.port) {
+        const camUrl = `http://${window.location.hostname}:${s.port}/`;
+        urlEl.innerHTML = `<a href="${camUrl}" target="_blank" rel="noopener">${camUrl}</a>`;
+      } else {
+        urlEl.textContent = '—';
+      }
+    }
     setText('cam-pid-val',    s.pid != null ? String(s.pid) : '—');
     const errRow = document.getElementById('cam-error-row');
     const errVal = document.getElementById('cam-error-val');

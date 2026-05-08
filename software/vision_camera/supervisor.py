@@ -35,7 +35,7 @@ DEFAULT_CONFIG: dict = {
     'auto_start':  True,
     'source_kind': 'video',         # video | camera | image | jetson
     'source_path': 'vision/homography/data/video.2.mp4',
-    'host':        '127.0.0.1',
+    'host':        '0.0.0.0',     # bind addr — 0.0.0.0 lets LAN clients reach the stream
     'port':        5174,
     'fps':         30,
     'quality':     80,
@@ -107,9 +107,12 @@ def _resolve_source(kind: str, path: str) -> str:
 
 
 def _is_port_serving(host: str, port: int, timeout: float = 0.4) -> bool:
+    # The bind address can be 0.0.0.0 (LAN) — that's not a valid client URL
+    # on every OS, so always probe via loopback.
+    probe = '127.0.0.1' if host in ('0.0.0.0', '::', '') else host
     try:
         with urllib.request.urlopen(
-                f'http://{host}:{port}/api/status', timeout=timeout) as r:
+                f'http://{probe}:{port}/api/status', timeout=timeout) as r:
             return r.status == 200
     except Exception:
         return False
