@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import os
 import sys
+import threading
+import time
 from typing import Optional
 
 # Resolve TwinVision core path so we can reuse VideoSource.
@@ -204,6 +206,39 @@ class VideoSourceNode(Node):
         super().__init__(params)
         self._last_frame = None    # cached for pause / freeze-frame mode
         self._slow_acc   = 0.0     # accumulator for slow-motion (speed < 1)
+        # Drainer state — only used for live HTTP/RTSP streams. cv2 buffers
+        # MJPEG-over-HTTP internally, so a slow consumer (1 FPS pipeline tick)
+        # ends up reading frames that are several seconds old. The drainer
+        # thread reads as fast as the source delivers, keeping only the most
+        # recent frame; process() returns that snapshot.
+        self._drainer_thread: Optional[threading.Thread] = None
+        self._drainer_stop = threading.Event()
+        self._drainer_lock = threading.Lock()
+        self._drainer_frame = None
+        self._drainer_err: Optional[str] = None
+
+    def _is_live_stream(self, path: str) -> bool:
+        return path.lower().startswith(('rtsp://', 'http://', 'https://'))
+
+    def _drainer_loop(self):
+        """Read frames as fast as the source produces them; keep only the
+        latest. Pipeline tick reads from the cached slot."""
+        s = self._source
+        if s is None:
+            return
+        while not self._drainer_stop.is_set():
+            try:
+                f = s.read()
+            except Exception as e:
+                self._drainer_err = f'read: {e}'
+                time.sleep(0.05)
+                continue
+            if f is None:
+                # Stream hiccup — short wait then retry.
+                time.sleep(0.02)
+                continue
+            with self._drainer_lock:
+                self._drainer_frame = f
 
     def start(self):
         if not _CV2_OK:
@@ -213,8 +248,7 @@ class VideoSourceNode(Node):
         if not path:
             self._last_error = 'no path set'
             return
-        if not (path.lower().startswith(('rtsp://', 'http://', 'https://'))
-                or os.path.exists(path)):
+        if not (self._is_live_stream(path) or os.path.exists(path)):
             self._last_error = f'file not found: {path}'
             return
         self._source = VideoSource(path)
@@ -236,7 +270,22 @@ class VideoSourceNode(Node):
         except Exception as e:
             self._last_error = f'first-frame read: {e}'
 
+        # For live streams, spin up the drainer so the pipeline always sees
+        # a fresh frame regardless of how slowly it ticks.
+        if self._is_live_stream(path):
+            self._drainer_stop.clear()
+            self._drainer_thread = threading.Thread(
+                target=self._drainer_loop, daemon=True,
+                name=f'src-drainer:{path}')
+            self._drainer_thread.start()
+
     def shutdown(self):
+        # Stop the drainer first — it owns reads on _source.
+        self._drainer_stop.set()
+        t = self._drainer_thread
+        if t is not None and t.is_alive():
+            t.join(timeout=1.0)
+        self._drainer_thread = None
         if getattr(self, '_source', None):
             self._source.release()
             self._source = None
@@ -295,6 +344,19 @@ class VideoSourceNode(Node):
                 return ({'frame': self._last_frame, 'preview': self._last_frame}
                     if self._last_frame is not None else {})
             self._slow_acc -= 1.0
+
+        # Drainer path — for live HTTP/RTSP streams we never read directly
+        # from cv2 here; the drainer thread keeps a fresh frame in the slot
+        # so the pipeline tick always sees something <100ms old, even if it
+        # ticks once per second.
+        if self._drainer_thread is not None and self._drainer_thread.is_alive():
+            with self._drainer_lock:
+                f = self._drainer_frame
+            if f is not None:
+                self._last_frame = f
+                return {'frame': f, 'preview': f}
+            # Drainer hasn't produced yet — fall through to direct read so
+            # we don't return None on the very first tick.
 
         # Read the next frame
         f = s.read()

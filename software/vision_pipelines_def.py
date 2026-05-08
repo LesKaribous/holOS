@@ -258,7 +258,8 @@ def build_detection() -> Pipeline:
 
 PIPELINES = {
     'localization': build_localization,
-    'detection':    build_detection,
+    # 'detection': build_detection,   # disabled — placeholder pipeline,
+                                       # was eating CPU for nothing.
 }
 
 # Pipeline auto-enabled at startup. None = none of them.
