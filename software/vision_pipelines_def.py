@@ -301,16 +301,25 @@ def build_localization() -> Pipeline:
 
     # ── Frame outputs (consumed by the debug page only — vision.bat) ─
     # holOS itself doesn't render these; they're served via /vision_debug.
+    # encode_grayscale=True drops the JPEG to single-channel just before
+    # imencode — overlays drawn upstream in BGR fold into luminance, the
+    # encode is ~30% cheaper and the payload ~half size. Acceptable for
+    # debug feeds.
+    _OUT_PARAMS = {'jpeg_quality': 60, 'fps_limit': 4,
+                   'encode_grayscale': True}
     o_aruco_frame = _add(p, 'output', 'out_aruco_frame',
-                         {'feed_id': 'aruco', 'label': 'ArUco detection'})
+                         {'feed_id': 'aruco', 'label': 'ArUco detection',
+                          **_OUT_PARAMS})
     p.connect(aru, 'preview', o_aruco_frame, 'preview')
 
     o_naive = _add(p, 'output', 'out_naive_frame',
-                   {'feed_id': 'loc_naive', 'label': 'Naive (pre-parallax)'})
+                   {'feed_id': 'loc_naive', 'label': 'Naive (pre-parallax)',
+                    **_OUT_PARAMS})
     p.connect(loc_naive, 'preview', o_naive, 'preview')
 
     o_corr = _add(p, 'output', 'out_corrected_frame',
-                  {'feed_id': 'loc_corrected', 'label': 'Parallax-corrected'})
+                  {'feed_id': 'loc_corrected', 'label': 'Parallax-corrected',
+                   **_OUT_PARAMS})
     p.connect(grid, 'preview', o_corr, 'preview')
 
     return p
