@@ -50,11 +50,17 @@ WORLD_FLIP_THETA    = True
 # Names refer to the ArUco's POSITION in the rectified BEV (used by the
 # rectifier's homography). Don't rename. Set WORLD_ORIGIN_CORNER above to
 # pick which corner is your world (0, 0).
+# ANCHORS keys = BEV-native corner (top-left = (0,0) in TwinVision frame).
+# x_mm / y_mm = position in BEV-native mm (NOT world). With
+# world_origin_corner='bottom_right', world_xy = (table_w − x_mm, table_h − y_mm).
+# Reference physical layout (Jules' table — confirmed):
+#   tag 20 → world (600, 600)   = BEV (2400, 1400)  bottom-right of image
+#   tag 22 → world (600, 1400)  = BEV (2400, 600)   top-right of image
 ANCHORS = {
-    'top_left':     {'tag_id': 22, 'x_mm':  600, 'y_mm':  600},
-    'top_right':    {'tag_id': 23, 'x_mm': 2400, 'y_mm':  600},
-    'bottom_right': {'tag_id': 21, 'x_mm': 2400, 'y_mm': 1400},
-    'bottom_left':  {'tag_id': 20, 'x_mm':  600, 'y_mm': 1400},
+    'top_left':     {'tag_id': 23, 'x_mm':  600, 'y_mm':  600},
+    'top_right':    {'tag_id': 22, 'x_mm': 2400, 'y_mm':  600},
+    'bottom_right': {'tag_id': 20, 'x_mm': 2400, 'y_mm': 1400},
+    'bottom_left':  {'tag_id': 21, 'x_mm':  600, 'y_mm': 1400},
 }
 
 
