@@ -88,7 +88,8 @@ CAMERA_Z_MM = 1600.0
 ROBOT_Z_MM = 490.0
 
 # Common
-FPS_LIMIT = 25
+FPS_LIMIT = 1   # we don't need real-time vision — 1 Hz is plenty for
+                # recalage / pose queries and saves a lot of Jetson CPU.
 TEAM      = 'blue'        # 'blue' or 'yellow'  (overridden live by topbar)
 TRACK_IDS = list(range(1, 11))
 
