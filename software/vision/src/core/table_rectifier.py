@@ -388,6 +388,16 @@ class TableRectifier:
         scale = self._scale
         import math as _m
 
+        # If intrinsics are loaded, undistort the corner pixel coordinates so
+        # the H we fit maps from UNDISTORTED pixels → BEV. rectify() will
+        # then undistort the input frame before applying _H, which gives
+        # straight table edges in the BEV (the lens curve disappears).
+        # Without this, _H is fitted on distorted pixels and warpPerspective
+        # produces a BEV with lens curvature still baked in.
+        use_undist = self._intrinsics is not None
+        K_for_und = (self._undist_K if self._undist_K is not None
+                     else (self._intrinsics.K if self._intrinsics is not None else None))
+
         src_pts: list = []
         dst_pts: list = []
         used_ids: list = []
@@ -399,8 +409,23 @@ class TableRectifier:
             c = result.get_corners_for_id(tid)   # (4, 2) pixels
             if c is None:
                 continue
-            for p in c:
-                src_pts.append([float(p[0]), float(p[1])])
+            if use_undist and K_for_und is not None:
+                try:
+                    pts = c.astype(np.float32).reshape(-1, 1, 2)
+                    und = cv2.undistortPoints(
+                        pts, self._intrinsics.K, self._intrinsics.dist,
+                        P=K_for_und,
+                    ).reshape(-1, 2)
+                    for p in und:
+                        src_pts.append([float(p[0]), float(p[1])])
+                except cv2.error:
+                    # Fall back to raw pixels for this tag — better than aborting.
+                    use_undist = False
+                    for p in c:
+                        src_pts.append([float(p[0]), float(p[1])])
+            else:
+                for p in c:
+                    src_pts.append([float(p[0]), float(p[1])])
             cx, cy = float(anc.x_mm), float(anc.y_mm)
             half = s / 2.0
             offsets = [(-half, -half),
@@ -430,6 +455,7 @@ class TableRectifier:
             return self._H is not None
         self._H = H
         self._H_is_fresh = True
+        self._H_input_is_undistorted = bool(use_undist)
         return True
 
     def update_2pt_corners(self, result: DetectionResult,
