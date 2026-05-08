@@ -45,31 +45,28 @@ WORLD_FLIP_THETA    = True
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# 2. CORNER ANCHORS (TwinVision native frame)
+# 2. CORNER ANCHORS — values in WORLD frame
 # ═══════════════════════════════════════════════════════════════════════════
-# Names refer to the ArUco's POSITION in the rectified BEV (used by the
-# rectifier's homography). Don't rename. Set WORLD_ORIGIN_CORNER above to
-# pick which corner is your world (0, 0).
-# ANCHORS keys = BEV-native corner (top-left = (0,0) in TwinVision frame).
-# x_mm / y_mm = position in BEV-native mm (NOT world). With
-# world_origin_corner='bottom_right', world_xy = (table_w − x_mm, table_h − y_mm).
-# yaw_deg = rotation of the tag's own axes relative to BEV-native (X→right,
-# Y→down). Positive = clockwise as seen from the camera. Used by the 2-tag
-# perspective rectification — set this to whatever angle each tag is
-# physically printed/glued at, otherwise the BEV will come out rotated.
-# Common values:
-#   0   = tag's "top edge" points to BEV top (TwinVision native)
-#   90  = tag rotated 90° clockwise (its top edge points to BEV right)
-#   180 = tag upside-down
-#   270 = tag rotated 90° counter-clockwise
-# Reference physical layout (Jules' table — confirmed):
-#   tag 20 → world (600, 600)   = BEV (2400, 1400)  bottom-right of image
-#   tag 22 → world (600, 1400)  = BEV (2400, 600)   top-right of image
+# x_mm / y_mm / yaw_deg are expressed in YOUR world frame (the one defined
+# by WORLD_ORIGIN_CORNER above). This is the same frame your strategy /
+# firmware code reads, so no mental flipping required: write down what
+# you'd measure on the table with a tape rule.
+#
+# yaw_deg = tag's orientation in world frame. 0 = tag's "top edge" points
+# along world +Y. Positive = clockwise rotation (as viewed from above the
+# table). Common values: 0, 90, 180, 270.
+#
+# Keys (top_left / top_right / …) are just legacy slot labels — they don't
+# carry geographic meaning anymore, only "this is anchor #1, #2, #3, #4".
+# Drop one, swap two, doesn't matter as long as 4 entries are present.
+#
+# Build helper in §4 converts these world-frame values to BEV-native
+# automatically using WORLD_ORIGIN_CORNER + table dimensions.
 ANCHORS = {
-    'top_left':     {'tag_id': 23, 'x_mm':  600, 'y_mm':  600, 'yaw_deg':   0},
-    'top_right':    {'tag_id': 22, 'x_mm': 2400, 'y_mm':  600, 'yaw_deg':   0},
-    'bottom_right': {'tag_id': 20, 'x_mm': 2400, 'y_mm': 1400, 'yaw_deg':   0},
-    'bottom_left':  {'tag_id': 21, 'x_mm':  600, 'y_mm': 1400, 'yaw_deg':   0},
+    'top_left':     {'tag_id': 23, 'x_mm': 2400, 'y_mm': 1400, 'yaw_deg': 180},
+    'top_right':    {'tag_id': 22, 'x_mm':  600, 'y_mm': 1400, 'yaw_deg': 180},
+    'bottom_right': {'tag_id': 20, 'x_mm':  600, 'y_mm':  600, 'yaw_deg': 180},
+    'bottom_left':  {'tag_id': 21, 'x_mm': 2400, 'y_mm':  600, 'yaw_deg': 180},
 }
 
 
@@ -121,6 +118,37 @@ TRACK_IDS = list(range(1, 11))
 # 4. PIPELINE BUILDERS
 # ═══════════════════════════════════════════════════════════════════════════
 
+def _world_to_bev_anchors(anchors_world: dict, origin_corner: str,
+                          table_w: float, table_h: float) -> dict:
+    """Convert ANCHORS values from world frame (user-facing) to BEV-native
+    frame (what TableRectifier expects). Mirrors the (flip_x, flip_y) the
+    rectify node uses internally on output data, so the user only ever
+    writes / reads world-frame numbers."""
+    flip_x = origin_corner in ('top_right', 'bottom_right')
+    flip_y = origin_corner in ('bottom_left', 'bottom_right')
+    out = {}
+    for slot, v in anchors_world.items():
+        x = (table_w - v['x_mm']) if flip_x else v['x_mm']
+        y = (table_h - v['y_mm']) if flip_y else v['y_mm']
+        # Reflections compose as: a flip on X mirrors yaw about Y axis
+        # (yaw → 180-yaw); flip on Y mirrors about X (yaw → -yaw); both
+        # together is a 180° rotation (yaw → yaw + 180).
+        yaw = float(v.get('yaw_deg', 0.0))
+        if flip_x and flip_y:
+            yaw_bev = yaw + 180.0
+        elif flip_x:
+            yaw_bev = 180.0 - yaw
+        elif flip_y:
+            yaw_bev = -yaw
+        else:
+            yaw_bev = yaw
+        out[slot] = {'tag_id':  int(v['tag_id']),
+                     'x_mm':    float(x),
+                     'y_mm':    float(y),
+                     'yaw_deg': yaw_bev}
+    return out
+
+
 def _add(p: Pipeline, kind: str, node_id: str, params: dict | None = None):
     """Instantiate a registered node kind and attach it. Returns the id."""
     cls = NODE_KINDS.get(kind)
@@ -168,7 +196,13 @@ def build_localization() -> Pipeline:
                 'draw_markers': True, 'draw_ids': True})
     p.connect(pre, 'frame', aru, 'frame')
 
-    rec_params = {'anchors':              ANCHORS,
+    # Translate the user-facing world-frame anchors into the BEV-native
+    # frame TableRectifier consumes. Done once at build time so the rest
+    # of the pipeline never needs to think about which frame ANCHORS is in.
+    anchors_bev = _world_to_bev_anchors(
+        ANCHORS, WORLD_ORIGIN_CORNER, WORLD_TABLE_W_MM, WORLD_TABLE_H_MM)
+
+    rec_params = {'anchors':              anchors_bev,
                   'world_origin_corner':  WORLD_ORIGIN_CORNER,
                   'world_table_w_mm':     WORLD_TABLE_W_MM,
                   'world_table_h_mm':     WORLD_TABLE_H_MM,
@@ -184,7 +218,7 @@ def build_localization() -> Pipeline:
     p.connect(aru, 'detection', rec, 'detection')
 
     loc_naive = _add(p, 'localization', 'loc_naive',
-                     {'anchors': ANCHORS, 'cam_mode': 'auto',
+                     {'anchors': anchors_bev, 'cam_mode': 'auto',
                       'team': TEAM, 'track_ids': TRACK_IDS,
                       'robot_z_mm': ROBOT_Z_MM, 'preview_use': 'naive'})
     p.connect(aru, 'detection',        loc_naive, 'detection')
