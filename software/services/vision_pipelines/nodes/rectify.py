@@ -244,31 +244,43 @@ class RectifyNode(Node):
             sim_ids = [sim_a, sim_b]
 
         def _do_sim2():
-            # Force the rectify() priority order to use _H by clearing the
-            # pose-based cache. Without this, any prior tick that ran h4
-            # while intrinsics were loaded would have set _pose_H, and
-            # rectify() prefers _pose_H → our sim2 H gets ignored, the
-            # warp keeps using the stale 4-anchor solvePnP result.
-            try:
-                self._rect._pose_H = None
-                self._rect._pose_rvec = None
-                self._rect._pose_tvec = None
-            except Exception:
-                pass
+            # When intrinsics are loaded, solvePnP on the N centers is the
+            # mathematically clean route (no yaw_deg, no tag_size_mm, lens
+            # undistortion handled by the priority-1 rectify path). Falls
+            # back to the 8-/12-corner findHomography or the 2-pt similarity
+            # if PnP isn't available.
+            r = self._rect
+            if r.intrinsics is not None and len(sim_ids) >= 3:
+                ok = r.update_centers_pose(det, sim_ids)
+                if ok:
+                    self._mode_active = 'centers_pnp'
+                    return
+                # PnP failed — clear stale _pose_H so the H-based fallbacks
+                # below can take precedence in rectify().
+                try:
+                    r._pose_H = None
+                    r._pose_rvec = None
+                    r._pose_tvec = None
+                except Exception:
+                    pass
+            else:
+                # Not eligible for PnP — make sure _H wins in rectify().
+                try:
+                    r._pose_H = None
+                    r._pose_rvec = None
+                    r._pose_tvec = None
+                except Exception:
+                    pass
             tag_size = float(self._params.get('tag_size_mm', 100.0))
             if tag_size > 0:
-                ok = self._rect.update_corners_homography(
-                    det, sim_ids, tag_size)
-                self._mode_active = ('corners_h' if ok
-                                     else 'corners_h_fail')
+                ok = r.update_corners_homography(det, sim_ids, tag_size)
+                self._mode_active = 'corners_h' if ok else 'corners_h_fail'
                 if not ok and len(sim_ids) >= 2:
-                    # Final fallback to the centers-only similarity using
-                    # whatever the first two requested ids are.
-                    self._rect.update_2pt_similarity(det, sim_ids[0], sim_ids[1])
+                    r.update_2pt_similarity(det, sim_ids[0], sim_ids[1])
                     self._mode_active = 'sim2'
             else:
                 if len(sim_ids) >= 2:
-                    self._rect.update_2pt_similarity(det, sim_ids[0], sim_ids[1])
+                    r.update_2pt_similarity(det, sim_ids[0], sim_ids[1])
                 self._mode_active = 'sim2'
 
         def _do_h4():

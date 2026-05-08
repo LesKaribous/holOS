@@ -363,6 +363,62 @@ class TableRectifier:
         self._H_is_fresh = all_live
         return True
 
+    def update_centers_pose(self, result: DetectionResult,
+                            tag_ids: list) -> bool:
+        """solvePnP from N tag CENTERS (≥ 3, non-collinear) when intrinsics
+        are loaded. Cleaner than the corner-based homography because it
+        only needs the centers — no per-tag yaw, no tag_size_mm, no
+        assumption about how the tag is oriented physically.
+
+        Sets `_pose_H` so the priority-1 rectify path runs (frame is
+        undistorted via remap maps before warpPerspective, so lens curve
+        disappears). Returns False if intrinsics aren't loaded, < 3 tags
+        are detected, or solvePnP fails.
+        """
+        if self._intrinsics is None:
+            return False
+        anchors_by_id = {a.tag_id: a for a in self._config.anchors()}
+        anchor_pixels: list = []
+        anchor_mm: list = []
+        for raw_tid in (tag_ids or []):
+            tid = int(raw_tid)
+            anc = anchors_by_id.get(tid)
+            if anc is None:
+                continue
+            c = result.get_center_for_id(tid)
+            if c is None:
+                continue
+            anchor_pixels.append([float(c[0]), float(c[1])])
+            anchor_mm.append([float(anc.x_mm), float(anc.y_mm)])
+        if len(anchor_mm) < 3:
+            return False
+        obj = np.column_stack([
+            np.asarray(anchor_mm, dtype=np.float32),
+            np.zeros((len(anchor_mm), 1), dtype=np.float32),
+        ])
+        img = np.asarray(anchor_pixels, dtype=np.float32)
+        # 3 points → P3P; 4+ → ITERATIVE (robust to noise).
+        flags = cv2.SOLVEPNP_AP3P if len(obj) == 3 else cv2.SOLVEPNP_ITERATIVE
+        try:
+            ok, rvec, tvec = cv2.solvePnP(
+                obj, img, self._intrinsics.K, self._intrinsics.dist,
+                flags=flags,
+            )
+        except cv2.error:
+            return False
+        if not ok or rvec is None or tvec is None:
+            return False
+        R, _ = cv2.Rodrigues(rvec)
+        # Build H mapping (X_mm, Y_mm, 1) → undistorted pixel (using K_new
+        # if undist maps are built, otherwise raw K — same convention as
+        # update_pose() which the priority-1 rectify path consumes).
+        K_use = self._undist_K if self._undist_K is not None else self._intrinsics.K
+        self._pose_H = K_use @ np.column_stack([R[:, 0], R[:, 1], tvec.ravel()])
+        self._pose_rvec = rvec
+        self._pose_tvec = tvec
+        self._pose_used_cache = False
+        return True
+
     def update_corners_homography(self, result: DetectionResult,
                                   tag_ids: list,
                                   tag_size_mm: float) -> bool:
