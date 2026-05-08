@@ -153,6 +153,17 @@ class RectifyNode(Node):
             'label': 'sim2 anchor B',
             'description': 'second of the 2 anchor tags used by sim2 mode.',
         },
+        'tag_size_mm': {
+            'type': 'float', 'default': 100.0,
+            'label': 'ArUco tag edge length',
+            'unit': 'mm',
+            'description': 'when > 0 (and 2-tag mode is active), use the 4 '
+                           'corners of each tag (8 points total) to fit a '
+                           'full perspective homography instead of a 4-DOF '
+                           'similarity. Recovers yaw + perspective. Set to 0 '
+                           'to fall back to the centers-only similarity. '
+                           'Tags MUST be placed aligned with the table axes.',
+        },
     }
 
     def __init__(self, params=None):
@@ -219,8 +230,17 @@ class RectifyNode(Node):
                 self._rect._pose_tvec = None
             except Exception:
                 pass
-            self._rect.update_2pt_similarity(det, sim_a, sim_b)
-            self._mode_active = 'sim2'
+            tag_size = float(self._params.get('tag_size_mm', 100.0))
+            if tag_size > 0:
+                ok = self._rect.update_2pt_corners(det, sim_a, sim_b, tag_size)
+                self._mode_active = 'sim2_corners' if ok else 'sim2_corners_fail'
+                if not ok:
+                    # Fall back to the centers-only path so we still get
+                    # *something* if the corners API hiccupped.
+                    self._rect.update_2pt_similarity(det, sim_a, sim_b)
+            else:
+                self._rect.update_2pt_similarity(det, sim_a, sim_b)
+                self._mode_active = 'sim2'
 
         def _do_h4():
             if self._rect.intrinsics is not None:

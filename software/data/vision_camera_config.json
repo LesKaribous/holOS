@@ -1,7 +1,7 @@
 {
   "auto_start": true,
-  "source_kind": "jetson",
-  "source_path": "/dev/video0",
+  "source_kind": "video",
+  "source_path": "vision/homography/data/video.2.mp4",
   "host": "0.0.0.0",
   "port": 5174,
   "fps": 5,

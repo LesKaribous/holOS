@@ -332,6 +332,70 @@ class TableRectifier:
         self._H_is_fresh = all_live
         return True
 
+    def update_2pt_corners(self, result: DetectionResult,
+                           tag_a_id: int, tag_b_id: int,
+                           tag_size_mm: float) -> bool:
+        """Full 8-point perspective homography from the 4 corners of each
+        of 2 anchor tags. Better than update_2pt_similarity because it
+        recovers yaw + perspective (8 DOF) instead of just similarity (4 DOF).
+
+        Assumes the tags are placed flat on the table, all sharing the same
+        orientation aligned with the table axes (their TL corner toward TL
+        of the table). If tags are physically rotated by an arbitrary yaw,
+        the resulting BEV will be rotated by that same yaw — fix by either
+        re-mounting the tags or upgrading this routine with a per-tag yaw.
+
+        tag_size_mm: edge length of the printed marker (black border to
+        black border) in mm.
+        """
+        anchors_by_id = {a.tag_id: a for a in self._config.anchors()}
+        anchor_a = anchors_by_id.get(int(tag_a_id))
+        anchor_b = anchors_by_id.get(int(tag_b_id))
+        if anchor_a is None or anchor_b is None:
+            self._H_is_fresh = False
+            return self._H is not None
+        self._observe_anchors(result)
+
+        s = float(tag_size_mm)
+        if s <= 0:
+            self._H_is_fresh = False
+            return self._H is not None
+        m = self._margin_mm
+        scale = self._scale
+
+        src_pts: list = []
+        dst_pts: list = []
+        for anc in (anchor_a, anchor_b):
+            c = result.get_corners_for_id(anc.tag_id)   # (4, 2) pixels
+            if c is None:
+                # Fall back to whole-tag center via cache? Centers don't
+                # carry corner orientation, so we just bail and let the
+                # caller / rectifier cache deal with it.
+                self._H_is_fresh = False
+                return self._H is not None
+            for p in c:
+                src_pts.append([float(p[0]), float(p[1])])
+            cx, cy = float(anc.x_mm), float(anc.y_mm)
+            # Standard ArUco corner ordering (in marker frame): TL, TR, BR, BL.
+            bev_mm = [
+                [cx - s / 2.0, cy - s / 2.0],   # TL
+                [cx + s / 2.0, cy - s / 2.0],   # TR
+                [cx + s / 2.0, cy + s / 2.0],   # BR
+                [cx - s / 2.0, cy + s / 2.0],   # BL
+            ]
+            for x_mm, y_mm in bev_mm:
+                dst_pts.append([(x_mm + m) * scale, (y_mm + m) * scale])
+
+        src_arr = np.array(src_pts, dtype=np.float32)
+        dst_arr = np.array(dst_pts, dtype=np.float32)
+        H, _ = cv2.findHomography(src_arr, dst_arr, cv2.RANSAC, 5.0)
+        if H is None:
+            self._H_is_fresh = False
+            return self._H is not None
+        self._H = H
+        self._H_is_fresh = True
+        return True
+
     def update_2pt_similarity(self, result: DetectionResult,
                               tag_a_id: int, tag_b_id: int) -> bool:
         """Reduced-DOF rectification when only 2 anchor tags are physically
