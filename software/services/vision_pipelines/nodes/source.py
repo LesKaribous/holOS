@@ -316,6 +316,25 @@ class VideoSourceNode(Node):
             # produce something during pause.
             return ({'frame': self._last_frame, 'preview': self._last_frame}
                     if self._last_frame is not None else {})
+
+        # Live streams (HTTP / RTSP / USB cam) — playback param is meaningless
+        # here, you can't pause / seek / step a real-time stream. Always read
+        # the latest frame from the drainer slot and bypass every playback
+        # gate below. This also makes the node robust to a stale 'pause'
+        # value left over in the params (which would otherwise freeze the
+        # pipeline on the first frame even though the drainer keeps producing).
+        if self._drainer_thread is not None and self._drainer_thread.is_alive():
+            with self._drainer_lock:
+                f = self._drainer_frame
+            if f is not None:
+                self._last_frame = f
+                return {'frame': f, 'preview': f}
+            # Drainer hasn't produced yet on the very first tick — surface
+            # the cached first-frame so downstream still has something.
+            return ({'frame': self._last_frame, 'preview': self._last_frame}
+                    if self._last_frame is not None else {})
+
+        # Below this point: file-based sources only — playback param applies.
         mode = self._params.get('playback', 'play')
 
         if mode == 'pause':
@@ -412,12 +431,24 @@ class VideoSourceNode(Node):
     def get_state(self):
         s = getattr(self, '_source', None)
         info = s.info if (s and s.is_open) else None
+        path = str(self._params.get('path', ''))
+        is_live = self._is_live_stream(path)
+        drainer_alive = bool(self._drainer_thread
+                             and self._drainer_thread.is_alive())
+        with self._drainer_lock:
+            has_drainer_frame = self._drainer_frame is not None
         return {
-            'open':        bool(s and s.is_open),
-            'frame_idx':   s.current_frame_idx if s else 0,
-            'frame_count': info.frame_count if info else -1,
-            'playback':    self._params.get('playback', 'play'),
-            'last_error':  self._last_error,
+            'open':           bool(s and s.is_open),
+            'frame_idx':      s.current_frame_idx if s else 0,
+            'frame_count':    info.frame_count if info else -1,
+            # For live streams the playback param is ignored — actual
+            # behavior is always "always read latest from drainer".
+            'playback':       'live' if is_live else self._params.get('playback', 'play'),
+            'is_live_stream': is_live,
+            'drainer_alive':  drainer_alive,
+            'has_drainer_frame': has_drainer_frame,
+            'drainer_err':    self._drainer_err,
+            'last_error':     self._last_error,
         }
 
 
