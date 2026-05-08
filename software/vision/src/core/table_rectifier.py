@@ -14,29 +14,54 @@ from core.aruco_detector import DetectionResult
 
 # CUDA offload — Jetson Orin Nano builds of OpenCV ship with CUDA support.
 # When available, warpPerspective + remap are both ~3-5× faster than the CPU
-# path on 1080p frames. The check is one-shot at import; failures fall back
-# silently to the CPU path so a non-CUDA build (or a runtime API mismatch)
-# never breaks rectification.
+# path on 1080p frames. The check is one-shot at import; failures auto-disable
+# the GPU path globally (so we don't pay the try/except cost every tick).
 try:
     _HAS_CUDA = (cv2.cuda.getCudaEnabledDeviceCount() > 0)
-except Exception:
+except Exception as _cuda_err:
     _HAS_CUDA = False
+    print(f'[table_rectifier] CUDA unavailable: {_cuda_err}')
+
+# Module-level switch flipped to False on first runtime failure of any GPU
+# op, so subsequent calls skip the upload/download dance entirely.
+_GPU_DISABLED_AT_RUNTIME = False
+_GPU_FIRSTRUN_LOGGED = False
+
+
+def _gpu_log_first_use(kind: str):
+    """Print one line on first GPU op, so the operator can confirm in the
+    holOS console that the CUDA path is actually firing and not the silent
+    CPU fallback."""
+    global _GPU_FIRSTRUN_LOGGED
+    if not _GPU_FIRSTRUN_LOGGED:
+        _GPU_FIRSTRUN_LOGGED = True
+        print(f'[table_rectifier] CUDA active (first op: {kind})')
+
+
+def _gpu_disable(reason: str):
+    global _GPU_DISABLED_AT_RUNTIME
+    if not _GPU_DISABLED_AT_RUNTIME:
+        _GPU_DISABLED_AT_RUNTIME = True
+        print(f'[table_rectifier] CUDA op failed at runtime — falling back to '
+              f'CPU for the rest of the session: {reason}')
 
 
 def _warp_perspective(frame, H, dsize, flags=cv2.INTER_LINEAR,
                       borderMode=cv2.BORDER_CONSTANT, borderValue=(0, 0, 0)):
     """warpPerspective with CUDA fast path + CPU fallback. Same call sig as
     cv2.warpPerspective so callers don't care which path runs."""
-    if _HAS_CUDA:
+    if _HAS_CUDA and not _GPU_DISABLED_AT_RUNTIME:
         try:
             g = cv2.cuda_GpuMat()
             g.upload(frame)
             out = cv2.cuda.warpPerspective(
                 g, H, dsize, flags=flags,
                 borderMode=borderMode, borderValue=borderValue)
-            return out.download()
-        except Exception:
-            pass   # silent fallback — CPU path below
+            r = out.download()
+            _gpu_log_first_use('warpPerspective')
+            return r
+        except Exception as e:
+            _gpu_disable(f'warpPerspective: {type(e).__name__}: {e}')
     return cv2.warpPerspective(
         frame, H, dsize, flags=flags,
         borderMode=borderMode, borderValue=borderValue)
@@ -45,7 +70,7 @@ def _warp_perspective(frame, H, dsize, flags=cv2.INTER_LINEAR,
 def _remap(frame, mx, my, interpolation=cv2.INTER_LINEAR,
            borderMode=cv2.BORDER_CONSTANT, borderValue=(0, 0, 0)):
     """remap with CUDA fast path + CPU fallback."""
-    if _HAS_CUDA:
+    if _HAS_CUDA and not _GPU_DISABLED_AT_RUNTIME:
         try:
             g = cv2.cuda_GpuMat();   g.upload(frame)
             gx = cv2.cuda_GpuMat();  gx.upload(mx)
@@ -53,9 +78,11 @@ def _remap(frame, mx, my, interpolation=cv2.INTER_LINEAR,
             out = cv2.cuda.remap(
                 g, gx, gy, interpolation,
                 borderMode=borderMode, borderValue=borderValue)
-            return out.download()
-        except Exception:
-            pass
+            r = out.download()
+            _gpu_log_first_use('remap')
+            return r
+        except Exception as e:
+            _gpu_disable(f'remap: {type(e).__name__}: {e}')
     return cv2.remap(frame, mx, my, interpolation,
                      borderMode=borderMode, borderValue=borderValue)
 

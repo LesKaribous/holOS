@@ -82,7 +82,11 @@ SOURCE_PATH = 'http://127.0.0.1:5174/stream.mjpg'
 
 # ArUco detection
 ARUCO_DICT   = '4x4_50'
-ARUCO_REFINE = 'subpix'
+ARUCO_REFINE = 'none'   # 'subpix' is ~2× slower on 1080p; with our tag
+                         # size (100 mm) + 1080p capture, raw corner accuracy
+                         # is already <1 px / ~1 mm in BEV. Bump to 'subpix'
+                         # only if you see tag positions visibly jittering
+                         # AND the Jetson has CPU headroom.
 
 # Rectifier intrinsics — set to '' to disable solvePnP and fall back to
 # pure 4-anchor findHomography (lens curvature stays in the warp). Default
