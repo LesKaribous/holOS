@@ -14,10 +14,12 @@ Usage:
     python -m vision_camera.camera video path\to\clip.mp4
     python -m vision_camera.camera camera 0
     python -m vision_camera.camera image path\to\photo.png
+    python -m vision_camera.camera jetson /dev/video0  # GStreamer + nvv4l2decoder
 
     # optional
     --port 5174     bind port (default 5174)
     --host 0.0.0.0  bind address (default 127.0.0.1, use 0.0.0.0 for LAN)
+    --gst-width / --gst-height / --gst-fps  (jetson only, default 1280×720@30)
 
 Endpoints (default base http://127.0.0.1:5174):
     GET  /              → web UI (preview + playback controls)
@@ -56,11 +58,16 @@ class VirtualCamera:
     """
 
     def __init__(self, source_kind: str, source_path: str,
-                 jpeg_quality: int = 80, target_fps: int = 30):
+                 jpeg_quality: int = 80, target_fps: int = 30,
+                 gst_width: int = 1280, gst_height: int = 720,
+                 gst_fps: int = 30):
         self.source_kind = source_kind
         self.source_path = source_path
         self.jpeg_quality = int(jpeg_quality)
         self.target_fps = max(1, int(target_fps))
+        self.gst_width = int(gst_width)
+        self.gst_height = int(gst_height)
+        self.gst_fps = int(gst_fps)
         # User-driven state
         self.playback = 'pause' if source_kind == 'video' else 'live'
         self.speed = 1.0
@@ -104,6 +111,19 @@ class VirtualCamera:
             self._encode(img)
             self.frame_count = 1
             return
+        if self.source_kind == 'jetson':
+            pipeline = self._gst_pipeline(self.source_path,
+                                          self.gst_width, self.gst_height,
+                                          self.gst_fps)
+            self._cap = cv2.VideoCapture(pipeline, cv2.CAP_GSTREAMER)
+            if not self._cap.isOpened():
+                raise RuntimeError(
+                    f'cv2.VideoCapture (GStreamer) could not open: {pipeline}')
+            self.frame_count = -1
+            ok, f = self._cap.read()
+            if ok:
+                self._encode(f)
+            return
         if self.source_kind == 'camera':
             arg = (int(self.source_path)
                    if str(self.source_path).isdigit() else self.source_path)
@@ -121,6 +141,21 @@ class VirtualCamera:
                 self._cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
             except Exception:
                 pass
+
+    @staticmethod
+    def _gst_pipeline(device: str, width: int, height: int, fps: int) -> str:
+        """Jetson MJPEG → BGR pipeline with hardware decode.
+
+        Camera must support MJPEG at the requested width/height/fps —
+        check with `v4l2-ctl --device=/dev/videoN --list-formats-ext`."""
+        return (
+            f'v4l2src device={device} ! '
+            f'image/jpeg,width={width},height={height},framerate={fps}/1 ! '
+            f'nvv4l2decoder mjpeg=1 ! '
+            f'nvvidconv ! video/x-raw,format=BGRx ! '
+            f'videoconvert ! video/x-raw,format=BGR ! '
+            f'appsink drop=true max-buffers=2 sync=false'
+        )
 
     def _encode(self, frame):
         try:
@@ -336,9 +371,11 @@ def api_control():
 def main():
     parser = argparse.ArgumentParser(
         description='Virtual-camera server (MJPEG stream + playback UI).')
-    parser.add_argument('source_kind', choices=['video', 'camera', 'image'])
+    parser.add_argument('source_kind',
+        choices=['video', 'camera', 'image', 'jetson'])
     parser.add_argument('source_path',
-        help='File path (video/image) or device index (camera).')
+        help='File path (video/image), device index (camera), '
+             'or /dev/videoN (jetson).')
     parser.add_argument('--port', type=int, default=5174,
         help='HTTP port (default 5174).')
     parser.add_argument('--host', default='127.0.0.1',
@@ -347,11 +384,19 @@ def main():
         help='JPEG quality 30-95 (default 80).')
     parser.add_argument('--fps', type=int, default=30,
         help='Max output FPS (default 30).')
+    parser.add_argument('--gst-width', type=int, default=1280,
+        help='Jetson GStreamer capture width (default 1280).')
+    parser.add_argument('--gst-height', type=int, default=720,
+        help='Jetson GStreamer capture height (default 720).')
+    parser.add_argument('--gst-fps', type=int, default=30,
+        help='Jetson GStreamer capture FPS (default 30).')
     args = parser.parse_args()
 
     global _cam
     _cam = VirtualCamera(args.source_kind, args.source_path,
-                         jpeg_quality=args.quality, target_fps=args.fps)
+                         jpeg_quality=args.quality, target_fps=args.fps,
+                         gst_width=args.gst_width, gst_height=args.gst_height,
+                         gst_fps=args.gst_fps)
     try:
         _cam.start()
     except Exception as e:
