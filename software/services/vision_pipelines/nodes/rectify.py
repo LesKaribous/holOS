@@ -37,6 +37,8 @@ from __future__ import annotations
 
 import os
 import sys
+import time
+from typing import Optional
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _VISION_SRC = os.path.abspath(os.path.join(_HERE, '..', '..', '..', 'vision', 'src'))
@@ -184,6 +186,61 @@ class RectifyNode(Node):
         self._configured_sim_ids = []        # sim_tag_ids resolved
         self._detected_sim_ids = []          # subset of sim_tag_ids seen this tick
 
+        # ── Capture state ─────────────────────────────────────────────
+        # The node sits IDLE at boot — H is not computed and the BEV
+        # frame is not emitted. The recalage routine sends a one-shot
+        # `request_capture()` (via T:vis homography_capture); the next
+        # tick fits H and on success freezes both H and the BEV image.
+        # While LOCKED, every tick re-emits the snapshot — no work
+        # other than reading a cached buffer.
+        self._capture_pending: bool = False
+        self._capture_result: Optional[dict] = None
+        self._locked_bev: Optional['np.ndarray'] = None
+        self._locked_raw: Optional['np.ndarray'] = None
+        self._locked_at_t: Optional[float] = None
+
+    # ── Capture state machine API ─────────────────────────────────────
+    # Called from run.py when a T:vis homography_capture / homography_release
+    # arrives from the firmware. The actual fit happens on the worker
+    # thread inside process(); these methods only flip the request flag
+    # so the worker picks it up without us reaching into cv2 from another
+    # thread.
+
+    def request_capture(self):
+        """Arm a one-shot homography capture. The next tick will fit H
+        and (on success) lock it + snapshot the BEV image. Idempotent —
+        a second request after lock re-captures from a fresh frame."""
+        if self._rect is not None:
+            self._rect.unlock()
+            self._rect.arm()
+        self._locked_bev = None
+        self._locked_raw = None
+        self._locked_at_t = None
+        self._capture_pending = True
+        self._capture_result = None
+
+    def release_capture(self):
+        """Return to IDLE. H + BEV snapshot dropped. Update_* stops."""
+        if self._rect is not None:
+            self._rect.unlock()
+            self._rect.disarm()
+        self._locked_bev = None
+        self._locked_raw = None
+        self._locked_at_t = None
+        self._capture_pending = False
+        self._capture_result = None
+
+    def get_capture_result(self) -> 'Optional[dict]':
+        """Latest result for an in-flight request_capture(). None while
+        the worker hasn't ticked yet, then a dict {'ok': bool, ...}.
+        Caller polls until non-None or timeout."""
+        return self._capture_result
+
+    def get_locked_raw(self):
+        """The undistorted source frame captured at lock time. Returned
+        by the API endpoint that powers the homography-debug tile."""
+        return self._locked_raw
+
     def start(self):
         if not _CV2_OK:
             self._last_error = 'cv2 unavailable'
@@ -221,11 +278,72 @@ class RectifyNode(Node):
 
     # --- per-tick ----------------------------------------------------
 
+    def _build_coord_state(self) -> dict:
+        origin = str(self._params.get('world_origin_corner', 'top_left'))
+        flip_x, flip_y = self._flips_for_origin(origin)
+        return {
+            'flip_x':        bool(flip_x),
+            'flip_y':        bool(flip_y),
+            'flip_theta':    bool(self._params.get('world_flip_theta', True)),
+            'table_w_mm':    float(self._params.get('world_table_w_mm', 3000.0)),
+            'table_h_mm':    float(self._params.get('world_table_h_mm', 2000.0)),
+            'origin_corner': origin,
+        }
+
     def process(self, inputs):
         frame = inputs.get('frame')
         det = inputs.get('detection')
         if frame is None or det is None or getattr(self, '_rect', None) is None:
             return {}
+
+        rect = self._rect
+        coord_state = self._build_coord_state()
+
+        # ── State 3 — LOCKED: H + BEV snapshot frozen ─────────────────
+        # Re-emit the captured image every tick. Downstream nodes treat
+        # the frame as static; live aruco detections still flow through
+        # the `detection` channel so localization keeps tracking robots.
+        if rect.is_locked:
+            return {
+                'homography_state': {
+                    'has_h':  True,
+                    'fresh':  False,
+                    'cached': True,
+                    'locked': True,
+                },
+                'rectifier':    rect,
+                'coord_state':  coord_state,
+                'frame':        self._locked_bev,
+                'preview':      self._locked_bev,
+            }
+
+        # ── State 1 — IDLE: not armed, no fit attempt at all ──────────
+        # The recalage routine arms us via request_capture(). Until
+        # then we emit nothing image-side, so downstream nodes
+        # (localization, parallax, grid…) skip processing. Saves CPU
+        # and visually signals "no homography yet" on the debug page.
+        if not self._capture_pending:
+            self._mode_active = None
+            self._live_anchor_count = 0
+            self._detected_anchor_ids = []
+            self._detected_sim_ids = []
+            return {
+                'homography_state': {
+                    'has_h':  False,
+                    'fresh':  False,
+                    'cached': False,
+                    'locked': False,
+                    'idle':   True,
+                },
+                'rectifier':   rect,
+                'coord_state': coord_state,
+            }
+
+        # ── State 2 — CAPTURING: armed, try to fit H this tick ────────
+        # Falls through to the legacy fit logic below. On success we
+        # snapshot the BEV + lock; on failure we leave _capture_pending
+        # set so the next tick retries until run.py's polling timeout.
+
         mode = str(self._params.get('homography_mode', 'auto'))
         sim_a = int(self._params.get('sim_tag_a_id', 20))
         sim_b = int(self._params.get('sim_tag_b_id', 22))
@@ -327,47 +445,85 @@ class RectifyNode(Node):
             else:
                 _do_h4()   # cache-driven fallback inside update()
 
-        out = {}
-        out['homography_state'] = {
-            'has_h':  self._rect.has_homography,
-            'fresh':  self._rect.homography_is_fresh,
-            'cached': self._rect.homography_is_cached,
-        }
-        # Share the rectifier instance so downstream nodes reuse the same H.
-        out['rectifier'] = self._rect
-
-        # ── BEV rectify (image stays in BEV-native orientation) ─────
-        if self._rect.has_homography:
-            bev = self._rect.rectify(frame)
+        # ── Capture handshake ────────────────────────────────────────
+        # has_homography is True iff a fit succeeded this tick (or in a
+        # previous CAPTURING tick — but we cleared the cached H at
+        # request_capture time). Lock + snapshot now, return frozen.
+        # Re-check _capture_pending: release_capture() may have flipped
+        # it False on a timeout path while we were still inside the fit.
+        if rect.has_homography and self._capture_pending:
+            bev = rect.rectify(frame)
             if bev is not None:
-                out['frame'] = bev
-                if self._params.get('draw_grid', False):
-                    bev_with_grid = self._rect.draw_grid(bev.copy())
-                    out['preview'] = bev_with_grid
-                else:
-                    out['preview'] = bev
+                self._locked_bev = bev.copy()
+                # Save the live source frame too so the homography-debug
+                # tile can show "this is the picture vision used".
+                try:
+                    self._locked_raw = frame.copy()
+                except Exception:
+                    self._locked_raw = None
+            rect.lock()
+            self._locked_at_t = time.monotonic()
+            self._capture_pending = False
+            self._capture_result = {
+                'ok':                  True,
+                'mode':                self._mode_active,
+                'live_anchor_count':   self._live_anchor_count,
+                'detected_anchor_ids': list(self._detected_anchor_ids),
+                'detected_sim_ids':    list(self._detected_sim_ids),
+            }
+            return {
+                'homography_state': {
+                    'has_h':  True,
+                    'fresh':  True,
+                    'cached': False,
+                    'locked': True,
+                },
+                'rectifier':   rect,
+                'coord_state': coord_state,
+                'frame':       self._locked_bev,
+                'preview':     self._locked_bev,
+            }
 
-        # ── Coord state output ──────────────────────────────────────
-        origin = str(self._params.get('world_origin_corner', 'top_left'))
-        flip_x, flip_y = self._flips_for_origin(origin)
-        out['coord_state'] = {
-            'flip_x':        bool(flip_x),
-            'flip_y':        bool(flip_y),
-            'flip_theta':    bool(self._params.get('world_flip_theta', True)),
-            'table_w_mm':    float(self._params.get('world_table_w_mm', 3000.0)),
-            'table_h_mm':    float(self._params.get('world_table_h_mm', 2000.0)),
-            'origin_corner': origin,
+        # Fit failed this tick — keep _capture_pending=True so the
+        # next tick retries. The polling thread in run.py will time
+        # out after ~2s if anchors stay invisible and surface ok=0.
+        return {
+            'homography_state': {
+                'has_h':  False,
+                'fresh':  False,
+                'cached': False,
+                'locked': False,
+                'armed':  True,
+            },
+            'rectifier':   rect,
+            'coord_state': coord_state,
         }
-        return out
 
     def get_state(self):
         r = getattr(self, '_rect', None)
         origin = str(self._params.get('world_origin_corner', 'top_left'))
         fx, fy = self._flips_for_origin(origin)
+        # Surface a single human-readable phase string for the UI:
+        #   'idle'      → no fit, no BEV emitted (pre-recalage default)
+        #   'capturing' → recalage in progress, retrying H fit
+        #   'locked'    → H + BEV frozen, no further work
+        if r is None:
+            phase = 'idle'
+        elif r.is_locked:
+            phase = 'locked'
+        elif self._capture_pending:
+            phase = 'capturing'
+        else:
+            phase = 'idle'
         return {
             'has_homography':    bool(r and r.has_homography),
             'has_intrinsics':    bool(r and r.has_intrinsics),
             'homography_locked': bool(r and r.is_locked),
+            'capture_phase':     phase,
+            'capture_pending':   bool(self._capture_pending),
+            'capture_result':    dict(self._capture_result) if self._capture_result else None,
+            'locked_age_s':      (time.monotonic() - self._locked_at_t)
+                                  if self._locked_at_t is not None else None,
             # Which path actually ran on the latest tick. Useful to confirm
             # auto-mode is doing what you think: 'sim2' (2-anchor similarity),
             # 'h4_pose' (4-anchor + solvePnP), 'h4_findH' (4-anchor pure).

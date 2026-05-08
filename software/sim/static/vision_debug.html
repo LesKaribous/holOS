@@ -18,11 +18,14 @@
   .badge { padding:2px 8px; border-radius:4px;
            background:rgba(255,255,255,0.05); color:var(--muted);
            font:12px ui-monospace,SFMono-Regular,monospace; }
+  .badge.phase-idle      { color:var(--muted); }
+  .badge.phase-capturing { color:var(--warn); background:rgba(251,191,36,0.1); }
+  .badge.phase-locked    { color:var(--good); background:rgba(34,197,94,0.1); }
 
   .grid { display:grid; grid-template-columns:repeat(2,1fr);
           gap:12px; padding:12px;
-          height:calc(100vh - 3rem); min-height:0; }
-  @media (max-width:1100px) { .grid { grid-template-columns:1fr; height:auto; } }
+          min-height:0; }
+  @media (max-width:1100px) { .grid { grid-template-columns:1fr; } }
 
   .tile { background:var(--panel); border:1px solid var(--border);
           border-radius:6px; display:flex; flex-direction:column;
@@ -48,6 +51,33 @@
   tr.cls-own      { color:var(--good); }
   tr.cls-opponent { color:var(--err); }
   tr.cls-anchor   { color:var(--warn); }
+
+  /* Telemetry tile — vision pose vs robot pose, side-by-side */
+  .tlm { display:grid; grid-template-columns:auto 1fr 1fr 1fr;
+         gap:6px 14px; padding:10px 14px;
+         font:12px ui-monospace,SFMono-Regular,monospace;
+         align-items:baseline; width:100%; }
+  .tlm .row-label { color:var(--muted); }
+  .tlm .col-head  { color:var(--accent); font-weight:600;
+                    border-bottom:1px solid var(--border); padding-bottom:2px; }
+  .tlm .vision  { color:var(--good); }
+  .tlm .robot   { color:var(--warn); }
+  .tlm .delta   { color:var(--err); }
+  .tlm .stale   { color:var(--muted); font-style:italic; }
+
+  /* Calibration tile — single column key/value list */
+  .calib { padding:10px 14px;
+           font:12px ui-monospace,SFMono-Regular,monospace;
+           display:grid; grid-template-columns:auto 1fr; gap:4px 14px;
+           align-content:start; width:100%; }
+  .calib .k { color:var(--muted); }
+  .calib .v { color:var(--text); text-align:right; }
+  .calib .v.warn { color:var(--warn); }
+  .calib .section { grid-column:1/-1;
+                    color:var(--accent); font-weight:600;
+                    border-bottom:1px solid var(--border);
+                    padding:6px 0 2px; margin-top:4px; }
+  .calib .section:first-child { margin-top:0; }
 </style>
 </head>
 <body>
@@ -55,6 +85,7 @@
 <header class="bar">
   <span class="title">vision debug</span>
   <span class="badge">connected to holOS</span>
+  <span class="badge phase-idle" id="phase-badge">homography: idle</span>
   <span style="flex:1"></span>
   <span class="badge" id="last-update">—</span>
 </header>
@@ -88,6 +119,16 @@
       <div class="empty">waiting for feed_id <code>poses_corrected</code></div>
     </div>
   </section>
+  <section class="tile">
+    <header class="tile-head">Pose comparison — vision vs robot
+      <span class="tile-meta" id="m-cmp"></span></header>
+    <div class="tile-body" id="t-cmp"></div>
+  </section>
+  <section class="tile">
+    <header class="tile-head">Recalage parameters
+      <span class="tile-meta" id="m-calib"></span></header>
+    <div class="tile-body" id="t-calib"></div>
+  </section>
 </main>
 
 <script src="/static/vendor/socket.io.min.js"></script>
@@ -116,6 +157,47 @@ socket.on('vision_feed', d => {
   }
 });
 
+/* Robot pose comes from the regular holOS state event (60 Hz). We just
+ * cache the latest one and re-render the comparison tile when either
+ * side updates. */
+let _robotPose = null;
+socket.on('state', s => {
+  const r = s && s.robot;
+  if (!r) return;
+  _robotPose = {
+    x_mm:      typeof r.x === 'number' ? r.x : null,
+    y_mm:      typeof r.y === 'number' ? r.y : null,
+    theta_rad: typeof r.theta === 'number' ? r.theta : null,
+  };
+  renderCompare();
+});
+
+let _visionPose = null;
+let _calibInfo  = null;   // /api/vision/calibration response
+
+async function pollVision() {
+  try {
+    const r1 = await fetch('/api/vision/robot_pose');
+    if (r1.ok) {
+      const j = await r1.json();
+      _visionPose = j.pose || null;
+    } else {
+      _visionPose = null;
+    }
+  } catch (_) { _visionPose = null; }
+
+  try {
+    const r2 = await fetch('/api/vision/calibration');
+    if (r2.ok) _calibInfo = await r2.json();
+  } catch (_) { /* leave previous */ }
+
+  renderCompare();
+  renderCalib();
+  updatePhaseBadge();
+}
+setInterval(pollVision, 500);
+pollVision();
+
 function renderPoseTable(container, poses) {
   if (!poses.length) { container.innerHTML = `<div class="empty">no poses</div>`; return; }
   const has_naive = poses.some(p => p.naive_x_mm != null);
@@ -133,6 +215,139 @@ function renderPoseTable(container, poses) {
     return `<tr class="cls-${cls}">${tds}</tr>`;
   }).join('');
   container.innerHTML = `<table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`;
+}
+
+function fmt(v, digits) {
+  if (v === null || v === undefined || (typeof v === 'number' && !isFinite(v))) return '—';
+  return Number(v).toFixed(digits);
+}
+function fmtDeg(rad, digits=1) {
+  if (rad === null || rad === undefined) return '—';
+  return (rad * 180 / Math.PI).toFixed(digits) + '°';
+}
+
+function renderCompare() {
+  const c = document.getElementById('t-cmp');
+  const v = _visionPose; const r = _robotPose;
+  if (!v && !r) {
+    c.innerHTML = '<div class="empty">waiting for telemetry</div>';
+    return;
+  }
+  const dx = (v && r && v.x_mm != null && r.x_mm != null) ? (v.x_mm - r.x_mm) : null;
+  const dy = (v && r && v.y_mm != null && r.y_mm != null) ? (v.y_mm - r.y_mm) : null;
+  const dt = (v && r && v.theta_rad != null && r.theta_rad != null)
+              ? wrapPi(v.theta_rad - r.theta_rad) : null;
+  const dnorm = (dx !== null && dy !== null)
+              ? Math.sqrt(dx*dx + dy*dy) : null;
+  const tagId = v && v.tag_id != null ? `tag #${v.tag_id}` : '';
+  c.innerHTML = `
+    <div class="tlm">
+      <span></span>
+      <span class="col-head vision">vision ${tagId ? '— '+tagId : ''}</span>
+      <span class="col-head robot">robot (otos)</span>
+      <span class="col-head delta">Δ (vision − robot)</span>
+
+      <span class="row-label">x_mm</span>
+      <span class="vision">${v ? fmt(v.x_mm, 1) : '<span class="stale">—</span>'}</span>
+      <span class="robot">${r ? fmt(r.x_mm, 1) : '<span class="stale">—</span>'}</span>
+      <span class="delta">${fmt(dx, 1)}</span>
+
+      <span class="row-label">y_mm</span>
+      <span class="vision">${v ? fmt(v.y_mm, 1) : '<span class="stale">—</span>'}</span>
+      <span class="robot">${r ? fmt(r.y_mm, 1) : '<span class="stale">—</span>'}</span>
+      <span class="delta">${fmt(dy, 1)}</span>
+
+      <span class="row-label">theta</span>
+      <span class="vision">${v ? fmtDeg(v.theta_rad) : '<span class="stale">—</span>'}</span>
+      <span class="robot">${r ? fmtDeg(r.theta_rad) : '<span class="stale">—</span>'}</span>
+      <span class="delta">${fmtDeg(dt)}</span>
+
+      <span class="row-label">|Δxy|</span>
+      <span></span><span></span>
+      <span class="delta">${fmt(dnorm, 1)} mm</span>
+    </div>
+  `;
+  document.getElementById('m-cmp').textContent = (new Date()).toLocaleTimeString();
+}
+
+function wrapPi(a) {
+  let x = ((a + Math.PI) % (2 * Math.PI));
+  if (x <= 0) x += 2 * Math.PI;
+  return x - Math.PI;
+}
+
+function renderCalib() {
+  const el = document.getElementById('t-calib');
+  if (!_calibInfo) {
+    el.innerHTML = '<div class="empty">waiting for /api/vision/calibration</div>';
+    return;
+  }
+  const snap = _calibInfo.snapshot;
+  const rect = _calibInfo.rectify || {};
+  const ho_deg = _calibInfo.heading_offset_deg;
+
+  let html = '<div class="calib">';
+  html += '<div class="section">Homography</div>';
+  html += `<span class="k">phase</span>
+           <span class="v ${rect.capture_phase==='locked'?'':'warn'}">${rect.capture_phase || '—'}</span>`;
+  html += `<span class="k">mode active</span>
+           <span class="v">${rect.mode_active || '—'}</span>`;
+  html += `<span class="k">live anchors</span>
+           <span class="v">${rect.live_anchor_count != null ? rect.live_anchor_count : '—'}</span>`;
+  html += `<span class="k">detected anchor ids</span>
+           <span class="v">[${(rect.detected_anchor_ids || []).join(', ')}]</span>`;
+  html += `<span class="k">locked age</span>
+           <span class="v">${rect.locked_age_s != null ? rect.locked_age_s.toFixed(1)+' s' : '—'}</span>`;
+
+  if (!snap) {
+    html += '<div class="section">Recalage</div>';
+    html += '<span class="k">snapshot</span><span class="v warn">no recalage yet</span>';
+  } else {
+    html += '<div class="section">Recalage snapshot</div>';
+    html += `<span class="k">tag id</span>
+             <span class="v">#${snap.tag_id} <span class="k">(${snap.team})</span></span>`;
+    html += `<span class="k">captured</span>
+             <span class="v">${snap.captured_age_s.toFixed(1)} s ago</span>`;
+    html += `<span class="k">robot_z_mm</span>
+             <span class="v">${snap.robot_z_mm != null ? snap.robot_z_mm.toFixed(0) : '—'} mm</span>`;
+
+    html += '<div class="section">Known robot pose</div>';
+    const k = snap.known_pose || {};
+    html += `<span class="k">x</span>
+             <span class="v">${fmt(k.x_mm, 1)} mm</span>`;
+    html += `<span class="k">y</span>
+             <span class="v">${fmt(k.y_mm, 1)} mm</span>`;
+    html += `<span class="k">theta</span>
+             <span class="v">${fmtDeg(k.theta_rad)}</span>`;
+
+    html += '<div class="section">Vision tag pose at recalage (raw)</div>';
+    const t = snap.tag_pose_vision_raw || {};
+    html += `<span class="k">x</span>
+             <span class="v">${fmt(t.x_mm, 1)} mm</span>`;
+    html += `<span class="k">y</span>
+             <span class="v">${fmt(t.y_mm, 1)} mm</span>`;
+    html += `<span class="k">theta (raw tag)</span>
+             <span class="v">${fmtDeg(t.theta_rad)}</span>`;
+
+    html += '<div class="section">Calibration offsets</div>';
+    const xy = snap.xy_offset_mm || {};
+    html += `<span class="k">Δx (vision − known)</span>
+             <span class="v">${fmt(xy.dx_mm, 1)} mm</span>`;
+    html += `<span class="k">Δy (vision − known)</span>
+             <span class="v">${fmt(xy.dy_mm, 1)} mm</span>`;
+    html += `<span class="k">Δheading (robot − tag)</span>
+             <span class="v">${fmtDeg(snap.heading_offset_rad)}</span>`;
+  }
+  html += '</div>';
+  el.innerHTML = html;
+  document.getElementById('m-calib').textContent = (new Date()).toLocaleTimeString();
+}
+
+function updatePhaseBadge() {
+  const b = document.getElementById('phase-badge');
+  const phase = _calibInfo && _calibInfo.rectify && _calibInfo.rectify.capture_phase;
+  b.className = 'badge phase-' + (phase || 'idle');
+  b.textContent = 'homography: ' + (phase || 'idle');
 }
 </script>
 </body>

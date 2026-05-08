@@ -161,6 +161,16 @@ _vision_heading_sync_pending = False
 # by a fresh cal_request.
 _vision_heading_offset_rad: 'Optional[float]' = None
 
+# Full snapshot of the recalage handshake — published to the debug page
+# so the operator can sanity-check the parallax/heading numbers without
+# digging into logs. Updated by `_recalage_pick_own_tag`.
+#   known_pose:           {x_mm, y_mm, theta_rad}      robot's reported pose
+#   tag_pose_vision_raw:  {x_mm, y_mm, theta_rad}      what vision saw at calib
+#   xy_offset_mm:         (dx, dy) = vision - known    parallax residual
+#   heading_offset_rad:   theta_robot - theta_tag_vision
+#   tag_id, team, robot_z_mm, captured_at_t
+_vision_calibration_snapshot: 'Optional[dict]' = None
+
 # ── Hardware transport (real robot, optional) ─────────────────────────────────
 # When connected, terminal/actuator/strategy commands are routed here instead
 # of the VirtualTransport.  The physics simulation continues running for map
@@ -1857,9 +1867,10 @@ def _recalage_pick_own_tag(known_x_mm, known_y_mm,
     known_theta_rad was provided, else the raw tag heading), None on
     failure (no candidate within tolerance, no pipeline, etc.).
     Side effects: updates the localization node's `team` + `track_ids`
-    so subsequent ticks only emit the picked tag, and sets
-    `_vision_heading_offset_rad`."""
-    global _vision_heading_offset_rad
+    so subsequent ticks only emit the picked tag, sets
+    `_vision_heading_offset_rad`, and writes a full diagnostic
+    snapshot to `_vision_calibration_snapshot` for the debug page."""
+    global _vision_heading_offset_rad, _vision_calibration_snapshot
     inst, rec = _get_localization_node()
     if inst is None:
         return None
@@ -1918,6 +1929,8 @@ def _recalage_pick_own_tag(known_x_mm, known_y_mm,
     except Exception:
         pass
 
+    raw_tag_x = float(best.get('x_mm', 0) or 0)
+    raw_tag_y = float(best.get('y_mm', 0) or 0)
     raw_tag_theta = float(best.get('theta_rad') or 0.0)
     # Capture the robot↔tag heading offset when the firmware sent its
     # known orientation. The tag is mounted on the robot at an arbitrary
@@ -1940,12 +1953,42 @@ def _recalage_pick_own_tag(known_x_mm, known_y_mm,
         brain.log(f"[VISION] recalage OK — own tag #{tag_id}, team={team}, "
                   f"d={best_d2 ** 0.5:.0f}mm  (no heading sync)")
 
+    # Persist a snapshot for the debug page. Single source of truth for
+    # the operator: which tag we locked, the (vision − known) residual
+    # in xy, and the heading offset between robot and tag frames.
+    try:
+        robot_z_mm = float(inst._params.get('robot_z_mm', 490.0))
+    except Exception:
+        robot_z_mm = None
+    _vision_calibration_snapshot = {
+        'captured_at_t':     time.monotonic(),
+        'tag_id':            tag_id,
+        'team':              team,
+        'known_pose': {
+            'x_mm':      float(known_x_mm),
+            'y_mm':      float(known_y_mm),
+            'theta_rad': (float(known_theta_rad)
+                          if known_theta_rad is not None else None),
+        },
+        'tag_pose_vision_raw': {
+            'x_mm':      raw_tag_x,
+            'y_mm':      raw_tag_y,
+            'theta_rad': raw_tag_theta,
+        },
+        'xy_offset_mm': {
+            'dx_mm': raw_tag_x - float(known_x_mm),
+            'dy_mm': raw_tag_y - float(known_y_mm),
+        },
+        'heading_offset_rad': _vision_heading_offset_rad,
+        'robot_z_mm':         robot_z_mm,
+    }
+
     return {
         'tag_id': tag_id,
         'team':   team,
         'vision_pose': {
-            'x_mm':      float(best.get('x_mm', 0) or 0),
-            'y_mm':      float(best.get('y_mm', 0) or 0),
+            'x_mm':      raw_tag_x,
+            'y_mm':      raw_tag_y,
             'theta_rad': corrected_theta,
         },
     }
@@ -2016,6 +2059,42 @@ def api_vision_robot_pose():
     if pose is None:
         return jsonify({'ok': False, 'error': 'no own-team pose available'}), 404
     return jsonify({'ok': True, 'pose': pose})
+
+
+@app.route('/api/vision/calibration', methods=['GET'])
+def api_vision_calibration():
+    """Snapshot of the recalage handshake: known robot pose, raw vision
+    tag pose at calibration, parallax xy residual, heading offset, the
+    locked-in tag id + team, robot_z_mm. Drives the debug page so the
+    operator can sanity-check the numbers without grepping logs.
+
+    Plus the current rectify capture phase ('idle' / 'capturing' /
+    'locked') and homography lock state — same JSON so the page only
+    polls one endpoint.
+
+    Response: 200 always. snapshot=null when no recalage has fired yet.
+    """
+    rect_node, _ = _get_rectify_node()
+    rect_state = rect_node.get_state() if rect_node is not None else None
+
+    snap = _vision_calibration_snapshot
+    snap_payload = None
+    if snap is not None:
+        snap_payload = dict(snap)
+        snap_payload['captured_age_s'] = (time.monotonic()
+                                          - snap['captured_at_t'])
+        ho = snap.get('heading_offset_rad')
+        snap_payload['heading_offset_deg'] = (math.degrees(ho)
+                                              if ho is not None else None)
+
+    return jsonify({
+        'snapshot':         snap_payload,
+        'heading_offset_rad': _vision_heading_offset_rad,
+        'heading_offset_deg': (math.degrees(_vision_heading_offset_rad)
+                               if _vision_heading_offset_rad is not None
+                               else None),
+        'rectify':          rect_state,
+    })
 
 
 @app.route('/api/vision/pipelines', methods=['GET'])
@@ -3119,30 +3198,50 @@ def _do_connect(port: str):
                     def _do_lock():
                         global _vision_heading_offset_rad
                         rect_node, _ = _get_rectify_node()
-                        rect = getattr(rect_node, '_rect', None) if rect_node else None
-                        if rect is None:
+                        if rect_node is None:
                             _send('vis_h_locked(ok=0,reason=no_rectify_node)')
                             return
-                        if rect.lock():
-                            # New homography → previous heading offset is
-                            # tied to the previous H, drop it so we can't
-                            # accidentally apply a stale one.
+                        # Arm the node — its worker thread will fit H on
+                        # the next available frame and lock + snapshot
+                        # the BEV. We poll the result until it's ready
+                        # (success) or we time out (anchors not visible
+                        # for the whole window).
+                        rect_node.request_capture()
+                        deadline = time.monotonic() + 2.0
+                        result = None
+                        while time.monotonic() < deadline:
+                            result = rect_node.get_capture_result()
+                            if result is not None:
+                                break
+                            time.sleep(0.05)
+                        if result and result.get('ok'):
+                            # New H → previous heading offset is tied to
+                            # the previous H, drop it so we can't apply
+                            # a stale one.
                             _vision_heading_offset_rad = None
-                            brain.log('[VISION] homography locked '
-                                      '(prep phase capture)')
+                            brain.log(
+                                f"[VISION] homography locked "
+                                f"(mode={result.get('mode','?')}, "
+                                f"anchors={result.get('detected_anchor_ids', [])})")
                             _send('vis_h_locked(ok=1)')
                         else:
-                            _send('vis_h_locked(ok=0,reason=no_homography)')
+                            # Timed out without a fit — cancel the pending
+                            # request so we go back to IDLE instead of
+                            # spinning forever on every subsequent tick.
+                            rect_node.release_capture()
+                            reason = (result or {}).get('reason', 'timeout_no_anchors')
+                            brain.log(f'[VISION] homography lock failed: {reason}')
+                            _send(f'vis_h_locked(ok=0,reason={reason})')
                     threading.Thread(target=_do_lock, daemon=True,
                                      name='vis-hlock').start()
                 elif line.startswith('homography_release'):
                     def _do_unlock():
-                        global _vision_heading_offset_rad
+                        global _vision_heading_offset_rad, _vision_calibration_snapshot
                         rect_node, _ = _get_rectify_node()
-                        rect = getattr(rect_node, '_rect', None) if rect_node else None
-                        if rect is not None:
-                            rect.unlock()
+                        if rect_node is not None:
+                            rect_node.release_capture()
                         _vision_heading_offset_rad = None
+                        _vision_calibration_snapshot = None
                         brain.log('[VISION] homography released')
                         _send('vis_h_locked(ok=0,reason=released)')
                     threading.Thread(target=_do_unlock, daemon=True,
