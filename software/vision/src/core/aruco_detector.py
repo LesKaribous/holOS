@@ -12,6 +12,12 @@ import cv2
 import numpy as np
 
 
+# OpenCV ≥ 4.7 introduces cv2.aruco.ArucoDetector + cv2.aruco.DetectorParameters().
+# Older builds (incl. the NVIDIA Jetson cv2 4.5.x) only expose the legacy
+# functional API: cv2.aruco.detectMarkers + DetectorParameters_create().
+_HAS_NEW_ARUCO_API = hasattr(cv2.aruco, 'ArucoDetector')
+
+
 # Dictionnaires disponibles pour le sélecteur UI
 ARUCO_DICTS: dict[str, int] = {
     "4x4_50":    cv2.aruco.DICT_4X4_50,
