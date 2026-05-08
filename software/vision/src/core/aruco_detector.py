@@ -89,8 +89,17 @@ class ArucoDetector:
 
     def _build_detector(self, dict_name: str):
         dict_id = ARUCO_DICTS.get(dict_name, cv2.aruco.DICT_4X4_50)
-        aruco_dict = cv2.aruco.getPredefinedDictionary(dict_id)
-        params = cv2.aruco.DetectorParameters()
+        # Dictionary getter — getPredefinedDictionary exists on most builds;
+        # the very old API (pre-3.4) only had Dictionary_get.
+        if hasattr(cv2.aruco, 'getPredefinedDictionary'):
+            aruco_dict = cv2.aruco.getPredefinedDictionary(dict_id)
+        else:
+            aruco_dict = cv2.aruco.Dictionary_get(dict_id)
+        # Parameters constructor differs between APIs.
+        if _HAS_NEW_ARUCO_API:
+            params = cv2.aruco.DetectorParameters()
+        else:
+            params = cv2.aruco.DetectorParameters_create()
         # Sub-pixel corner refinement: better accuracy, useful for blurred markers
         # SUBPIX is fast; CONTOUR is most accurate; APRILTAG_REFINE is best for
         # APRILTAG dictionaries.
@@ -106,7 +115,14 @@ class ArucoDetector:
         params.adaptiveThreshConstant = 7
         params.minMarkerPerimeterRate = 0.02
         params.polygonalApproxAccuracyRate = 0.05
-        self._detector = cv2.aruco.ArucoDetector(aruco_dict, params)
+        # Stash dict + params on the legacy path so detect() can call the
+        # module-level cv2.aruco.detectMarkers function.
+        self._aruco_dict = aruco_dict
+        self._aruco_params = params
+        if _HAS_NEW_ARUCO_API:
+            self._detector = cv2.aruco.ArucoDetector(aruco_dict, params)
+        else:
+            self._detector = None
         self._dict_name = dict_name
 
     def set_dictionary(self, dict_name: str):
@@ -119,7 +135,11 @@ class ArucoDetector:
 
     def detect(self, frame: np.ndarray) -> DetectionResult:
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        corners, ids, rejected = self._detector.detectMarkers(gray)
+        if self._detector is not None:
+            corners, ids, rejected = self._detector.detectMarkers(gray)
+        else:
+            corners, ids, rejected = cv2.aruco.detectMarkers(
+                gray, self._aruco_dict, parameters=self._aruco_params)
 
         flat_ids: list[int] = []
         flat_corners: list[np.ndarray] = []
