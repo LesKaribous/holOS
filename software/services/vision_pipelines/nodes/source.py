@@ -220,10 +220,14 @@ class VideoSourceNode(Node):
     def _is_live_stream(self, path: str) -> bool:
         return path.lower().startswith(('rtsp://', 'http://', 'https://'))
 
-    # Rate cap on the drainer. 10 Hz is plenty for "keep latest frame fresh"
-    # (worst-case staleness ≤ 100 ms even at a 1 FPS pipeline tick) while
-    # avoiding 30 JPEG-decodes/s of pure waste on the Jetson CPU.
-    _DRAINER_HZ = 10.0
+    # Rate cap on the drainer. Must be ≥ source rate or the cv2/FFmpeg
+    # internal MJPEG buffer grows unbounded — every frame we don't read
+    # piles up in the TCP/decode buffer, and `s.read()` returns OLDER
+    # frames first → the pipeline sees image data minutes behind reality.
+    # 60 Hz is comfortably above any camera setting we run at; cv2.read()
+    # naturally throttles itself to the server rate when caught up, so
+    # this is a defensive cap, not a target.
+    _DRAINER_HZ = 60.0
 
     def _drainer_loop(self):
         """Read frames as fast as the source produces them (capped at

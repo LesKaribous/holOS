@@ -109,6 +109,11 @@ HOMOGRAPHY_MODE = 'auto'
 SIM_TAG_IDS     = [20, 22, 0]
 SIM_TAG_A_ID    = 20    # legacy fallback when SIM_TAG_IDS is empty
 SIM_TAG_B_ID    = 22    # legacy fallback when SIM_TAG_IDS is empty
+# Edge length of every printed ArUco tag, in mm (black border to black
+# border). MUST match what's physically on the table — a wrong value
+# warps the corner-based homography (RANSAC either rejects most points
+# and returns None, or fits a scaled H that looks "almost right but off").
+TAG_SIZE_MM     = 100.0
 
 # Camera position (manual override) — entered in WORLD frame.
 CAMERA_X_MM = 1275.0
@@ -119,8 +124,12 @@ CAMERA_Z_MM = 1600.0
 ROBOT_Z_MM = 490.0
 
 # Common
-FPS_LIMIT = 1   # we don't need real-time vision — 1 Hz is plenty for
-                # recalage / pose queries and saves a lot of Jetson CPU.
+FPS_LIMIT = 4   # 4 Hz feels reactive in the dashboard. Pipeline tick
+                # auto-skips frames implicitly: each tick reads the LATEST
+                # frame from the source.video drainer slot (not a queue),
+                # so if a tick takes > 250 ms the next one starts late and
+                # everything in between is dropped — exactly the behavior
+                # we want.
 TEAM      = 'blue'        # 'blue' or 'yellow'  (overridden live by topbar)
 TRACK_IDS = list(range(1, 11))
 
@@ -229,6 +238,7 @@ def build_localization() -> Pipeline:
                   'sim_tag_ids':          list(SIM_TAG_IDS),
                   'sim_tag_a_id':         SIM_TAG_A_ID,
                   'sim_tag_b_id':         SIM_TAG_B_ID,
+                  'tag_size_mm':          TAG_SIZE_MM,
                   'draw_grid':            False}
     if INTRINSICS_PATH is not None:
         rec_params['intrinsics_path'] = INTRINSICS_PATH
