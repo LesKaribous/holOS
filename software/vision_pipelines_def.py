@@ -107,9 +107,13 @@ SIM_TAG_B_ID    = 22
 TAG_SIZE_MM     = 100.0  # only consulted by sim2 corner-based path
 
 # Camera position (manual override) — entered in WORLD frame.
+# All three values feed the parallax correction. CAMERA_Z_MM is the
+# camera height above the table; change it here whenever the rig moves
+# (factor = (cam_z − robot_tag_z) / cam_z, so it affects the magnitude
+# of the correction directly).
 CAMERA_X_MM = 1275.0
 CAMERA_Y_MM = -200.0
-CAMERA_Z_MM = 1600.0
+CAMERA_Z_MM = 1150.0
 
 # Parallax
 ROBOT_Z_MM = 490.0
