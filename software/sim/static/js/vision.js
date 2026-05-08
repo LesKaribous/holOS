@@ -112,14 +112,300 @@ socket.on('vision_feed', data => {
     if (activeView === 'vision-objects') _renderObjectsTableFromState();
   }
   if (activeView === 'vision-dashboard') {
-    // Make sure the registry cache is populated — the playback-control
-    // resolver needs the graph to walk back from output → source. Without
-    // this, the very first feed arrives before the 2 s pipeline-bar poll
-    // has loaded the cache and the controls render as "no upstream source".
     if (!_visionPipelinesCache) refreshPipelineBar();
-    _renderFeedGrid();
+    _renderFeedGrid();        // safe no-op if old DOM is gone
+    _renderDebugTiles();      // simplified debug view
+  } else if (activeView === 'vision-detection') {
+    _renderDetectionTiles();
   }
 });
+
+// ── Minimalist text-only debug view (3 tables, no video) ────────────────
+// Routes specific feed_ids into 3 reserved DOM slots. Anything else is
+// ignored — for video previews + heavier debug, launch vision.bat.
+const _DEBUG_TILE_IDS = {
+  aruco_list:      'vd-tile-arulist',
+  poses_naive:     'vd-tile-pnaive',
+  poses_corrected: 'vd-tile-pcorr',
+};
+const _DEBUG_META_IDS = {
+  aruco_list:      'vd-meta-arulist',
+  poses_naive:     'vd-meta-pnaive',
+  poses_corrected: 'vd-meta-pcorr',
+};
+
+function _renderDebugTiles() {
+  const STALE_MS = 8000;
+  const now = Date.now();
+  for (const [fid, slot] of Object.entries(_DEBUG_TILE_IDS)) {
+    const body = document.getElementById(slot);
+    if (!body) continue;          // not on this view
+    const meta = document.getElementById(_DEBUG_META_IDS[fid]);
+    const feed = _visionFeeds[fid];
+    const fresh = feed && (now - feed.t) < STALE_MS;
+    if (!fresh) {
+      // Show "waiting for…" placeholder if it's not already there.
+      if (!body.querySelector('.vd-empty')) {
+        body.innerHTML =
+          `<div class="vd-empty">waiting for feed_id <code>${fid}</code></div>`;
+      }
+      if (meta) meta.textContent = '';
+      continue;
+    }
+    if (meta) meta.textContent = `${Math.floor((now - feed.t))} ms ago`;
+
+    // Text-only view: ignore frame payloads, only render data feeds.
+    if (Array.isArray(feed.payload)) {
+      // aruco_list has tag_id+px+py columns; pose lists have x_mm+y_mm+...
+      if (fid === 'aruco_list') {
+        _renderArucoList(body, feed.payload);
+      } else {
+        _renderPoseTable(body, feed.payload);
+      }
+    } else if (feed.payload != null) {
+      let pre = body.querySelector('pre');
+      if (!pre) {
+        body.innerHTML = '';
+        pre = document.createElement('pre');
+        pre.style.cssText = 'margin:0;padding:8px;font:11px/1.4 ui-monospace,monospace;color:var(--text);overflow:auto;height:100%;';
+        body.appendChild(pre);
+      }
+      pre.textContent = JSON.stringify(feed.payload, null, 2);
+    }
+  }
+}
+
+function _renderArucoList(container, items) {
+  if (!Array.isArray(items) || items.length === 0) {
+    container.innerHTML = `<div class="vd-empty">no markers detected this frame</div>`;
+    return;
+  }
+  const cols = ['tag_id', 'px', 'py', 'num_corners'];
+  const head = cols.map(c => `<th>${c}</th>`).join('');
+  const body = items.map(p => {
+    const tds = cols.map(c => `<td>${p[c] ?? ''}</td>`).join('');
+    return `<tr>${tds}</tr>`;
+  }).join('');
+  container.innerHTML = `<table class="vd-pose-table">
+    <thead><tr>${head}</tr></thead>
+    <tbody>${body}</tbody>
+  </table>`;
+}
+
+// ── Per-view pipeline binding ───────────────────────────────────────────
+// Each subtab (vision-dashboard, vision-detection) picks its own active
+// pipeline. They run concurrently — the registry no longer enforces a
+// single active. We persist the picks in localStorage so the user's
+// choices stick across reloads.
+const _VIEW_PIPELINE_KEY = 'visionViewPipelines';
+function _loadViewPipelines() {
+  try { return JSON.parse(localStorage.getItem(_VIEW_PIPELINE_KEY)) || {}; }
+  catch { return {}; }
+}
+function _saveViewPipelines(map) {
+  try { localStorage.setItem(_VIEW_PIPELINE_KEY, JSON.stringify(map)); }
+  catch {}
+}
+function visionSetViewPipeline(viewId, pipelineName) {
+  const map = _loadViewPipelines();
+  map[viewId] = pipelineName || null;
+  _saveViewPipelines(map);
+  if (!pipelineName) return;
+  // Enable the picked pipeline (parallel-safe — doesn't touch others).
+  fetch(`/api/vision/pipelines/${encodeURIComponent(pipelineName)}/enable`, {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({enabled: true}),
+  });
+  // Also keep set_active in sync for the legacy pipeline-bar UI bits.
+  if (typeof visionSetActivePipeline === 'function' && viewId === 'vision-dashboard') {
+    visionSetActivePipeline(pipelineName);
+  }
+}
+
+// ── Detection view tiles ────────────────────────────────────────────────
+const _DETECT_TILE_IDS = {
+  detect_preview: 'vd-tile-detpreview',
+  detect_results: 'vd-tile-detresults',
+};
+const _DETECT_META_IDS = {
+  detect_preview: 'vd-meta-detpreview',
+  detect_results: 'vd-meta-detresults',
+};
+
+function _renderDetectionTiles() {
+  const STALE_MS = 8000;
+  const now = Date.now();
+  for (const [fid, slot] of Object.entries(_DETECT_TILE_IDS)) {
+    const body = document.getElementById(slot);
+    if (!body) continue;
+    const meta = document.getElementById(_DETECT_META_IDS[fid]);
+    const feed = _visionFeeds[fid];
+    const fresh = feed && (now - feed.t) < STALE_MS;
+    if (!fresh) {
+      if (!body.querySelector('.vd-empty')) {
+        body.innerHTML =
+          `<div class="vd-empty">waiting for feed_id <code>${fid}</code></div>`;
+      }
+      if (meta) meta.textContent = '';
+      continue;
+    }
+    if (meta) meta.textContent = `${Math.floor((now - feed.t))} ms ago`;
+
+    if (feed.kind === 'frame' && feed.jpeg) {
+      let img = body.querySelector('img');
+      if (!img) {
+        body.innerHTML = '';
+        img = document.createElement('img');
+        body.appendChild(img);
+      }
+      img.src = `data:image/jpeg;base64,${feed.jpeg}`;
+    } else if (Array.isArray(feed.payload)) {
+      _renderChecksList(body, feed.payload);
+    } else if (feed.payload != null) {
+      _renderChecksList(body, [feed.payload]);
+    }
+  }
+}
+
+function _renderChecksList(container, checks) {
+  if (!Array.isArray(checks) || checks.length === 0) {
+    container.innerHTML = `<div class="vd-empty">no checks reported this frame</div>`;
+    return;
+  }
+  const rows = checks.map(c => {
+    if (typeof c !== 'object' || c == null) c = {value: c};
+    const name   = c.name   || c.id || '—';
+    const status = String(c.status || 'unknown').toLowerCase();
+    const value  = (c.value !== undefined && c.value !== null) ? c.value : '';
+    const color  = c.color;            // {r,g,b} 0..255 OR '#hex' OR null
+    let swatch = '';
+    if (color) {
+      let hex = '';
+      if (typeof color === 'string') hex = color;
+      else if (typeof color === 'object' && 'r' in color)
+        hex = `rgb(${color.r|0}, ${color.g|0}, ${color.b|0})`;
+      if (hex) swatch = `<span class="vd-check-color-swatch" style="background:${hex}"></span>`;
+    }
+    const valStr = (typeof value === 'object')
+      ? JSON.stringify(value) : String(value);
+    return `<tr>
+      <td>${swatch}${name}</td>
+      <td><span class="vd-check-status vd-check-status-${status}">${status}</span></td>
+      <td>${valStr}</td>
+    </tr>`;
+  }).join('');
+  container.innerHTML = `<table class="vd-checks-list">
+    <thead><tr><th>Check</th><th>Status</th><th>Value</th></tr></thead>
+    <tbody>${rows}</tbody>
+  </table>`;
+}
+
+// ── Playback strip wiring ───────────────────────────────────────────────
+// Buttons live inside `.vd-playback[data-view=...]`. They translate into
+// /api/vision/pipelines/<name>/source POST requests using the pipeline
+// bound to that view (via _loadViewPipelines()).
+let _vdPlaybackState = { playback: 'pause', frame_idx: 0, frame_count: -1 };
+
+function _vdPostSource(viewId, params) {
+  const pname = (_loadViewPipelines()[viewId]) || _visionPipelinesCache?.active;
+  if (!pname) return;
+  return fetch(`/api/vision/pipelines/${encodeURIComponent(pname)}/source`, {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({params}),
+  });
+}
+
+function _vdSyncPlaybackUI() {
+  const strip = document.getElementById('vd-playback');
+  if (!strip) return;
+  // Show/hide based on current pipeline's source state — populated via poll.
+  const mode = _vdPlaybackState.playback || 'pause';
+  strip.querySelectorAll('[data-toggle-mode]').forEach(b => {
+    b.classList.toggle('active', b.dataset.toggleMode === mode);
+  });
+  const frameLbl = document.getElementById('vd-pb-frame');
+  if (frameLbl) {
+    const idx = _vdPlaybackState.frame_idx;
+    const tot = _vdPlaybackState.frame_count;
+    if (idx === undefined) frameLbl.textContent = '';
+    else frameLbl.textContent = (tot > 0) ? `${idx} / ${tot}` : `frame ${idx}`;
+  }
+}
+
+function _vdInitPlaybackButtons() {
+  document.querySelectorAll('.vd-playback').forEach(strip => {
+    const viewId = strip.dataset.view || 'vision-dashboard';
+    strip.querySelectorAll('.vd-pb-btn').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        e.preventDefault();
+        const act = btn.dataset.act;
+        if (act === 'step_back_10' || act === 'step_10') {
+          const cur = _vdPlaybackState.frame_idx ?? 0;
+          const delta = (act === 'step_back_10') ? -10 : 10;
+          _vdPostSource(viewId, {seek_target: Math.max(0, cur + delta), playback: 'seek'});
+        } else {
+          _vdPostSource(viewId, {playback: act});
+        }
+      });
+    });
+    const speedSel = strip.querySelector('.vd-pb-speed');
+    if (speedSel) speedSel.addEventListener('change', () => {
+      _vdPostSource(viewId, {speed: parseFloat(speedSel.value)});
+    });
+  });
+}
+document.addEventListener('DOMContentLoaded', _vdInitPlaybackButtons);
+
+// Walks the named pipeline's nodes, finds the source.* one, and pulls
+// playback / frame_idx / frame_count out of its state for the strip.
+// Hides the strip when the pipeline doesn't have a video source.
+function _vdRefreshPlaybackState(registry, pipelineName) {
+  const strip = document.getElementById('vd-playback');
+  if (!strip) return;
+  if (!pipelineName) { strip.classList.add('hidden'); return; }
+  const pipe = (registry?.pipelines || []).find(p => p.name === pipelineName);
+  const srcNode = pipe?.state?.nodes?.find(n => n.kind === 'source.video');
+  if (!srcNode) { strip.classList.add('hidden'); return; }
+  strip.classList.remove('hidden');
+  _vdPlaybackState = {
+    playback:    srcNode.state?.playback    ?? 'pause',
+    frame_idx:   srcNode.state?.frame_idx,
+    frame_count: srcNode.state?.frame_count,
+  };
+  _vdSyncPlaybackUI();
+  // Reflect the speed in the dropdown if the user changed it elsewhere.
+  const sp = strip.querySelector('.vd-pb-speed');
+  const liveSpeed = pipe?.state?.nodes?.find(n => n.id === srcNode.id)?.state?.speed;
+  if (sp && liveSpeed != null && +sp.value !== +liveSpeed) sp.value = String(liveSpeed);
+}
+
+function _renderPoseTable(container, poses) {
+  if (!Array.isArray(poses) || poses.length === 0) {
+    container.innerHTML = `<div class="vd-empty">no poses this frame</div>`;
+    return;
+  }
+  // Show naive + corrected coords side-by-side when both are present
+  // (the localization node always emits both). Helps eyeball the
+  // parallax delta directly in the table.
+  const has_naive = poses.some(p => p.naive_x_mm != null);
+  const cols = has_naive
+    ? ['tag_id', 'classification', 'x_mm', 'y_mm', 'naive_x_mm', 'naive_y_mm', 'theta_rad']
+    : ['tag_id', 'classification', 'x_mm', 'y_mm', 'theta_rad'];
+  const head = cols.map(c => `<th>${c}</th>`).join('');
+  const body = poses.map(p => {
+    const cls = String(p.classification || 'object');
+    const tds = cols.map(c => {
+      let v = p[c];
+      if (typeof v === 'number') v = v.toFixed(c === 'theta_rad' ? 3 : 1);
+      return `<td>${v == null ? '' : v}</td>`;
+    }).join('');
+    return `<tr class="vd-pose-cls-${cls}">${tds}</tr>`;
+  }).join('');
+  container.innerHTML = `<table class="vd-pose-table">
+    <thead><tr>${head}</tr></thead>
+    <tbody>${body}</tbody>
+  </table>`;
+}
 
 function _renderFeedGrid() {
   const grid = document.getElementById('vision-feeds-grid');
@@ -435,7 +721,12 @@ async function _sendPlaybackAction(pipelineName, nodeId, kind, action) {
 
 // Re-render once per second to clear stale tiles even when no new frames arrive.
 setInterval(() => {
-  if (activeView === 'vision-dashboard') _renderFeedGrid();
+  if (activeView === 'vision-dashboard') {
+    _renderFeedGrid();
+    _renderDebugTiles();
+  } else if (activeView === 'vision-detection') {
+    _renderDetectionTiles();
+  }
 }, 1000);
 
 function _renderTrackerStatus(data) {
@@ -498,13 +789,17 @@ function _renderTrackerStatus(data) {
   // Read-only team display — actual selection lives in the topbar / robot switch.
   if (data.team) {
     _visionTeam = data.team;
+    const isBlue = data.team === 'blue';
+    const longLbl = (isBlue ? 'Blue' : 'Yellow') +
+                    ` (own = ${isBlue ? '1..5' : '6..10'})`;
+    const shortLbl = isBlue ? 'Blue (1-5)' : 'Yellow (6-10)';
+    const color = isBlue ? '#3b82f6' : '#fbbf24';
+    // Old (legacy) tracker-info pane
     const ro = document.getElementById('vt-team-readout');
-    if (ro) {
-      const isBlue = data.team === 'blue';
-      ro.textContent = (isBlue ? 'Blue' : 'Yellow') +
-                       ` (own = ${isBlue ? '1..5' : '6..10'})`;
-      ro.style.color = isBlue ? '#3b82f6' : '#fbbf24';
-    }
+    if (ro) { ro.textContent = longLbl; ro.style.color = color; }
+    // New (simplified debug view) bar pill
+    const vd = document.getElementById('vd-team-readout');
+    if (vd) { vd.textContent = shortLbl; vd.style.color = color; }
   }
 }
 
@@ -697,15 +992,20 @@ async function refreshPipelineBar() {
     const res = await fetch('/api/vision/pipelines');
     const data = await res.json();
     _visionPipelinesCache = data;
-    const sel = document.getElementById('vp-bar-active');
-    if (sel) {
-      const cur = data.active || '';
-      sel.innerHTML = '<option value="">— none —</option>' +
+    const viewMap = _loadViewPipelines();
+    // Per-view pipeline picker: any <select> tagged with data-view-pipeline
+    // gets populated. Selection persists in localStorage.
+    document.querySelectorAll('select[data-view-pipeline]').forEach(sel => {
+      const viewId = sel.dataset.viewPipeline;
+      const cur = viewMap[viewId] || (viewId === 'vision-dashboard' ? data.active : '') || '';
+      sel.innerHTML = '<option value="">— pipeline —</option>' +
         (data.pipelines || []).map(p =>
           `<option value="${p.name}"${p.name === cur ? ' selected' : ''}>` +
           `${p.name}${p.name === data.default ? ' ★' : ''}` +
           `</option>`).join('');
-    }
+    });
+    // Update playback state for the localization view (look up its source.* node).
+    _vdRefreshPlaybackState(data, viewMap['vision-dashboard'] || data.active);
     const btn = document.getElementById('vp-bar-default-btn');
     if (btn) {
       const cur = data.active || '';

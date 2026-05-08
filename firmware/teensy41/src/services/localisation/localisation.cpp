@@ -1,8 +1,10 @@
 #include "localisation.h"
 #include "os/console.h"
+#include "services/jetson/jetson_bridge.h"
 
 #include <Wire.h>
 #include <SPI.h>
+#include <Arduino.h>   // millis()
 
 SINGLETON_INSTANTIATE(Localisation, localisation);
 
@@ -128,4 +130,109 @@ FLASHMEM void Localisation::setAngularScale(float value){
     Console::info("Localisation") << "Angular scale → ";
     Serial.println(m_angular_scale, 6);
     otos.setAngularScalar(m_angular_scale);
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+//  Vision recalage / sync
+// ─────────────────────────────────────────────────────────────────────────
+
+// Push a "calibrate me at this known position" frame to holOS. Async —
+// the response comes back asynchronously via onVisionCalibrationReply().
+FLASHMEM void Localisation::requestVisionCalibration(Vec3 known_pos) {
+    char frame[80];
+    // Format: T:vis cal_request x=600.0 y=500.0 t=0.000
+    // holOS parses this in run.py and replies with:
+    //   T:vis cal_done own=1 team=blue x=623.4 y=498.1 t=0.012
+    // (or cal_failed reason=...)
+    snprintf(frame, sizeof(frame),
+             "T:vis cal_request x=%.1f y=%.1f t=%.3f",
+             (double)known_pos.x, (double)known_pos.y, (double)known_pos.z);
+    jetsonBridge.pushVisionFrame(frame);
+    Console::info("Localisation")
+        << "Vision recalage requested at (" << known_pos.x << ", "
+        << known_pos.y << ", " << known_pos.z << ")" << Console::endl;
+    m_visionCalibrated = false;   // set true by reply handler
+}
+
+// Block (with timeout) waiting for the next pose reply from holOS.
+FLASHMEM bool Localisation::queryVisionPose(Vec3& out_pose,
+                                            unsigned long timeout_ms) {
+    if (!m_visionCalibrated) {
+        Console::warn("Localisation")
+            << "queryVisionPose() called before recalage — no own tag locked"
+            << Console::endl;
+        return false;
+    }
+    // Mark a pending request so onVisionPoseReply can flip the flag back.
+    m_pendingPoseReply = true;
+    m_lastPoseValid    = false;
+    // Send the request frame
+    jetsonBridge.pushVisionFrame("T:vis pose_request");
+    // Spin-wait for the reply (or timeout). millis() is monotonic.
+    unsigned long t0 = millis();
+    while (m_pendingPoseReply && (millis() - t0) < timeout_ms) {
+        // Let other services run — JetsonBridge::run() drains the bridge
+        // serial buffer and dispatches replies.
+        jetsonBridge.run();
+        delay(2);
+    }
+    if (m_pendingPoseReply) {
+        // Timed out
+        m_pendingPoseReply = false;
+        Console::warn("Localisation")
+            << "queryVisionPose timeout after " << timeout_ms << "ms"
+            << Console::endl;
+        return false;
+    }
+    if (!m_lastPoseValid) {
+        return false;
+    }
+    out_pose = m_lastVisionPose;
+    return true;
+}
+
+// Convenience: query then setPosition() to overwrite OTOS.
+FLASHMEM Vec3 Localisation::syncToVision(unsigned long timeout_ms) {
+    Vec3 vp;
+    if (!queryVisionPose(vp, timeout_ms)) {
+        return Vec3{0, 0, 0};
+    }
+    Vec3 before = getPosition();
+    setPosition(vp);
+    Vec3 offset = {vp.x - before.x, vp.y - before.y, vp.z - before.z};
+    Console::success("Localisation")
+        << "OTOS recalibrated to vision: ("
+        << vp.x << ", " << vp.y << ", " << vp.z
+        << ")  Δ=(" << offset.x << ", " << offset.y << ", " << offset.z
+        << ")" << Console::endl;
+    return offset;
+}
+
+// Reply handlers — called by JetsonBridge after parsing an inbound frame.
+FLASHMEM void Localisation::onVisionCalibrationReply(int own_tag,
+                                                     const char* team,
+                                                     Vec3 vision_pos) {
+    m_visionOwnTag = own_tag;
+    if (team && *team) {
+        strncpy(m_visionTeam, team, sizeof(m_visionTeam) - 1);
+        m_visionTeam[sizeof(m_visionTeam) - 1] = 0;
+    }
+    m_visionCalibrated = (own_tag > 0);
+    if (m_visionCalibrated) {
+        Console::success("Localisation")
+            << "Vision recalage OK — own tag #" << own_tag
+            << " (team " << m_visionTeam << ") at ("
+            << vision_pos.x << ", " << vision_pos.y << ", "
+            << vision_pos.z << ")" << Console::endl;
+    } else {
+        Console::error("Localisation")
+            << "Vision recalage FAILED — no candidate tag found"
+            << Console::endl;
+    }
+}
+
+FLASHMEM void Localisation::onVisionPoseReply(Vec3 pos, bool valid) {
+    m_lastVisionPose   = pos;
+    m_lastPoseValid    = valid;
+    m_pendingPoseReply = false;   // unblock any spinning queryVisionPose
 }

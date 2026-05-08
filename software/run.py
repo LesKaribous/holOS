@@ -395,6 +395,17 @@ def _build_state() -> dict:
 
 # ── HTTP routes ───────────────────────────────────────────────────────────────
 
+@app.route('/vision_debug')
+def vision_debug():
+    """Debug page that shows the FULL set of vision feeds (frames +
+    pose data) — meant to be opened by `software/vision.bat` while holOS
+    is running. The HTML is a static file under sim/static and connects
+    to the same SocketIO endpoint as holOS, subscribing to vision_feed."""
+    from flask import send_from_directory
+    return send_from_directory(
+        os.path.join(_HERE, 'sim', 'static'), 'vision_debug.html')
+
+
 @app.route('/')
 def index():
     return app.send_static_file('index.html')
@@ -1615,18 +1626,12 @@ def _pipeline_to_payload(p):
 
 
 def _save_pipelines():
-    if _pipeline_registry is None:
-        return
-    try:
-        os.makedirs(os.path.dirname(VISION_PIPELINES_PATH), exist_ok=True)
-        with open(VISION_PIPELINES_PATH, 'w', encoding='utf-8') as f:
-            json.dump({
-                'pipelines': [p.to_dict() for p in _pipeline_registry.all()],
-                'active':    _pipeline_registry.active_name,
-                'default':   _pipeline_registry.default_name,
-            }, f, indent=2, ensure_ascii=False)
-    except Exception as e:
-        brain.log(f'[VISION] Pipeline save failed: {e}')
+    """No-op now that pipelines live in vision_pipelines_def.py.
+    Kept as a stub so existing call sites in this file (mostly the
+    PUT/DELETE pipeline endpoints — also kept for API back-compat
+    even though the React editor that drove them is gone) don't error.
+    To change a pipeline, edit vision_pipelines_def.py and restart."""
+    return
 
 
 def _build_pipeline_from_dict(d: dict, force_video_paused: bool = False):
@@ -1670,37 +1675,48 @@ def _build_pipeline_from_dict(d: dict, force_video_paused: bool = False):
 
 
 def _load_pipelines():
-    """Load saved pipelines from disk and restore the default-active one.
-    Returns the name of the pipeline that was activated (if any), so the
-    caller can show it in the UI / logs.
-    """
-    if _pipeline_registry is None or not os.path.exists(VISION_PIPELINES_PATH):
+    """Build pipelines from `vision_pipelines_def.py` (pure Python — no
+    JSON anymore). Each entry in PIPELINES is called, registered, wired
+    up to the dashboard SocketIO emit, and AUTO-ENABLED so vision starts
+    immediately when holOS boots. The user no longer has to flip the
+    Vision toggle to see anything."""
+    if _pipeline_registry is None:
         return None
     try:
-        with open(VISION_PIPELINES_PATH, 'r', encoding='utf-8') as f:
-            data = json.load(f)
-        for d in data.get('pipelines', []):
-            # Boot-time load forces video sources to start in 'pause' so a
-            # previously-running video doesn't auto-play on server boot.
-            p = _build_pipeline_from_dict(d, force_video_paused=True)
+        import importlib
+        import vision_pipelines_def as _vpdef
+        # Reload on every call so live-edits to the file pick up without
+        # restarting the whole server (mirror of what the runner does).
+        importlib.reload(_vpdef)
+    except Exception as e:
+        brain.log(f'[VISION] Could not import vision_pipelines_def: {e}')
+        return None
+
+    built = []
+    for name, builder in (_vpdef.PIPELINES or {}).items():
+        try:
+            p = builder()
+            if p.name != name:
+                p.name = name
             _pipeline_registry.register(p)
             _wire_pipeline_feeds(p)
-        # Restore the default name. Falls back to None if the saved name
-        # has since been deleted.
-        default_name = data.get('default')
-        if default_name and _pipeline_registry.get(default_name) is not None:
-            _pipeline_registry.set_default(default_name)
-        # Restore active: prefer 'active' field, else the default.
-        active_name = data.get('active') or _pipeline_registry.default_name
-        if active_name and _pipeline_registry.get(active_name) is not None:
-            _pipeline_registry.set_active(active_name)
-        brain.log(f'[VISION] Loaded {len(data.get("pipelines", []))} '
-                  f'pipeline(s) from {VISION_PIPELINES_PATH}'
-                  + (f' — active: {active_name!r}' if active_name else ''))
-        return active_name
-    except Exception as e:
-        brain.log(f'[VISION] Pipeline load failed: {e}')
-        return None
+            # Auto-enable every registered pipeline. Each runs in its own
+            # worker thread so they don't fight for CPU at the Python level
+            # (cv2 ops release the GIL anyway).
+            _pipeline_registry.set_enabled(name, True)
+            built.append(name)
+        except Exception as e:
+            brain.log(f'[VISION] build_{name} failed: {e}')
+
+    default_name = getattr(_vpdef, 'DEFAULT_PIPELINE', None)
+    if default_name and _pipeline_registry.get(default_name) is not None:
+        _pipeline_registry.set_default(default_name)
+        _pipeline_registry.set_active(default_name)   # focus only, no exclusivity
+    brain.log(f'[VISION] Built {len(built)} pipeline(s) from '
+              f'vision_pipelines_def.py: {built}'
+              + (f' — default focus: {default_name!r}' if default_name else '')
+              + ' (all auto-enabled)')
+    return default_name
 
 
 def _wire_pipeline_feeds(p):
@@ -1755,6 +1771,101 @@ def _wire_pipeline_feeds(p):
                     print(f'[VISION] feed emit {fid} failed: {e}')
             return cb
         p.subscribe_feed(feed_id, make_cb())
+
+
+def _get_localization_node():
+    """Walk the active pipeline, return its localization node + record (or None)."""
+    if _pipeline_registry is None:
+        return None, None
+    p = _pipeline_registry.active()
+    if p is None or not p.enabled:
+        return None, None
+    with p._lock:
+        for nid, rec in p._nodes.items():
+            if rec.kind == 'localization':
+                return rec.instance, rec
+    return None, None
+
+
+def _recalage_pick_own_tag(known_x_mm, known_y_mm,
+                           tolerance_mm: float = 400.0):
+    """At recalage time the robot is at a known (x, y) world-frame
+    position. Find the ArUco closest to that position and lock it as the
+    OWN tag; infer team from the tag id range (1-5 = blue, 6-10 = yellow).
+
+    Returns dict {tag_id, team, vision_pose: {x_mm, y_mm, theta_rad}}
+    on success, None on failure (no candidate within tolerance, no
+    pipeline, etc.). Side effects: updates the localization node's
+    `team` + `track_ids` so subsequent ticks only emit the picked tag
+    (other own-team candidates are filtered out)."""
+    inst, rec = _get_localization_node()
+    if inst is None:
+        return None
+    # Snapshot the current pose list (worker thread may be writing).
+    p = _pipeline_registry.active()
+    with p._lock:
+        poses = list(rec.outputs.get('pose_list') or [])
+    if not poses:
+        return None
+    # Pick the closest tag to the known position. Use naive_xy when
+    # present (matches the BEV-aligned position; corrected x_mm has
+    # already been parallax-shifted and may be further from the actual
+    # BEV marker). Fall back to x_mm.
+    best, best_d2 = None, float('inf')
+    for q in poses:
+        if not isinstance(q, dict):
+            continue
+        x = q.get('x_mm') if q.get('x_mm') is not None else q.get('naive_x_mm')
+        y = q.get('y_mm') if q.get('y_mm') is not None else q.get('naive_y_mm')
+        if x is None or y is None:
+            continue
+        d2 = (float(x) - known_x_mm) ** 2 + (float(y) - known_y_mm) ** 2
+        if d2 < best_d2:
+            best_d2, best = d2, q
+    if best is None:
+        return None
+    if best_d2 > tolerance_mm * tolerance_mm:
+        brain.log(f"[VISION] recalage: closest tag {best.get('tag_id')} is "
+                  f"{best_d2 ** 0.5:.0f}mm from known pos — > tolerance "
+                  f"{tolerance_mm:.0f}mm, refusing to lock")
+        return None
+    tag_id = int(best.get('tag_id', 0))
+    if tag_id <= 0:
+        return None
+    # Tag-id-range → team. Match what _TEAM_RANGES does in localization.py.
+    if 1 <= tag_id <= 5:
+        team = 'blue'
+        opp_ids = list(range(6, 11))
+    elif 6 <= tag_id <= 10:
+        team = 'yellow'
+        opp_ids = list(range(1, 6))
+    else:
+        team = 'blue'   # anchors etc. — fall back to current
+        opp_ids = []
+    # Lock down: only track this specific own tag + the opponent range.
+    # That nukes any other own-team candidate (e.g. tag 2 sitting on the
+    # bench while tag 1 is the actual robot).
+    new_track = [tag_id] + opp_ids
+    try:
+        inst.set_params({'team': team, 'track_ids': new_track})
+    except Exception as e:
+        brain.log(f"[VISION] recalage: set_params failed: {e}")
+    # Also push the new team into sim_state + topbar so the UI agrees.
+    try:
+        _apply_team(team, source='recalage')
+    except Exception:
+        pass
+    brain.log(f"[VISION] recalage OK — own tag #{tag_id}, team={team}, "
+              f"d={best_d2 ** 0.5:.0f}mm from known pos")
+    return {
+        'tag_id': tag_id,
+        'team':   team,
+        'vision_pose': {
+            'x_mm':      float(best.get('x_mm', 0) or 0),
+            'y_mm':      float(best.get('y_mm', 0) or 0),
+            'theta_rad': float(best.get('theta_rad', 0) or 0),
+        },
+    }
 
 
 def _get_latest_own_pose():
@@ -2143,6 +2254,59 @@ def api_pipeline_node_params(name, node_id):
     if node.__class__.__name__ == 'OutputNode' or 'feed_id' in params:
         _wire_pipeline_feeds(p)
     return jsonify({'ok': True, 'state': node.get_state()})
+
+
+@app.route('/api/vision/pipelines/<name>/enable', methods=['POST'])
+def api_pipeline_enable(name):
+    """Enable / disable a single pipeline WITHOUT touching the others.
+    Lets multiple pipelines run in parallel (e.g. localization + game-element
+    detection). Body: { enabled: true|false }. Returns 404 if not found."""
+    if _pipeline_registry is None:
+        return jsonify({'ok': False}), 503
+    body = request.get_json(force=True) or {}
+    want = bool(body.get('enabled', True))
+    if not _pipeline_registry.set_enabled(name, want):
+        return jsonify({'ok': False, 'error': 'pipeline not found'}), 404
+    return jsonify({'ok': True, 'enabled': want, 'name': name})
+
+
+@app.route('/api/vision/pipelines/<name>/source', methods=['POST'])
+def api_pipeline_source(name):
+    """Update the FIRST source.* node's params on a given pipeline.
+    Body: { params: {playback, speed, seek_target, …} } (single shot, atomic).
+
+    Convenience over the per-node endpoint — caller doesn't need to know
+    the node id. Returns 404 if the pipeline has no source node."""
+    if _pipeline_registry is None:
+        return jsonify({'ok': False}), 503
+    p = _pipeline_registry.get(name)
+    if p is None:
+        return jsonify({'ok': False, 'error': 'pipeline not found'}), 404
+    body = request.get_json(force=True) or {}
+    params = body.get('params', {})
+    if not isinstance(params, dict) or not params:
+        return jsonify({'ok': False, 'error': 'params dict required'}), 400
+    # Find the first source.* node in the pipeline.
+    src_id = None
+    for nid in p.node_ids():
+        rec = p._nodes.get(nid)
+        if rec and rec.kind.startswith('source.'):
+            src_id = nid
+            break
+    if src_id is None:
+        return jsonify({'ok': False, 'error': 'no source.* node in pipeline'}), 404
+    src = p.get_node(src_id)
+    # Apply seek_target FIRST so a follow-up playback='seek' picks it up.
+    try:
+        if 'seek_target' in params:
+            src.set_params({'seek_target': params['seek_target']})
+        rest = {k: v for k, v in params.items() if k != 'seek_target'}
+        if rest:
+            src.set_params(rest)
+    except Exception as e:
+        return jsonify({'ok': False, 'error': str(e)}), 400
+    return jsonify({'ok': True, 'source_node': src_id,
+                    'state': src.get_state()})
 
 
 @app.route('/api/vision/default', methods=['POST'])
@@ -2781,6 +2945,71 @@ def _do_connect(port: str):
                 _hw_tel_data['safety'] = data_str.strip()
             t.subscribe_telemetry('s', _on_safety)
             t.subscribe_telemetry('safety', _on_safety)  # legacy compat
+
+            # ── T:vis → vision recalage / pose request from Teensy ─────
+            #
+            #   "cal_request x=600.0 y=500.0 t=0.000"
+            #     Robot is at known (x, y, t) world position. Pick the
+            #     closest ArUco, lock it as OWN, infer team. Reply via
+            #     vis_cal_done(...) or vis_cal_failed(...).
+            #
+            #   "pose_request"
+            #     Send back the latest own-team vision pose:
+            #     vis_pose(x=...,y=...,t=...,valid=0|1)
+            #
+            # Replies are sent as commands TO T41 (it expects them in
+            # JetsonBridge::handleRequest). Don't block — kick off in a
+            # daemon thread so the telemetry pipe stays unblocked.
+            def _on_vis(data_str):
+                line = (data_str or '').strip()
+                def _kv(s, key, cast=float, default=None):
+                    p = s.find(key + '=')
+                    if p < 0: return default
+                    p += len(key) + 1
+                    e = p
+                    while e < len(s) and s[e] not in (' ', ',', ')'):
+                        e += 1
+                    try: return cast(s[p:e])
+                    except (ValueError, TypeError): return default
+                def _send(reply_cmd):
+                    try:
+                        t.execute(reply_cmd, timeout_ms=2000)
+                    except Exception as e:
+                        print(f"[T:vis] reply failed: {e}")
+                if line.startswith('cal_request'):
+                    kx = _kv(line, 'x', float, 0.0)
+                    ky = _kv(line, 'y', float, 0.0)
+                    kt = _kv(line, 't', float, 0.0)
+                    def _do_cal():
+                        result = _recalage_pick_own_tag(kx, ky)
+                        if result is None:
+                            _send('vis_cal_failed(reason=no_candidate)')
+                            return
+                        vp = result['vision_pose']
+                        _send(
+                            f"vis_cal_done(own={result['tag_id']},"
+                            f"team={result['team']},"
+                            f"x={vp['x_mm']:.1f},y={vp['y_mm']:.1f},"
+                            f"t={vp['theta_rad']:.3f})"
+                        )
+                    threading.Thread(target=_do_cal, daemon=True,
+                                     name='vis-cal').start()
+                elif line.startswith('pose_request'):
+                    def _do_pose():
+                        pose = _get_latest_own_pose()
+                        if pose is None:
+                            _send('vis_pose(valid=0)')
+                            return
+                        _send(
+                            f"vis_pose(x={pose['x_mm']:.1f},"
+                            f"y={pose['y_mm']:.1f},"
+                            f"t={pose.get('theta_rad') or 0:.3f},valid=1)"
+                        )
+                    threading.Thread(target=_do_pose, daemon=True,
+                                     name='vis-pose').start()
+                else:
+                    print(f"[T:vis] unknown subcommand: {line!r}")
+            t.subscribe_telemetry('vis', _on_vis)
 
             # ── T:c → chrono: elapsed ms (same format) ───────────────────
             def _on_chrono(data_str):

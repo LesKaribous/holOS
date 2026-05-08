@@ -131,10 +131,13 @@ def build_pipeline(source_kind: str, source_path: str) -> Pipeline:
     p = Pipeline(name='manual', fps_limit=FPS_LIMIT)
 
     # ── Source ──────────────────────────────────────────────────────
+    # Typically the runner reads from the vision_camera virtual camera
+    # (http://127.0.0.1:5174/stream.mjpg). Pass --use-camera-server on
+    # the CLI to override the source_path with that URL.
     if source_kind == 'video':
         src = _add(p, 'source.video', 'src',
                    {'path': source_path, 'loop': True,
-                    'playback': 'pause', 'speed': 1.0})
+                    'playback': 'live', 'speed': 1.0})
     elif source_kind == 'camera':
         src = _add(p, 'source.camera', 'src',
                    {'device': int(source_path) if source_path.isdigit() else 0,

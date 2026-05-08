@@ -245,6 +245,65 @@ FLASHMEM void JetsonBridge::handleRequest(Request& req) {
         return;
     }
 
+    // ── Vision recalage reply: vis_cal_done(own=N,team=blue,x=...,y=...,t=...)
+    //  Sent by holOS in response to our T:vis cal_request. Fields:
+    //    own  : ArUco tag id locked as the OWN robot, or 0 on failure
+    //    team : 'blue' or 'yellow' (inferred from tag id range)
+    //    x, y, t : the vision-measured pose at recalage time (mm, rad)
+    if (cmd.startsWith("vis_cal_done(") || cmd.startsWith("vis_cal_failed(")) {
+        bool ok = cmd.startsWith("vis_cal_done(");
+        int own = 0;
+        char team[8] = {0};
+        Vec3 vp{0,0,0};
+        if (ok) {
+            // crude key=value parser — order-independent within the parens
+            int o = cmd.indexOf('(') + 1;
+            int c = cmd.lastIndexOf(')');
+            String body = cmd.substring(o, c);
+            // own=
+            int p = body.indexOf("own=");
+            if (p >= 0) own = body.substring(p + 4, body.indexOf(',', p)).toInt();
+            // team=
+            p = body.indexOf("team=");
+            if (p >= 0) {
+                int e = body.indexOf(',', p); if (e < 0) e = body.length();
+                String t = body.substring(p + 5, e);
+                strncpy(team, t.c_str(), sizeof(team) - 1);
+            }
+            // x= y= t=
+            p = body.indexOf("x="); if (p >= 0) vp.x = body.substring(p + 2, body.indexOf(',', p)).toFloat();
+            p = body.indexOf("y="); if (p >= 0) vp.y = body.substring(p + 2, body.indexOf(',', p)).toFloat();
+            p = body.indexOf("t="); if (p >= 0) {
+                int e = body.indexOf(',', p); if (e < 0) e = body.length();
+                vp.z = body.substring(p + 2, e).toFloat();
+            }
+        }
+        localisation.onVisionCalibrationReply(own, team, vp);
+        req.reply("ok");
+        return;
+    }
+
+    // ── Vision pose reply: vis_pose(x=..,y=..,t=..,valid=0|1)
+    //  Sent by holOS in response to our T:vis pose_request.
+    if (cmd.startsWith("vis_pose(")) {
+        Vec3 vp{0,0,0};
+        bool valid = false;
+        int o = cmd.indexOf('(') + 1, c = cmd.lastIndexOf(')');
+        String body = cmd.substring(o, c);
+        int p;
+        p = body.indexOf("x=");     if (p >= 0) vp.x = body.substring(p + 2, body.indexOf(',', p)).toFloat();
+        p = body.indexOf("y=");     if (p >= 0) vp.y = body.substring(p + 2, body.indexOf(',', p)).toFloat();
+        p = body.indexOf("t=");     if (p >= 0) vp.z = body.substring(p + 2, body.indexOf(',', p)).toFloat();
+        p = body.indexOf("valid=");
+        if (p >= 0) {
+            int e = body.indexOf(',', p); if (e < 0) e = body.length();
+            valid = (body.substring(p + 6, e).toInt() != 0);
+        }
+        localisation.onVisionPoseReply(vp, valid);
+        req.reply("ok");
+        return;
+    }
+
     // ── Cancel in-flight motion ───────────────────────────────────────────────
     // forceCancel() immediately sets _isMoving=false and stops hardware.
     // If a motion command was pending (execute() on the holOS side is waiting

@@ -267,17 +267,14 @@
           </span>
           <span class="nav-lbl">Dashboard</span>
         </button>
-        <button class="nav-btn nav-child" data-view="vision-editor" onclick="switchView('vision-editor',this)">
+        <button class="nav-btn nav-child" data-view="vision-detection" onclick="switchView('vision-detection',this)">
           <span class="nav-icon">
             <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-              <circle cx="3" cy="4" r="1.5"/><circle cx="13" cy="4" r="1.5"/>
-              <circle cx="8" cy="12" r="1.5"/>
-              <line x1="3"  y1="5.5" x2="6.7"  y2="11"/>
-              <line x1="13" y1="5.5" x2="9.3" y2="11"/>
-              <line x1="4.5" y1="4" x2="11.5" y2="4"/>
+              <circle cx="6" cy="6" r="3"/>
+              <line x1="8.2" y1="8.2" x2="13" y2="13"/>
             </svg>
           </span>
-          <span class="nav-lbl">Editor</span>
+          <span class="nav-lbl">Detection</span>
         </button>
         <button class="nav-btn nav-child" data-view="vision-objects" onclick="switchView('vision-objects',this)">
           <span class="nav-icon">
@@ -1511,114 +1508,109 @@
     <!--  VISION · DASHBOARD — live feeds + tracker status                  -->
     <!-- ════════════════════════════════════════════════════════════════════ -->
     <div id="view-vision-dashboard" class="view">
-      <div class="vision-layout">
-        <div class="vision-main">
+      <!-- Minimal bar: enable + pipeline + team. No playback controls.
+           Frames come from a real camera or from the runner used as a
+           virtual-camera emulator (run `software\vision.bat <video>` and
+           point your pipeline's source.video at the runner's MJPEG URL). -->
+      <div class="vd-bar">
+        <label class="switch" title="Enable / disable vision">
+          <input type="checkbox" id="vision-enabled-cb" onchange="visionToggleEnabled(this.checked)">
+          <span class="switch-slider"></span>
+          <span class="switch-label">Vision</span>
+        </label>
+        <select id="vp-bar-active" class="input-sm" data-view-pipeline="vision-dashboard"
+                onchange="visionSetViewPipeline('vision-dashboard', this.value)"
+                title="Pipeline driving this debug view (must publish aruco / loc_naive / loc_corrected / poses)">
+          <option value="">— pipeline —</option>
+        </select>
+        <span class="vd-pill">Team: <strong id="vd-team-readout">—</strong></span>
+        <span style="flex:1"></span>
+        <span class="vd-pill" id="vp-bar-frames" title="Frames processed by the worker">frames: 0</span>
+        <span class="vd-pill ghost" id="vp-bar-status">—</span>
+      </div>
 
-          <!-- Single toolbar — Vision toggle + active-pipeline picker +
-               state pills. Source / ArUco / dict / JPEG-Q controls have
-               moved into the pipeline nodes themselves (Vision · Editor). -->
-          <div class="vision-pipeline-bar">
-            <label class="switch" title="Enable / disable the active pipeline">
-              <input type="checkbox" id="vision-enabled-cb" onchange="visionToggleEnabled(this.checked)">
-              <span class="switch-slider"></span>
-              <span class="switch-label">Vision</span>
-            </label>
-            <span class="vp-bar-lbl">Pipeline</span>
-            <select id="vp-bar-active" class="input-sm" onchange="visionSetActivePipeline(this.value)">
-              <option value="">— none —</option>
-            </select>
-            <button class="btn-tiny" id="vp-bar-default-btn" onclick="visionSetDefaultPipeline()"
-                    title="Auto-activate this pipeline at server startup">
-              ☆ Default
-            </button>
-            <span class="vd-pill" id="vp-bar-worker">worker: —</span>
-            <span class="vd-pill" id="vp-bar-frames">frames: 0</span>
-            <span class="vd-pill" id="vp-bar-age">last: —</span>
-            <span style="flex:1"></span>
-            <span class="vp-bar-status" id="vp-bar-status">no active pipeline</span>
+      <!-- Text-only view. No video previews here — for those launch
+           vision.bat which opens the debug page.
+           Expected feed_ids:
+             aruco_list       → [{tag_id, px, py, num_corners}, ...]
+             poses_naive      → pose_list with naive_x_mm/y_mm
+             poses_corrected  → pose_list after parallax (x_mm/y_mm) -->
+      <div class="vd-debug-grid">
+        <section class="vd-tile" data-feed="aruco_list">
+          <header class="vd-tile-head">ArUco — raw detections
+            <span class="vd-tile-meta" id="vd-meta-arulist"></span>
+          </header>
+          <div class="vd-tile-body" id="vd-tile-arulist">
+            <div class="vd-empty">waiting for feed_id <code>aruco_list</code></div>
           </div>
+        </section>
 
-          <!-- Per-node state strip stays right under the toolbar -->
-          <div class="vp-nodestates" id="vp-nodestates"></div>
-
-          <!-- Feeds: dynamically populated from the active pipeline's output
-               nodes. Layout auto-adapts: 1 feed = fullscreen, otherwise grid
-               (2 columns on wide, 1 column on narrow). -->
-          <div class="vision-feeds-dynamic" id="vision-feeds-grid"
-               data-feed-count="0">
-            <div class="vision-feeds-empty" id="vision-feeds-empty">
-              No active pipeline output — pick an active pipeline above
-              (or add an <code>output</code> node in the editor and set it active).
-            </div>
+        <section class="vd-tile" data-feed="poses_naive">
+          <header class="vd-tile-head">Poses — pre-parallax (naive)
+            <span class="vd-tile-meta" id="vd-meta-pnaive"></span>
+          </header>
+          <div class="vd-tile-body" id="vd-tile-pnaive">
+            <div class="vd-empty">waiting for feed_id <code>poses_naive</code></div>
           </div>
+        </section>
 
-          <!-- Tracker / match-time info (team, heading, anchors, …) — collapsible. -->
-          <details class="vision-section vision-tracker-collapse">
-            <summary>Tracker info — team, heading offset, anchors, robots</summary>
-            <div class="vision-tracker-status">
-              <div class="vt-row">
-                <span class="vt-lbl">Team</span>
-                <span id="vt-team-readout" class="vt-val">—</span>
-                <span class="vt-lbl" style="margin-left:18px;font-size:10px;color:var(--text-dim)">(set in topbar / via robot switch)</span>
-                <span style="flex:1"></span>
-                <button class="btn-tiny" onclick="visionSyncHeading()" title="Capture heading offset (call after recalage)">Sync heading</button>
-                <button class="btn-tiny" onclick="visionResetHeading()" title="Clear heading offset">Reset</button>
-              </div>
-              <div class="vt-row">
-                <span class="vt-lbl">Heading offset</span>
-                <span id="vt-heading" class="vt-val">—</span>
-                <span class="vt-lbl" style="margin-left:18px">Anchors</span>
-                <span id="vt-anchors" class="vt-val">—</span>
-              </div>
-              <div class="vt-row">
-                <span class="vt-lbl">Own robot</span>
-                <span id="vt-own" class="vt-val">—</span>
-              </div>
-              <div class="vt-row">
-                <span class="vt-lbl">Opponent</span>
-                <span id="vt-opp" class="vt-val">—</span>
-              </div>
-              <div class="vt-row">
-                <span class="vt-lbl">Last correction</span>
-                <span id="vt-last-corr" class="vt-val">—</span>
-              </div>
-            </div>
-          </details>
-
-          <!-- Pipeline log strip pushed to the bottom; collapsible header -->
-          <div class="vp-logs-bottom">
-            <div class="vp-logs-header">
-              <span>Pipeline log</span>
-              <button class="btn-tiny" onclick="visionToggleLogs()" id="vp-logs-toggle"
-                      title="Show/hide log strip">hide</button>
-            </div>
-            <div class="vp-logs" id="vp-logs">
-              <div class="vp-logs-empty">No logs yet — run a pipeline and look here for INFO/ERROR lines</div>
-            </div>
+        <section class="vd-tile" data-feed="poses_corrected">
+          <header class="vd-tile-head">Poses — post-parallax (corrected)
+            <span class="vd-tile-meta" id="vd-meta-pcorr"></span>
+          </header>
+          <div class="vd-tile-body" id="vd-tile-pcorr">
+            <div class="vd-empty">waiting for feed_id <code>poses_corrected</code></div>
           </div>
-
-        </div>
+        </section>
       </div>
     </div><!-- /view-vision-dashboard -->
 
     <!-- ════════════════════════════════════════════════════════════════════ -->
-    <!--  VISION · EDITOR — REMOVED                                          -->
-    <!--  The React Flow node editor has been retired in favor of a Python-  -->
-    <!--  defined pipeline (see software/vision_runner/). Original sources   -->
-    <!--  are archived under software/_archive/vision_editor/ in case the    -->
-    <!--  graph UI is needed again.                                          -->
+    <!--  VISION · DETECTION — game-element checks (color, presence, etc.)    -->
+    <!--  Driven by a SECOND pipeline (e.g. 'detection') so it can run in     -->
+    <!--  parallel with the localization pipeline above.                      -->
     <!-- ════════════════════════════════════════════════════════════════════ -->
-    <div id="view-vision-editor" class="view">
-      <div class="vision-editor-page" style="padding:24px;color:#94a3b8;">
-        <h3 style="color:#e2e8f0;">Editor retired</h3>
-        <p>The graph editor is gone — pipelines now live in
-          <code>software/vision_runner/pipeline.py</code> and run via the
-          standalone runner.</p>
-        <pre style="background:#0b1424;padding:10px;border-radius:6px;">cd software
-python -m vision_runner.runner video path/to/your/video.mp4</pre>
-        <p>Then open <a href="http://127.0.0.1:5174/" style="color:#38bdf8;">http://127.0.0.1:5174/</a>.</p>
+    <div id="view-vision-detection" class="view">
+      <div class="vd-bar">
+        <select id="vd-det-pipeline" class="input-sm" data-view-pipeline="vision-detection"
+                onchange="visionSetViewPipeline('vision-detection', this.value)"
+                title="Pipeline driving this detection view (publishes detect_preview / detect_results)">
+          <option value="">— pipeline —</option>
+        </select>
+        <span class="vd-pill" id="vd-det-status">—</span>
+        <span style="flex:1"></span>
+        <span class="vd-pill" id="vd-det-frames">frames: 0</span>
       </div>
-    </div><!-- /view-vision-editor -->
+
+      <!-- 2-column grid: live preview (annotated) + check results table.
+           The pipeline must publish:
+             detect_preview → annotated frame (color masks, ROIs, found markers)
+             detect_results → list of dicts {name, status, color?, value?, …}
+                              status ∈ 'pass' | 'fail' | 'unknown' -->
+      <div class="vd-detect-grid">
+        <section class="vd-tile">
+          <header class="vd-tile-head">Detection preview
+            <span class="vd-tile-meta" id="vd-meta-detpreview"></span>
+          </header>
+          <div class="vd-tile-body" id="vd-tile-detpreview">
+            <div class="vd-empty">waiting for feed_id <code>detect_preview</code></div>
+          </div>
+        </section>
+
+        <section class="vd-tile">
+          <header class="vd-tile-head">Checks
+            <span class="vd-tile-meta" id="vd-meta-detresults"></span>
+          </header>
+          <div class="vd-tile-body" id="vd-tile-detresults">
+            <div class="vd-empty">waiting for feed_id <code>detect_results</code></div>
+          </div>
+        </section>
+      </div>
+    </div><!-- /view-vision-detection -->
+
+    <!-- VISION · EDITOR — removed; vision pipelines now live in the
+         standalone runner (software/vision_runner/pipeline.py). -->
+
 
     <!-- ════════════════════════════════════════════════════════════════════ -->
     <!--  VISION · OBJECTS — live tracked detections                          -->

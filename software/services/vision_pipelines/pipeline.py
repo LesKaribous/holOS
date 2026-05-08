@@ -121,14 +121,18 @@ class Pipeline:
         self._feed_drop_count:   dict[str, int] = {}  # diagnostics: dropped frames
 
     def _log(self, level: str, msg: str) -> None:
-        """Append a line to the pipeline's log ring buffer + stdout."""
+        """Append a line to the pipeline's log ring buffer + stdout.
+        Only ERRORS (and INFOs that the user explicitly asks for) are
+        printed to stdout — info-level lines stay in the in-memory ring
+        for the dashboard, no console flood."""
         entry = {'t': time.time(), 'level': level, 'msg': msg}
         with self._lock:
             self._log_buffer.append(entry)   # deque trims automatically
-        try:
-            print(f'[pipeline:{self.name}] [{level}] {msg}', flush=True)
-        except Exception:
-            pass
+        if level in ('error', 'warn'):
+            try:
+                print(f'[pipeline:{self.name}] [{level}] {msg}', flush=True)
+            except Exception:
+                pass
 
     def get_logs(self, n: int = 50) -> list[dict]:
         # NB: collections.deque doesn't support slicing — turn it into a
@@ -356,12 +360,14 @@ class Pipeline:
                     self._frames_processed += 1
                     self._last_frame_t = time.monotonic()
                     self._worker_status = 'running'
-                    # Heartbeat log every 200 frames so the user can see the
-                    # worker is alive (and isn't just silently looping).
-                    if self._frames_processed % 200 == 0:
-                        self._log('info',
-                                  f'heartbeat — {self._frames_processed} frames, '
-                                  f'{len(self._nodes)} nodes')
+                    # Heartbeat in-memory only (dashboard log strip),
+                    # no console spam. Reduced frequency: every ~30s
+                    # at 25 fps = every 750 frames.
+                    if self._frames_processed % 750 == 0:
+                        entry = {'t': time.time(), 'level': 'info',
+                                 'msg': f'heartbeat — {self._frames_processed} frames'}
+                        with self._lock:
+                            self._log_buffer.append(entry)
             except Exception as e:
                 self._last_error = f'loop: {e}'
                 self._worker_status = 'loop error (recovering)'
@@ -474,11 +480,16 @@ class Pipeline:
 
 
 class PipelineRegistry:
-    """Holds N named pipelines. AT MOST ONE may be active (running) at a
-    time — the user can edit other pipelines in the editor without
-    disturbing the active one's results.
+    """Holds N named pipelines.  ANY NUMBER may be enabled (running) at a
+    time — the dashboard's localization view drives one pipeline, the
+    detection view drives another, both run concurrently in their own
+    worker threads.
 
-    Also tracks a "default" pipeline name that gets auto-activated at
+    `active_name` is kept for back-compat with single-pipeline UIs but no
+    longer enforces single-active. Use `set_enabled(name, True/False)` to
+    drive individual pipelines.
+
+    Also tracks a "default" pipeline name that gets auto-enabled at
     server startup.
     """
 
@@ -525,20 +536,38 @@ class PipelineRegistry:
         return self._pipelines.get(self._active_name) if self._active_name else None
 
     def set_active(self, name: Optional[str]) -> Optional[Pipeline]:
-        """Make `name` the single active pipeline. Disables the previous
-        one. Pass None to deactivate everything."""
+        """Mark `name` as the focused pipeline + ensure it's running.
+        Does NOT disable other pipelines (they keep running). Pass None
+        to clear the focus only — running pipelines stay running."""
         with self._lock:
             if name and name not in self._pipelines:
                 raise KeyError(f'unknown pipeline {name!r}')
-            # Stop whatever is currently active.
-            if self._active_name and self._active_name in self._pipelines:
-                self._pipelines[self._active_name].disable()
             self._active_name = name
             if name:
                 p = self._pipelines[name]
                 p.enable()
                 return p
             return None
+
+    def set_enabled(self, name: str, enabled: bool) -> bool:
+        """Enable / disable a single named pipeline without touching the
+        others. Returns True if found, False if no such pipeline."""
+        with self._lock:
+            p = self._pipelines.get(name)
+            if p is None:
+                return False
+        # Outside the registry lock — Pipeline.enable() / disable()
+        # take their own internal locks.
+        if enabled:
+            p.enable()
+        else:
+            p.disable()
+        return True
+
+    def enabled_names(self) -> list[str]:
+        """All currently-enabled pipeline names (any number)."""
+        with self._lock:
+            return [n for n, p in self._pipelines.items() if p.enabled]
 
     def set_default(self, name: Optional[str]) -> None:
         with self._lock:

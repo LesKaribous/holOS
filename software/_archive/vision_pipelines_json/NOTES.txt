@@ -1,0 +1,26 @@
+Archived — JSON-based vision pipeline definitions for holOS.
+
+Why removed
+  Pipelines moved to a pure-Python module: software/vision_pipelines_def.py.
+  Editable in your IDE with autocompletion and refactoring, no manual
+  JSON manipulation. Plus the React Flow editor that originally drove
+  this JSON has also been retired (see ../vision_editor/).
+
+What's here
+  vision_pipelines.json
+      Last shipped JSON snapshot. Contained two pipelines ('default'
+      and 'simple') built up via the editor. Useful as a reference if
+      you want to translate any of the pipelines back into Python.
+
+Restoring (if you really want to)
+  1. Copy vision_pipelines.json back to software/data/vision_pipelines.json
+  2. Revert _load_pipelines() / _save_pipelines() in software/run.py to
+     read/write JSON instead of importing vision_pipelines_def.
+  3. The PipelineRegistry API (add_node, connect, set_active, …) is
+     unchanged — only the persistence layer differs.
+
+Editing pipelines now
+  software/vision_pipelines_def.py defines a PIPELINES dict mapping
+  name → builder_function. Each builder returns a configured Pipeline.
+  Restart holOS to pick up changes (hot-reload not implemented in the
+  main app — use the standalone runner if you want save-and-see).

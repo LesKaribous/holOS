@@ -178,3 +178,62 @@ class OutputJsonNode(_OutputDataBase):
         self._publish_feed(feed_id, value, meta)
         self._frames_emitted += 1
         return {}
+
+
+@register_node('output.aruco_list')
+class OutputArucoListNode(_OutputDataBase):
+    """Publish a DetectionResult as a JSON list of {tag_id, px, py, num_corners}.
+    Useful when you want the RAW detection (pre-rectify, pre-team filter,
+    pre-parallax) shown as a table in the dashboard — without going
+    through localization or any other heavy node."""
+
+    IO = NodeIO(
+        inputs=[Port('detection', PortKind.DETECTION)],
+        outputs=[],
+    )
+    params_schema = {
+        'feed_id':   {'type': 'str', 'default': '',
+                      'help': 'dashboard tile id (defaults to node id)'},
+        'label':     {'type': 'str', 'default': ''},
+        'fps_limit': {'type': 'int', 'default': 5},
+    }
+
+    KIND_FOR_META = 'aruco_list'
+
+    def process(self, inputs):
+        det = inputs.get('detection')
+        if det is None:
+            return {}
+        feed_id = self._effective_feed_id()
+        if not feed_id:
+            return {}
+        if not self._ratelimit():
+            return {}
+        items = []
+        try:
+            for tid, corners in zip(det.ids or [], det.corners or []):
+                # corners shape (4, 2) — average for the marker center.
+                # Corners may be a numpy array; cast to float for safety.
+                pts = list(corners) if corners is not None else []
+                if not pts:
+                    continue
+                cx = sum(float(p[0]) for p in pts) / len(pts)
+                cy = sum(float(p[1]) for p in pts) / len(pts)
+                items.append({
+                    'tag_id':       int(tid),
+                    'px':           round(cx, 1),
+                    'py':           round(cy, 1),
+                    'num_corners':  len(pts),
+                })
+        except Exception as e:
+            self._last_error = f'extract: {type(e).__name__}: {e}'
+            return {}
+        meta = {
+            'feed_id': feed_id,
+            'kind':    'aruco_list',
+            'label':   self._params.get('label') or feed_id,
+            'count':   len(items),
+        }
+        self._publish_feed(feed_id, items, meta)
+        self._frames_emitted += 1
+        return {}

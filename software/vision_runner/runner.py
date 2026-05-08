@@ -1,29 +1,33 @@
 """
-Standalone vision-pipeline runner.
+Vision pipeline DEBUG runner.
+
+Reads a video stream (typically from the vision_camera virtual-camera
+server) and runs the full vision pipeline against it (rectify, aruco,
+localization, parallax…). Surfaces every intermediate stage in a web UI
+so you can iterate on the pipeline without rebuilding holOS.
+
+Three-tool architecture:
+    1. vision_camera   — emulates a camera (no analysis). Port 5174.
+    2. vision_runner   — THIS tool: full pipeline + debug views. Port 5175.
+    3. holOS           — production app. Port 5000.
+
+vision_runner reads frames from the camera (default URL
+http://127.0.0.1:5174/stream.mjpg), so launch vision_camera FIRST.
 
 Usage:
-    python -m software.vision_runner.runner video <path-to-video.mp4>
-    python -m software.vision_runner.runner camera <device-index>
-    python -m software.vision_runner.runner image <path-to-image.png>
+    vision.bat                     (interactive picker; default port 5175)
+    vision.bat <path-to-video.mp4>
+    vision.bat camera 0
+    vision.bat image <path.png>
 
-Or, from the repo root:
-    cd software && python -m vision_runner.runner video vision/data/video.3.mp4
+The runner can also bypass the virtual camera and read a source directly
+(file/USB camera) — handy for quick offline checks.
 
-What it does:
-  1. Loads `vision_runner/pipeline.py` and calls build_pipeline(...).
-  2. Starts the resulting Pipeline.
-  3. Spins up a tiny Flask + SocketIO server (default port 5174) that streams
-     output feeds + accepts playback control commands.
-  4. Watches `pipeline.py` for changes — when the file is edited and saved,
-     the pipeline is shut down, the module re-imported, and a fresh pipeline
-     started. The web UI auto-reconnects.
-
-Hot-reload notes:
-  - Re-import only affects the pipeline-builder module (no nuclear reload of
-    the whole app). Source files like `services/vision_pipelines/nodes/*.py`
-    are NOT reloaded — restart the runner if you tweak a node implementation.
-  - Reloads are debounced 250ms after the last save event so you don't get
-    multiple rebuilds while your editor is flushing.
+Hot-reload:
+  - Watches `vision_runner/pipeline.py` mtime — rebuilds on save.
+  - Only the pipeline-builder module is reloaded; nodes (services/...)
+    require a full restart if you tweak their implementation.
+  - Debounced 250ms after the last save event.
 """
 
 from __future__ import annotations
@@ -45,7 +49,7 @@ _SOFTWARE = _HERE.parent
 if str(_SOFTWARE) not in sys.path:
     sys.path.insert(0, str(_SOFTWARE))
 
-from flask import Flask, render_template, request, jsonify
+from flask import Flask, render_template, request, jsonify, Response
 from flask_socketio import SocketIO
 
 
@@ -53,7 +57,12 @@ from flask_socketio import SocketIO
 
 class PipelineHost:
     """Owns the current Pipeline + the build_pipeline() module. Watches the
-    module file for changes and atomically swaps the pipeline."""
+    module file for changes and atomically swaps the pipeline.
+
+    Also holds the latest source JPEG for the MJPEG stream endpoint —
+    populated by a feed subscriber on feed_id 'stream' (the pipeline
+    must include an `output` node with `feed_id='stream'` wired to the
+    source's frame port; pipeline.py does this by default)."""
 
     def __init__(self, source_kind: str, source_path: str,
                  socketio: SocketIO):
@@ -68,6 +77,9 @@ class PipelineHost:
         self._reload_pending: Optional[float] = None
         self._reload_count = 0
         self._last_error: Optional[str] = None
+        # MJPEG stream state
+        self._stream_jpeg: Optional[bytes] = None
+        self._stream_evt = threading.Event()    # set on each new frame
 
     # -- Build / shutdown ------------------------------------------
 
@@ -159,16 +171,26 @@ class PipelineHost:
     # -- Feed publishing -------------------------------------------
 
     def _make_emitter(self, feed_id: str):
-        """Closure that emits a single feed_id over SocketIO. Polymorphic:
+        """Closure that emits a single feed_id. Polymorphic:
         pipeline calls (jpeg_bytes, meta) for image feeds OR (dict, meta)
-        for pose_list / json feeds — the same callback handles both."""
+        for pose_list / json feeds.
+
+        Special-case: feed_id == 'stream' also feeds the MJPEG endpoint
+        (raw JPEG bytes go into self._stream_jpeg, served by /stream.mjpg).
+        """
         def emit(payload, meta):
             try:
                 if isinstance(payload, (bytes, bytearray)):
+                    raw = bytes(payload)
+                    # MJPEG-stream side-channel: keep the latest JPEG for
+                    # any /stream.mjpg client. They block on _stream_evt.
+                    if feed_id == 'stream':
+                        self._stream_jpeg = raw
+                        self._stream_evt.set()
                     msg = {
                         'feed_id': feed_id,
                         'kind':    'frame',
-                        'jpeg_b64': base64.b64encode(bytes(payload)).decode(),
+                        'jpeg_b64': base64.b64encode(raw).decode(),
                         'meta':    meta or {},
                     }
                 else:
@@ -182,6 +204,34 @@ class PipelineHost:
             except Exception as e:
                 print(f'[runner] feed {feed_id} emit failed: {e}')
         return emit
+
+    # -- MJPEG stream generator ------------------------------------
+
+    def mjpeg_stream(self, max_fps: int = 30):
+        """Generator yielding multipart MJPEG chunks. Blocks on the
+        _stream_evt event so it serves at the source's actual rate (no
+        busy-loop). Times out the wait at 1s so a stalled source doesn't
+        keep the connection forever-pending. max_fps caps the rate so a
+        fast source doesn't drown a slow consumer."""
+        boundary = b'--frame'
+        period = 1.0 / max(1, max_fps)
+        last_t = 0.0
+        last_jpeg = None
+        while True:
+            self._stream_evt.wait(timeout=1.0)
+            jpeg = self._stream_jpeg
+            self._stream_evt.clear()
+            now = time.monotonic()
+            if jpeg is None or jpeg is last_jpeg:
+                continue
+            if (now - last_t) < period:
+                continue
+            last_t = now
+            last_jpeg = jpeg
+            yield (boundary + b'\r\n'
+                   b'Content-Type: image/jpeg\r\n'
+                   b'Content-Length: ' + str(len(jpeg)).encode() + b'\r\n\r\n'
+                   + jpeg + b'\r\n')
 
     # -- Control --------------------------------------------------
 
@@ -289,6 +339,9 @@ def api_reload():
     return jsonify({'ok': True})
 
 
+# /stream.mjpg moved to vision_camera (port 5174) — not served by the runner.
+
+
 # ─── Entry point ───────────────────────────────────────────────────────────
 
 def main():
@@ -299,8 +352,9 @@ def main():
                         help='What kind of source to feed the pipeline.')
     parser.add_argument('source_path',
                         help='File path (video/image) or device index (camera).')
-    parser.add_argument('--port', type=int, default=5174,
-                        help='HTTP port for the control UI (default 5174).')
+    parser.add_argument('--port', type=int, default=5175,
+                        help='HTTP port for the control UI (default 5175 — '
+                             '5174 is reserved for vision_camera).')
     parser.add_argument('--host', default='127.0.0.1',
                         help='Bind address (default 127.0.0.1, use 0.0.0.0 for LAN).')
     args = parser.parse_args()
