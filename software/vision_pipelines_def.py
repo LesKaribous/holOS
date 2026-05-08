@@ -72,6 +72,13 @@ SOURCE_PATH = 'http://127.0.0.1:5174/stream.mjpg'
 ARUCO_DICT   = '4x4_50'
 ARUCO_REFINE = 'subpix'
 
+# Rectifier — '' means "no intrinsics loaded → 4-anchor findHomography only"
+# (this matches the default TwinVision UI behavior). Point it at a valid
+# camera_intrinsics.json to enable per-frame solvePnP — but ONLY if those
+# intrinsics actually match the camera you're using right now, otherwise
+# the BEV image comes out distorted.
+INTRINSICS_PATH = ''
+
 # Camera position (manual override) — entered in WORLD frame.
 CAMERA_X_MM = 1275.0
 CAMERA_Y_MM = -200.0
@@ -139,6 +146,7 @@ def build_localization() -> Pipeline:
 
     rec = _add(p, 'rectify', 'rectify',
                {'anchors':              ANCHORS,
+                'intrinsics_path':      INTRINSICS_PATH,
                 'world_origin_corner':  WORLD_ORIGIN_CORNER,
                 'world_table_w_mm':     WORLD_TABLE_W_MM,
                 'world_table_h_mm':     WORLD_TABLE_H_MM,
