@@ -125,6 +125,30 @@ class RectifyNode(Node):
                            'so headings stay consistent with the flipped '
                            'frame.',
         },
+        # ─── Reduced-anchor mode ────────────────────────────────────
+        'homography_mode': {
+            'type': 'str', 'default': 'auto',
+            'enum': ['auto', 'h4', 'sim2'],
+            'label': 'homography mode',
+            'description': 'auto = try 4-anchor findHomography, fall back to '
+                           '2-anchor similarity if <4 anchors are detected '
+                           '(default). h4 = force 4-anchor (perspective, '
+                           '8 DOF). sim2 = force 2-anchor similarity '
+                           '(rotation+scale+translation, 4 DOF, no '
+                           'perspective correction).',
+        },
+        'sim_tag_a_id': {
+            'type': 'int', 'default': 20,
+            'label': 'sim2 anchor A',
+            'description': 'first of the 2 anchor tags used by sim2 mode '
+                           '(or by auto when forced into sim2 fallback). '
+                           'Must appear in the anchors dict.',
+        },
+        'sim_tag_b_id': {
+            'type': 'int', 'default': 22,
+            'label': 'sim2 anchor B',
+            'description': 'second of the 2 anchor tags used by sim2 mode.',
+        },
     }
 
     def __init__(self, params=None):
@@ -173,11 +197,41 @@ class RectifyNode(Node):
         det = inputs.get('detection')
         if frame is None or det is None or getattr(self, '_rect', None) is None:
             return {}
-        # Per-frame solvePnP if intrinsics available, else 4-anchor homography.
-        if self._rect.intrinsics is not None:
-            self._rect.update_pose(det)
+        mode = str(self._params.get('homography_mode', 'auto'))
+        sim_a = int(self._params.get('sim_tag_a_id', 20))
+        sim_b = int(self._params.get('sim_tag_b_id', 22))
+
+        def _do_sim2():
+            self._rect.update_2pt_similarity(det, sim_a, sim_b)
+
+        def _do_h4():
+            if self._rect.intrinsics is not None:
+                self._rect.update_pose(det)
+            else:
+                self._rect.update(det)
+
+        if mode == 'sim2':
+            _do_sim2()
+        elif mode == 'h4':
+            _do_h4()
         else:
-            self._rect.update(det)
+            # 'auto' — count live anchors detected this tick. >= 4 → 4-anchor
+            # (perspective, more accurate when all are visible). 2-3 → fall
+            # back to similarity from sim_tag_a / sim_tag_b. 0-1 → try h4
+            # anyway so the rectifier can lean on its cache.
+            try:
+                anchor_ids = [a.tag_id for a in self._rect.config.anchors()]
+            except Exception:
+                anchor_ids = []
+            live = sum(1 for tid in anchor_ids
+                       if det.get_center_for_id(tid) is not None)
+            if live >= 4:
+                _do_h4()
+            elif live >= 2 and (det.get_center_for_id(sim_a) is not None
+                                or det.get_center_for_id(sim_b) is not None):
+                _do_sim2()
+            else:
+                _do_h4()   # cache-driven fallback inside update()
 
         out = {}
         out['homography_state'] = {

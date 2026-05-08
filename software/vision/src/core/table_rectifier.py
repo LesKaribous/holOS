@@ -285,6 +285,75 @@ class TableRectifier:
         self._H_is_fresh = all_live
         return True
 
+    def update_2pt_similarity(self, result: DetectionResult,
+                              tag_a_id: int, tag_b_id: int) -> bool:
+        """Reduced-DOF rectification when only 2 anchor tags are physically
+        on the table. Solves a similarity (rotation + uniform scale +
+        translation = 4 DOF) from the 2 detected centers — exact fit, no
+        perspective correction. Assumes the camera is roughly orthogonal
+        to the table; otherwise residual perspective distortion remains.
+
+        The 2 tag IDs must be present in the configured anchors so we know
+        their world-mm coordinates. Detected pixel centers fall back to the
+        cache (same convention as update()) when one is missing this tick.
+
+        Returns True on success and writes self._H. Marks fresh iff both
+        anchors were detected live this frame.
+        """
+        anchors_by_id = {a.tag_id: a for a in self._config.anchors()}
+        anchor_a = anchors_by_id.get(int(tag_a_id))
+        anchor_b = anchors_by_id.get(int(tag_b_id))
+        if anchor_a is None or anchor_b is None:
+            self._H_is_fresh = False
+            return self._H is not None
+        self._observe_anchors(result)
+
+        def _pix(tag_id: int):
+            c = result.get_center_for_id(tag_id)
+            if c is not None:
+                return c, True
+            cached = self._anchor_pixels_cache.get(tag_id)
+            return (cached, False) if cached is not None else (None, False)
+
+        pa, pa_live = _pix(anchor_a.tag_id)
+        pb, pb_live = _pix(anchor_b.tag_id)
+        if pa is None or pb is None:
+            self._H_is_fresh = False
+            return self._H is not None
+
+        pdx, pdy = float(pb[0] - pa[0]), float(pb[1] - pa[1])
+        mdx, mdy = float(anchor_b.x_mm - anchor_a.x_mm), float(anchor_b.y_mm - anchor_a.y_mm)
+        p_len = (pdx * pdx + pdy * pdy) ** 0.5
+        m_len = (mdx * mdx + mdy * mdy) ** 0.5
+        if p_len < 1e-3 or m_len < 1e-3:
+            self._H_is_fresh = False
+            return self._H is not None
+
+        # Similarity pixel→mm: rotate the pixel-space vector onto the mm
+        # vector, scale by m_len/p_len, translate so anchor_a → its mm pos.
+        import math
+        scale_mm_per_px = m_len / p_len
+        rot = math.atan2(mdy, mdx) - math.atan2(pdy, pdx)
+        cos_r, sin_r = math.cos(rot), math.sin(rot)
+        a = scale_mm_per_px * cos_r
+        b = -scale_mm_per_px * sin_r
+        c = anchor_a.x_mm - a * pa[0] - b * pa[1]
+        d = scale_mm_per_px * sin_r
+        e =  scale_mm_per_px * cos_r
+        f = anchor_a.y_mm - d * pa[0] - e * pa[1]
+        H_pix_to_mm = np.array([[a, b, c],
+                                [d, e, f],
+                                [0, 0, 1]], dtype=np.float64)
+        # Chain with mm → BEV pixel (same margin/scale convention as update()).
+        s = self._scale
+        margin = self._margin_mm
+        H_mm_to_bev = np.array([[s, 0, s * margin],
+                                [0, s, s * margin],
+                                [0, 0, 1]], dtype=np.float64)
+        self._H = H_mm_to_bev @ H_pix_to_mm
+        self._H_is_fresh = bool(pa_live and pb_live)
+        return True
+
     def rectify(self, frame: np.ndarray) -> Optional[np.ndarray]:
         # Priority 1 : pose-based (intrinsics + per-frame solvePnP from 4 anchors).
         # Mathematically clean, requires K+dist + visible anchors. Camera-aligned BEV.

@@ -79,6 +79,14 @@ ARUCO_REFINE = 'subpix'
 # 1920×1080 per data/vision_camera_config.json). None = use node default.
 INTRINSICS_PATH = None
 
+# Homography mode — 'auto' (default) tries 4-anchor findHomography and
+# falls back to 2-anchor similarity (SIM_TAG_A/B_ID) when fewer than 4
+# anchors are detected this tick. 'h4' / 'sim2' force one mode. SIM ids
+# must be present in ANCHORS.
+HOMOGRAPHY_MODE = 'auto'
+SIM_TAG_A_ID    = 20
+SIM_TAG_B_ID    = 22
+
 # Camera position (manual override) — entered in WORLD frame.
 CAMERA_X_MM = 1275.0
 CAMERA_Y_MM = -200.0
@@ -150,6 +158,9 @@ def build_localization() -> Pipeline:
                   'world_table_w_mm':     WORLD_TABLE_W_MM,
                   'world_table_h_mm':     WORLD_TABLE_H_MM,
                   'world_flip_theta':     WORLD_FLIP_THETA,
+                  'homography_mode':      HOMOGRAPHY_MODE,
+                  'sim_tag_a_id':         SIM_TAG_A_ID,
+                  'sim_tag_b_id':         SIM_TAG_B_ID,
                   'draw_grid':            False}
     if INTRINSICS_PATH is not None:
         rec_params['intrinsics_path'] = INTRINSICS_PATH
