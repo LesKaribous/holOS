@@ -3979,6 +3979,39 @@ def on_hw_fire(data):
 
 # ── Match control (remote start/stop via bridge) ─────────────────────────────
 
+@socketio.on('recalage')
+def on_recalage():
+    """Fire the firmware `recalage()` routine (= long-press on the robot's
+    physical reset button). Hardware-only — in sim/idle mode there's no
+    motion stack to drive. The handler is fire-and-monitor: we kick the
+    command off in a daemon thread (the routine takes ~10 s of motion)
+    and report progress / completion back via `recalage_state` events.
+    """
+    t = _active_transport()
+    if t is None or not t.is_connected:
+        _vlog('recalage: no HW transport connected', 'err')
+        socketio.emit('recalage_state',
+                      {'running': False, 'ok': False, 'error': 'not_connected'})
+        return
+
+    def _do():
+        _vlog('recalage: command sent to firmware (HW)')
+        socketio.emit('recalage_state', {'running': True})
+        # 60 s ceiling: the routine probes a wall + moves to start pos +
+        # waits for the vision recalage handshake (max ~700 ms). 60 s is
+        # comfortably above the worst observed wallclock (~12 s) and
+        # well below any human-noticeable hang.
+        ok, res = t.execute('recalage()', timeout_ms=60000)
+        if ok:
+            _vlog(f'recalage: firmware reply OK ({res})')
+        else:
+            _vlog(f'recalage: firmware reply FAIL ({res})', 'err')
+        socketio.emit('recalage_state',
+                      {'running': False, 'ok': bool(ok), 'res': res})
+
+    threading.Thread(target=_do, daemon=True, name='recalage-cmd').start()
+
+
 @socketio.on('match_start')
 def on_match_start():
     """Remote match start — same effect as pulling the physical starter.

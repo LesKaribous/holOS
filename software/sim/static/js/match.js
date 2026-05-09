@@ -39,6 +39,41 @@ function _updateStartStopUI() {
   if (stopBtn) stopBtn.disabled = !_matchRunning;
 }
 
+// ── Recalage (firmware routine) ────────────────────────────────────────────
+// Hardware-only: fires the long-press behavior of the robot's physical
+// reset button (wall-probe → drive to start pos → vision recalage). Same
+// thing as if the operator pressed the on-robot button manually, just
+// triggerable from the UI when the robot is reachable but the button
+// isn't.
+function runRecalage() {
+  const isHw = _currentConnectionMode === 'usb' || _currentConnectionMode === 'xbee';
+  if (!isHw) {
+    showToast('Recalage is hardware only — connect to the robot first');
+    return;
+  }
+  socket.emit('recalage');
+}
+
+socket.on('recalage_state', data => {
+  const btn = document.getElementById('btn-recalage');
+  if (!btn) return;
+  if (data && data.running) {
+    btn.disabled = true;
+    btn.textContent = '⌖ Recalage…';
+    showToast('Recalage running on robot…');
+  } else {
+    btn.disabled = false;
+    btn.textContent = '⌖ Recalage';
+    if (data && data.error === 'not_connected') {
+      showToast('Recalage failed: no robot connected');
+    } else if (data && data.ok === false) {
+      showToast(`Recalage failed: ${data.res || 'firmware did not ack'}`);
+    } else if (data && data.ok === true) {
+      showToast('Recalage complete');
+    }
+  }
+});
+
 socket.on('match_state', data => {
   if (data.running !== undefined) {
     _matchRunning = data.running;
