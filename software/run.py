@@ -3862,9 +3862,35 @@ def _do_connect(port: str):
                           f't={kt_deg:+.1f}°' if kt is not None else
                           f'rx ← T:vis cal_request x={kx:.0f} y={ky:.0f} t=?')
                     def _do_cal():
-                        result = _recalage_pick_own_tag(
-                            kx, ky, known_theta_rad=kt)
+                        # Retry on failure: tag detection sometimes
+                        # misses a single pipeline tick (occlusion,
+                        # remaining motion blur the firmware-side 3 s
+                        # settle didn't kill, glare). 500 ms wait
+                        # between attempts covers two pipeline ticks
+                        # at FPS_LIMIT=4 so each retry definitely
+                        # reads a fresh frame, not a re-pick of the
+                        # same stale pose_list.
+                        max_attempts = 3
+                        retry_delay_s = 0.5
+                        result = None
+                        for attempt in range(1, max_attempts + 1):
+                            if attempt > 1:
+                                _vlog(f'cal_request: retry '
+                                      f'{attempt}/{max_attempts} after '
+                                      f'{int(retry_delay_s*1000)}ms wait',
+                                      'warn')
+                                time.sleep(retry_delay_s)
+                            result = _recalage_pick_own_tag(
+                                kx, ky, known_theta_rad=kt)
+                            if result is not None:
+                                if attempt > 1:
+                                    _vlog(f'cal_request: OK on attempt '
+                                          f'{attempt}/{max_attempts}')
+                                break
                         if result is None:
+                            _vlog(f'cal_request: GAVE UP after '
+                                  f'{max_attempts} attempts — sending '
+                                  f'vis_cal_failed', 'err')
                             _send('vis_cal_failed(reason=no_candidate)')
                             return
                         vp = result['vision_pose']

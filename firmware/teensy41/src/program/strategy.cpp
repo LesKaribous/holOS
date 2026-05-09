@@ -558,9 +558,14 @@ FLASHMEM void recalage(){
     // vision reports — every subsequent vision pose is corrected by that
     // offset so the firmware always sees its own heading in the table
     // frame, even though the tag itself can be glued on at any angle.
-    waitMs(300);   // settle so the camera sees a still frame
+    os.wait(3000);  // settle so the camera sees a still frame (motion
+                     // blur on the tag is the #1 cause of cal_request
+                     // failures — overshoot the camera shutter time
+                     // generously, recalage is not time-critical)
     localisation.requestVisionCalibration(localisation.getPosition());
-    waitMs(400);   // give holOS a beat to reply with vis_cal_done(...)
+    os.wait(1500);  // wait for vis_cal_done — bumped to cover up to 3
+                     // server-side retries (each gated on a fresh
+                     // pipeline tick @ 4 fps = ~250 ms)
     if (localisation.isVisionCalibrated()) {
         Vec3 offset = localisation.syncToVision();
         (void)offset;   // syncToVision logs the vision − otos delta itself
@@ -588,11 +593,16 @@ FLASHMEM void recalage(){
         // Drive to a pose, settle so the camera sees a stationary tag,
         // fire one cal_request, give holOS time to reply (the auto-tune
         // happens server-side as soon as the pair is appended).
+        // 3 s settle: the holonomic chassis still has a small velocity
+        // tail after motion.go reports done, and the overhead camera
+        // shutter is slow — anything under ~2 s gives us a blurred tag.
+        // 1.5 s reply wait covers the Python-side retry loop (up to 3
+        // attempts × ~500 ms each).
         auto captureAt = [](Vec2 pos) {
             async motion.go(pos);
-            waitMs(500);
+            os.wait(3000);
             localisation.requestVisionCalibration(localisation.getPosition());
-            waitMs(500);
+            os.wait(1500);
         };
 
         captureAt(Vec2(X(350),  650));
