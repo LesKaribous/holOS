@@ -2110,28 +2110,63 @@ def _recalage_pick_own_tag(known_x_mm, known_y_mm,
     })
 
     # ── Auto-tune object_z_mm on the parallax node ────────────────
-    # Without this, the solver's `implied_z_obj` is just a number on
-    # the debug page that the operator has to copy into
-    # vision_pipelines_def.py manually. Auto-applying it here closes
-    # the loop: every recalage tightens the parallax correction so
-    # subsequent T:vis pose_request replies are world-frame accurate
-    # without a holOS restart. The solver runs over ALL collected
-    # pairs (better with > 1; works with 1 by pooling x+y in LSQ).
+    # Closes the loop on the recalage handshake: each successful pair
+    # immediately re-solves factor (LSQ over all pairs) and pushes the
+    # implied object_z_mm to the running parallax node, then persists
+    # to disk. Without this, the solver result is just a number on the
+    # debug page that the operator has to copy into
+    # vision_pipelines_def.py by hand.
     auto_tuned_z_mm: 'Optional[float]' = None
     auto_tune_status: str = 'skipped'
     auto_tune_rms_mm: 'Optional[float]' = None
-    if src_kind == 'parallax' and cam_xyz_used is not None:
+
+    # Resolve which cam_xyz to feed the solver. Prefer the actually-used
+    # value (parallax node populates it on every successful tick); fall
+    # back to the param value when the node hasn't ticked yet (boot edge
+    # case, shouldn't happen post-homography-lock but cheap to be safe).
+    # Reject [0,0,0] explicitly — that's the parallax node's pre-tick
+    # default and would drive the solver into a degenerate cz=0 → z_obj=0
+    # rejection path with a confusing error.
+    solver_cam = None
+    if src_kind == 'parallax':
         try:
-            cx_par = float(cam_xyz_used[0])
-            cy_par = float(cam_xyz_used[1])
-            cz_par = float(cam_xyz_used[2])
+            par_state2 = src_rec.instance.get_state() or {}
+        except Exception as e:
+            par_state2 = {}
+            _vlog(f'parallax auto-tune: get_state() raised {e}', 'err')
+        used = par_state2.get('cam_xyz_used') or []
+        if (len(used) >= 3
+                and any(abs(float(c)) > 0.1 for c in used[:3])):
+            solver_cam = used
+        else:
+            param_cam = par_state2.get('cam_xyz_param') or []
+            if (len(param_cam) >= 3
+                    and any(abs(float(c)) > 0.1 for c in param_cam[:3])):
+                solver_cam = param_cam
+                _vlog('parallax auto-tune: cam_xyz_used unset (node not '
+                      'ticked yet?), falling back to cam_xyz_param', 'warn')
+
+    if src_kind != 'parallax':
+        auto_tune_status = f'no parallax node (src={src_kind})'
+        _vlog(f'parallax auto-tune skipped: no parallax node in pipeline '
+              f'(active source = {src_kind!r})', 'warn')
+    elif solver_cam is None:
+        auto_tune_status = 'cam_xyz unavailable'
+        _vlog('parallax auto-tune skipped: cam_xyz unavailable on parallax '
+              'node — restart holOS if you just changed parallax.py?',
+              'warn')
+    else:
+        try:
+            cx_par = float(solver_cam[0])
+            cy_par = float(solver_cam[1])
+            cz_par = float(solver_cam[2])
             res = _solve_parallax_from_pairs(
                 list(_vision_calibration_pairs), cx_par, cy_par, cz_par)
             if res.get('ok'):
                 new_z = float(res['implied_z_obj_mm'])
                 auto_tune_rms_mm = float(res.get('rms_mm') or 0.0)
                 # Sanity bounds — accept anything from a flat sticker
-                # (10 mm) up to a tall mast (1.5 m). Outside that, the
+                # (10 mm) up to a tall mast (1.5 m). Outside that the
                 # fit is degenerate (cam_xyz wrong, or the pair is
                 # noise) and we keep the previous value.
                 if 10.0 < new_z < 1500.0:
@@ -2145,9 +2180,9 @@ def _recalage_pick_own_tag(known_x_mm, known_y_mm,
                             f'parallax auto-tuned: object_z_mm '
                             f'→ {new_z:.0f} mm  (rms={auto_tune_rms_mm:.1f}mm '
                             f'over {res["pair_count"]} pair'
-                            f'{"s" if res["pair_count"]>1 else ""})')
-                        # Persist immediately — every successful auto-tune
-                        # writes the JSON so a power loss / restart
+                            f'{"s" if res["pair_count"]>1 else ""}, '
+                            f'cam=({cx_par:.0f},{cy_par:.0f},{cz_par:.0f}))')
+                        # Persist immediately so a power loss / restart
                         # doesn't lose the calibration.
                         _save_parallax_calibration()
                     except Exception as e:
@@ -2157,10 +2192,14 @@ def _recalage_pick_own_tag(known_x_mm, known_y_mm,
                     auto_tune_status = (f'rejected (implied_z={new_z:.0f}mm '
                                         f'out of 10..1500 mm)')
                     _vlog(f'parallax auto-tune REJECTED: implied_z='
-                          f'{new_z:.0f}mm out of sanity range', 'warn')
+                          f'{new_z:.0f}mm out of [10, 1500] sanity range '
+                          f'(cam=({cx_par:.0f},{cy_par:.0f},{cz_par:.0f}), '
+                          f'{res["pair_count"]} pair'
+                          f'{"s" if res["pair_count"]>1 else ""})', 'warn')
             else:
                 auto_tune_status = f"solver: {res.get('error', 'unknown')}"
-                _vlog(f'parallax auto-tune skipped: {res.get("error")}', 'warn')
+                _vlog(f'parallax auto-tune skipped: solver said '
+                      f'"{res.get("error")}"', 'warn')
         except Exception as e:
             auto_tune_status = f'exception: {e}'
             _vlog(f'parallax auto-tune error: {e}', 'err')

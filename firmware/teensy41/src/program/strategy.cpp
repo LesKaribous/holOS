@@ -484,7 +484,7 @@ FLASHMEM void waitMs(unsigned long time){
 }
 
 FLASHMEM void recalage(){
-    // ── Multi-pose vision parallax calibration toggle ────────────────────
+    // ── Multi-pose vision parallax Scalibration toggle ────────────────────
     // When true, after the standard recalage the robot drives through 3
     // known table positions and triggers one vision recalage at each.
     // holOS pools the resulting (naive, true) pairs through the LSQ
@@ -494,7 +494,7 @@ FLASHMEM void recalage(){
     // Set to true once after every camera (re)mount; flip back to
     // false for normal match-day flows — the saved config is loaded
     // automatically by holOS at boot.
-    constexpr bool CALIBRATE_VISION_PARALLAX = false;
+    constexpr bool CALIBRATE_VISION_PARALLAX = true;
 
     // ── Homography capture (preparation phase) ───────────────────────────
     // Ask holOS to freeze the table↔camera homography NOW, before the
