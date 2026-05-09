@@ -143,6 +143,28 @@
     <div class="tile-body" id="t-calib"></div>
   </section>
   <section class="tile" style="grid-column: 1 / -1;">
+    <header class="tile-head">
+      Multi-pose parallax solver
+      <span style="display:flex; gap:6px; align-items:center;">
+        <button id="btn-solve" onclick="solveParallax()"
+                style="padding:3px 10px; background:#1f2937; color:var(--accent);
+                       border:1px solid var(--border); border-radius:4px;
+                       cursor:pointer; font:11px ui-monospace,monospace;">
+          ⚙ Solve
+        </button>
+        <button id="btn-clear-pairs" onclick="clearPairs()"
+                style="padding:3px 10px; background:#1f2937; color:var(--err);
+                       border:1px solid var(--border); border-radius:4px;
+                       cursor:pointer; font:11px ui-monospace,monospace;">
+          ✕ Clear
+        </button>
+        <span class="tile-meta" id="m-solver"></span>
+      </span>
+    </header>
+    <div class="tile-body" id="t-solver"
+         style="align-items:stretch; justify-content:flex-start;"></div>
+  </section>
+  <section class="tile" style="grid-column: 1 / -1;">
     <header class="tile-head">Vision log
       <span class="tile-meta" id="m-log"></span></header>
     <div class="tile-body" id="t-log"
@@ -193,6 +215,8 @@ socket.on('state', s => {
 let _visionPose = null;
 let _calibInfo  = null;   // /api/vision/calibration response
 
+let _calibPairs = {count: 0, pairs: []};
+
 async function pollVision() {
   try {
     const r1 = await fetch('/api/vision/robot_pose');
@@ -209,13 +233,42 @@ async function pollVision() {
     if (r2.ok) _calibInfo = await r2.json();
   } catch (_) { /* leave previous */ }
 
+  try {
+    const r3 = await fetch('/api/vision/calibration/pairs');
+    if (r3.ok) _calibPairs = await r3.json();
+  } catch (_) { /* leave previous */ }
+
   renderCompare();
   renderCalib();
+  renderSolver();
   renderLog();
   updatePhaseBadge();
 }
 setInterval(pollVision, 500);
 pollVision();
+
+async function clearPairs() {
+  await fetch('/api/vision/calibration/pairs', {method:'DELETE'});
+  pollVision();
+}
+
+async function solveParallax() {
+  const btn = document.getElementById('btn-solve');
+  if (btn) { btn.disabled = true; btn.textContent = '⚙ Solving…'; }
+  try {
+    const r = await fetch('/api/vision/calibration/solve',
+                          {method:'POST', headers:{'Content-Type':'application/json'},
+                           body:'{}'});
+    _solverResult = await r.json();
+  } catch (e) {
+    _solverResult = {ok: false, error: String(e)};
+  }
+  renderSolver();
+  if (btn) { btn.disabled = false; btn.textContent = '⚙ Solve'; }
+  pollVision();
+}
+
+let _solverResult = null;
 
 async function forceRecalage() {
   const btn = document.getElementById('btn-force-recalage');
@@ -235,6 +288,68 @@ async function forceRecalage() {
   }
   pollVision();   // refresh tiles + log immediately
   if (btn) { btn.disabled = false; btn.textContent = '⌖ Force recalage (otos pose)'; }
+}
+
+function renderSolver() {
+  const el = document.getElementById('t-solver');
+  const meta = document.getElementById('m-solver');
+  const pairs = (_calibPairs && _calibPairs.pairs) || [];
+  meta.textContent = `${pairs.length} pair${pairs.length===1?'':'s'} collected`;
+
+  if (!pairs.length) {
+    el.innerHTML = '<div class="empty">No pairs yet — click <code>⌖ Force recalage</code> at several robot positions, then hit <code>⚙ Solve</code></div>';
+    return;
+  }
+
+  // Pair table
+  let html = '<div class="calib"><div class="section">Captured pairs</div>';
+  html += '<div style="grid-column:1/-1; overflow-x:auto;"><table style="width:100%; font:11px ui-monospace,monospace;">';
+  html += '<thead><tr><th>#</th><th>tag</th><th>naive_x</th><th>naive_y</th><th>true_x (otos)</th><th>true_y (otos)</th>';
+  if (_solverResult && _solverResult.ok && _solverResult.per_pair) {
+    html += '<th>factor_x</th><th>factor_y</th>';
+  }
+  html += '</tr></thead><tbody>';
+  pairs.forEach((p, i) => {
+    let extra = '';
+    if (_solverResult && _solverResult.ok && _solverResult.per_pair && _solverResult.per_pair[i]) {
+      const pp = _solverResult.per_pair[i];
+      extra = `<td>${pp.factor_x != null ? pp.factor_x.toFixed(3) : '—'}</td>` +
+              `<td>${pp.factor_y != null ? pp.factor_y.toFixed(3) : '—'}</td>`;
+    }
+    html += `<tr><td>${i+1}</td><td>#${p.tag_id||'?'}</td>` +
+            `<td>${fmt(p.naive_x,1)}</td><td>${fmt(p.naive_y,1)}</td>` +
+            `<td>${fmt(p.true_x,1)}</td><td>${fmt(p.true_y,1)}</td>${extra}</tr>`;
+  });
+  html += '</tbody></table></div>';
+
+  // Solver result
+  if (_solverResult) {
+    if (_solverResult.ok) {
+      html += '<div class="section">Solver output (cam fixed, factor + z_obj fitted)</div>';
+      html += `<span class="k">cam_xyz (fixed)</span>
+               <span class="v">(${fmt(_solverResult.cam_x_mm,0)}, ${fmt(_solverResult.cam_y_mm,0)}, ${fmt(_solverResult.cam_z_mm,0)}) mm</span>`;
+      html += `<span class="k">factor (fitted)</span>
+               <span class="v">${_solverResult.factor.toFixed(4)}</span>`;
+      html += `<span class="k">implied object_z_mm</span>
+               <span class="v" style="color:var(--accent); font-weight:600;">${fmt(_solverResult.implied_z_obj_mm,0)} mm</span>`;
+      html += `<span class="k">RMS residual</span>
+               <span class="v ${_solverResult.rms_mm > 30 ? 'warn' : ''}">${fmt(_solverResult.rms_mm,1)} mm</span>`;
+      html += '<div class="section">Per-pair residuals</div>';
+      (_solverResult.residuals || []).forEach((r, i) => {
+        html += `<span class="k">pair ${i+1} (#${r.tag_id||'?'})</span>
+                 <span class="v">(${fmt(r.dx_mm,1)}, ${fmt(r.dy_mm,1)}) mm  |  ${fmt(r.norm_mm,1)} mm</span>`;
+      });
+    } else {
+      html += '<div class="section">Solver output</div>';
+      html += `<span class="k">status</span>
+               <span class="v warn">${_solverResult.error}</span>`;
+    }
+  } else {
+    html += '<div class="section">Solver output</div>';
+    html += '<span class="k">status</span><span class="v">— not run yet —</span>';
+  }
+  html += '</div>';
+  el.innerHTML = html;
 }
 
 function renderLog() {

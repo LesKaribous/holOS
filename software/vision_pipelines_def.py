@@ -118,13 +118,24 @@ SIM_TAG_B_ID    = 22
 TAG_SIZE_MM     = 100.0  # only consulted by sim2 corner-based path
 
 # Camera position (manual override) — entered in WORLD frame.
-# All three values feed the parallax correction. CAMERA_Z_MM is the
-# camera height above the table; change it here whenever the rig moves
-# (factor = (cam_z − robot_tag_z) / cam_z, so it affects the magnitude
-# of the correction directly).
-CAMERA_X_MM = 1275.0
-CAMERA_Y_MM = -200.0
-CAMERA_Z_MM = 1150.0
+# Mirrors with the team: the camera is mounted on a fixed edge of the
+# table but X mirrors so it always views the OWN side. Y and Z stay
+# constant. The active value is selected at boot from the current team
+# and re-pushed to the parallax pipeline whenever the team flips
+# (see `_apply_team` in run.py).
+CAMERA_X_MM_BY_TEAM = {
+    'yellow': 1275.0,
+    'blue':   3000.0 - 1275.0,
+}
+CAMERA_Y_MM = -100.0
+CAMERA_Z_MM = 1600.0   # camera height above the table — adjust when the
+                        # rig moves; affects correction magnitude (factor
+                        # = (cam_z − robot_tag_z) / cam_z).
+
+# Initial value used at pipeline build — overwritten by _apply_team in
+# run.py at every team flip (and also at boot via force=True). So this
+# just needs to be a valid placeholder; the runtime path is authoritative.
+CAMERA_X_MM = CAMERA_X_MM_BY_TEAM['blue']
 
 # Parallax
 ROBOT_Z_MM = 490.0

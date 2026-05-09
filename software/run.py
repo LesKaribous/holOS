@@ -171,6 +171,13 @@ _vision_heading_offset_rad: 'Optional[float]' = None
 #   tag_id, team, robot_z_mm, captured_at_t
 _vision_calibration_snapshot: 'Optional[dict]' = None
 
+# Rolling list of (naive_xy, true_xy) pairs captured at every successful
+# `_recalage_pick_own_tag`. Feeds the multi-pose parallax solver — with
+# 2+ pairs we can least-squares fit cam_x, cam_y, and factor (=> z_obj).
+# Single-pose calibration only gives a degenerate factor estimate
+# because it cannot separate cam_xy errors from z_obj errors.
+_vision_calibration_pairs: list = []
+
 # Rolling buffer of vision-pipeline events. Surfaced via the
 # /api/vision/calibration endpoint so the debug page can show them
 # live — saves the operator from grepping the holOS console when
@@ -2088,6 +2095,19 @@ def _recalage_pick_own_tag(known_x_mm, known_y_mm,
         except Exception:
             pass
 
+    # Append to the calibration pair history — ANY successful recalage
+    # contributes a sample. The user clicks the force-recalage button at
+    # different physical positions, then triggers the solver to fit
+    # cam_xy + factor across all collected pairs.
+    _vision_calibration_pairs.append({
+        't_mono':  time.monotonic(),
+        'tag_id':  tag_id,
+        'naive_x': naive_x,
+        'naive_y': naive_y,
+        'true_x':  float(known_x_mm),
+        'true_y':  float(known_y_mm),
+    })
+
     _vision_calibration_snapshot = {
         'captured_at_t':     time.monotonic(),
         'tag_id':            tag_id,
@@ -2215,6 +2235,147 @@ def api_vision_robot_pose():
     if pose is None:
         return jsonify({'ok': False, 'error': 'no own-team pose available'}), 404
     return jsonify({'ok': True, 'pose': pose})
+
+
+def _solve_factor_lsq(pairs: list, cam_x: float, cam_y: float) -> 'Optional[float]':
+    """1-D least-squares for the parallax factor with cam_xy held fixed.
+    Model per axis: (true - cam) = factor * (naive - cam). Closed form:
+        factor = Σ (ex·dx + ey·dy) / Σ (dx² + dy²)
+    where d* = naive - cam, e* = true - cam over all pairs and axes
+    pooled together. Returns None when the pairs span no parallax range
+    (Σ d² ≈ 0, which means naive ≈ cam projection and there's nothing
+    for the correction to do)."""
+    num = 0.0
+    den = 0.0
+    for p in pairs:
+        dx = p['naive_x'] - cam_x
+        dy = p['naive_y'] - cam_y
+        ex = p['true_x']  - cam_x
+        ey = p['true_y']  - cam_y
+        num += ex * dx + ey * dy
+        den += dx * dx + dy * dy
+    if den < 1.0:
+        return None
+    return num / den
+
+
+def _solve_parallax_from_pairs(pairs: list, cam_x: float, cam_y: float,
+                                cam_z: float) -> dict:
+    """Multi-pose parallax solve with the camera position held fixed.
+    The camera mount is physically rigid, so cam_xy / cam_z are taken
+    as ground truth from the pipeline params; the only free parameter
+    is the tag height, which we surface as the implied object_z_mm.
+
+    Two pairs minimum but more is better — distribute the robot across
+    the table to constrain the factor across the full naive range.
+    """
+    n = len(pairs)
+    if n < 1:
+        return {'ok': False, 'error': f'need at least 1 pair (have {n})'}
+
+    factor = _solve_factor_lsq(pairs, cam_x, cam_y)
+    if factor is None:
+        return {'ok': False,
+                'error': 'pairs cluster too close to the camera projection — '
+                         'move the robot to varied positions'}
+
+    z_obj = cam_z * (1.0 - factor)
+
+    # Residuals after applying the SOLVED factor with FIXED cam_xy.
+    residuals = []
+    for p in pairs:
+        cx_corr = cam_x + factor * (p['naive_x'] - cam_x)
+        cy_corr = cam_y + factor * (p['naive_y'] - cam_y)
+        dx = cx_corr - p['true_x']
+        dy = cy_corr - p['true_y']
+        residuals.append({'tag_id': p.get('tag_id'),
+                          'dx_mm': dx, 'dy_mm': dy,
+                          'norm_mm': (dx*dx + dy*dy) ** 0.5})
+    rms = (sum(r['norm_mm']**2 for r in residuals) / n) ** 0.5
+
+    # Per-pair, per-axis factor estimates so the operator can spot
+    # outliers (a pair with wildly different factor → bad detection or
+    # OTOS off at that position).
+    per_pair = []
+    for p in pairs:
+        dx = p['naive_x'] - cam_x
+        dy = p['naive_y'] - cam_y
+        ex = p['true_x']  - cam_x
+        ey = p['true_y']  - cam_y
+        fx = (ex / dx) if abs(dx) > 1.0 else None
+        fy = (ey / dy) if abs(dy) > 1.0 else None
+        per_pair.append({'tag_id': p.get('tag_id'),
+                         'naive_x': p['naive_x'], 'naive_y': p['naive_y'],
+                         'true_x':  p['true_x'],  'true_y':  p['true_y'],
+                         'factor_x': fx, 'factor_y': fy})
+
+    return {
+        'ok':               True,
+        'pair_count':       n,
+        'cam_x_mm':         cam_x,   # fixed input
+        'cam_y_mm':         cam_y,   # fixed input
+        'cam_z_mm':         cam_z,   # fixed input
+        'factor':           factor,
+        'implied_z_obj_mm': z_obj,
+        'residuals':        residuals,
+        'rms_mm':           rms,
+        'per_pair':         per_pair,
+    }
+
+
+@app.route('/api/vision/calibration/pairs', methods=['GET'])
+def api_vision_calibration_pairs_get():
+    """Snapshot of the captured (naive, true) pairs for the multi-pose
+    parallax solver."""
+    pairs = list(_vision_calibration_pairs)
+    return jsonify({
+        'count': len(pairs),
+        'pairs': pairs,
+    })
+
+
+@app.route('/api/vision/calibration/pairs', methods=['DELETE'])
+def api_vision_calibration_pairs_clear():
+    n = len(_vision_calibration_pairs)
+    _vision_calibration_pairs.clear()
+    _vlog(f'calibration pairs cleared ({n} pairs dropped)')
+    return jsonify({'ok': True, 'cleared': n})
+
+
+@app.route('/api/vision/calibration/solve', methods=['POST'])
+def api_vision_calibration_solve():
+    """Run the multi-pose parallax solver with cam_xyz held fixed (the
+    physical camera mount is rigid — the only thing tag-mount-specific
+    that can vary is the tag's height above the table). Returns the
+    implied object_z_mm; the user updates ROBOT_Z_MM in
+    vision_pipelines_def.py with it and restarts holOS."""
+    src_rec, src_kind = _get_pose_source_record()
+    cam = None
+    if src_rec is not None and src_kind == 'parallax':
+        try:
+            st = src_rec.instance.get_state() or {}
+            cam = st.get('cam_xyz_used') or st.get('cam_xyz_param')
+        except Exception:
+            cam = None
+    if not cam or len(cam) < 3:
+        return jsonify({'ok': False,
+                        'error': 'cam_xyz unavailable — is the parallax node '
+                                 'running?'}), 400
+    cx, cy, cz = float(cam[0]), float(cam[1]), float(cam[2])
+    if cz < 100.0:
+        return jsonify({'ok': False,
+                        'error': f'cam_z={cz:.0f}mm is implausibly low — '
+                                 'check CAMERA_Z_MM'}), 400
+
+    res = _solve_parallax_from_pairs(list(_vision_calibration_pairs),
+                                     cx, cy, cz)
+    if res.get('ok'):
+        _vlog(f"solver: {res['pair_count']} pairs (cam fixed at "
+              f"{cx:.0f},{cy:.0f},{cz:.0f}) → z_obj="
+              f"{res['implied_z_obj_mm']:.0f}mm  rms={res['rms_mm']:.1f}mm")
+    else:
+        _vlog(f"solver: failed — {res.get('error')}", 'warn')
+    return jsonify(res)
 
 
 @app.route('/api/vision/force_recalage', methods=['POST'])
@@ -3119,21 +3280,38 @@ def _apply_team(team: str, source: str = 'ui',
     # Pipeline registry: push the team into every team-aware node so
     # downstream filter.classification etc. classify correctly without
     # the user having to hand-edit each node's `team` param.
+    # Also mirror the camera X for parallax: the rig is the same
+    # physical mount but the operator stands on the OWN side, so the
+    # camera always views the team's own half — its X mirrors with team.
+    cam_x_for_team = None
+    try:
+        from vision_pipelines_def import CAMERA_X_MM_BY_TEAM
+        cam_x_for_team = CAMERA_X_MM_BY_TEAM.get(team)
+    except (ImportError, AttributeError, KeyError):
+        cam_x_for_team = None
     if _pipeline_registry is not None:
         for p in _pipeline_registry.all():
             try:
                 with p._lock:
                     for nid, rec in p._nodes.items():
-                        # Localization is the producer of `classification`;
-                        # any other node that takes `team` (we look it up
-                        # by params_schema rather than hard-coding kinds)
-                        # also gets updated.
                         schema = getattr(rec.instance.__class__, 'params_schema', {}) or {}
                         if 'team' in schema:
                             try: rec.instance.set_params({'team': team})
                             except Exception: pass
+                        # Camera-mirror per team: only camera.manual + the
+                        # parallax fallback param reflect cam_x. Both have
+                        # cam_x_mm in their schema.
+                        if (cam_x_for_team is not None
+                                and rec.kind in ('camera.manual', 'parallax')
+                                and 'cam_x_mm' in schema):
+                            try:
+                                rec.instance.set_params({'cam_x_mm': cam_x_for_team})
+                            except Exception:
+                                pass
             except Exception as e:
                 brain.log(f'[VISION] team-sync failed for {p.name}: {e}')
+    if cam_x_for_team is not None:
+        _vlog(f'team={team} → camera X mirrored to {cam_x_for_team:.0f} mm')
 
 
 def _start_hw_team_poller():
