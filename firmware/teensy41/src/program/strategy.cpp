@@ -598,10 +598,16 @@ FLASHMEM void recalage(){
         captureAt(Vec2(X(350),  650));
         captureAt(Vec2(X(500),  1000));
         captureAt(Vec2(X(1000), 850));
-        // Return-trip transit waypoints (no capture — just to avoid
-        // clipping the central obstacles on the way back to start).
-        async motion.go(Vec2(X(350), 650));
-        async motion.go(Vec2(X(350), 300));
+        // Return-trip transit waypoints — same target orientation as the
+        // initial start-zone goAlign so the robot ends the routine with
+        // its actuator face pointed where the strategy expects it (away
+        // from the wall on the team's near side: EAST in yellow, WEST
+        // in blue). No capture on these transits.
+        const float startCompass = isBlue
+            ? getCompassOrientation(TableCompass::WEST)
+            : getCompassOrientation(TableCompass::EAST);
+        async motion.goAlign(Vec2(X(350), 650), RobotCompass::AB, startCompass);
+        async motion.goAlign(Vec2(X(350), 300), RobotCompass::AB, startCompass);
 
         Console::info("Strategy")
             << "[calib] Multi-pose vision parallax — done (config saved by holOS)"

@@ -2120,6 +2120,14 @@ def _recalage_pick_own_tag(known_x_mm, known_y_mm,
     auto_tune_status: str = 'skipped'
     auto_tune_rms_mm: 'Optional[float]' = None
 
+    # Unconditional breadcrumb so the operator can confirm the auto-tune
+    # block was reached at all. If they don't see this in the vision log
+    # then `_recalage_pick_own_tag` returned earlier (no localization
+    # node, no poses, no OWN tag, etc.) — every early-return logs its
+    # own reason.
+    _vlog(f'auto-tune entry: src_kind={src_kind}, '
+          f'pairs={len(_vision_calibration_pairs)}')
+
     # Resolve which cam_xyz to feed the solver. Prefer the actually-used
     # value (parallax node populates it on every successful tick); fall
     # back to the param value when the node hasn't ticked yet (boot edge
@@ -4682,6 +4690,12 @@ def main():
         # the topbar by hand.
         _apply_team(sim_state.get('team', 'blue'),
                     source='boot', force=True)
+        # Boot banner — read from the vision log on /vision_debug to
+        # confirm the new auto-tune code path is live (operators have
+        # been bitten by a stale Python module surviving an "edit and
+        # re-flash firmware" loop without restarting holOS itself).
+        _vlog('boot: parallax auto-tune + per-team persistence active '
+              '(vision_pipelines_def.py + parallax.py loaded)')
     # Start the HW team-color poller (no-op in sim/idle).
     _start_hw_team_poller()
     socketio.start_background_task(_physics_loop)
