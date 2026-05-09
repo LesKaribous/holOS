@@ -3922,6 +3922,22 @@ def _do_connect(port: str):
                     _vlog(f'rx ← T:vis unknown subcommand: {line!r}', 'warn')
             t.subscribe_telemetry('vis', _on_vis)
 
+            # Diagnostic raw-line sniffer for vision frames. The transport's
+            # `_raw` channel fires for EVERY incoming line BEFORE parse_frame
+            # validates the CRC, so if the firmware really emits a
+            # `T:vis cal_request …` frame we'll see it here even when CRC
+            # mismatch causes the formal dispatch to drop it. Filtered to
+            # `cal_request` only — homography_capture is short and the
+            # working path, no need to spam.
+            def _on_raw_vis_sniff(line):
+                if 'cal_request' in line:
+                    # Trim CRC suffix if present, keep enough to debug.
+                    s = line.strip()
+                    if len(s) > 100:
+                        s = s[:100] + '…'
+                    _vlog(f'raw RX (cal_request): {s!r}', 'warn')
+            t.subscribe_telemetry('_raw', _on_raw_vis_sniff)
+
             # ── T:c → chrono: elapsed ms (same format) ───────────────────
             def _on_chrono(data_str):
                 _hw_tel_data['chrono'] = data_str.strip()
