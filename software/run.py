@@ -2023,6 +2023,46 @@ def _recalage_pick_own_tag(known_x_mm, known_y_mm,
         robot_z_mm = float(inst._params.get('robot_z_mm', 490.0))
     except Exception:
         robot_z_mm = None
+    # Pull the parallax node's actually-used cam_xyz + object_z_mm so
+    # the snapshot carries enough state to suggest an "implied z_obj"
+    # tuning hint. Falls back to None when there is no parallax node
+    # in the graph (e.g. localization-only pipeline).
+    cam_xyz_used = None
+    parallax_object_z_mm = None
+    try:
+        if src_kind == 'parallax':
+            par_state = src_rec.instance.get_state() or {}
+            cam_xyz_used = par_state.get('cam_xyz_used') or par_state.get('cam_xyz_param')
+            parallax_object_z_mm = par_state.get('object_z_mm')
+    except Exception:
+        pass
+
+    # Implied object_z_mm: assuming cam_xyz is correct, what tag height
+    # would make the parallax correction map naive_xy exactly onto
+    # known_xy? Solves
+    #     known = cam + factor*(naive - cam)
+    #     factor = (cam_z - z_obj) / cam_z   →   z_obj = cam_z*(1 - factor)
+    # for both axes and averages the two estimates (they should agree
+    # tightly when cam_xyz is right; large disagreement = the camera
+    # position itself is wrong, not just the tag height).
+    implied_z_obj = None
+    if cam_xyz_used is not None:
+        try:
+            cx, cy, cz = (float(cam_xyz_used[0]), float(cam_xyz_used[1]),
+                          float(cam_xyz_used[2]))
+            denom_x = naive_x - cx
+            denom_y = naive_y - cy
+            factors = []
+            if abs(denom_x) > 1.0:
+                factors.append((float(known_x_mm) - cx) / denom_x)
+            if abs(denom_y) > 1.0:
+                factors.append((float(known_y_mm) - cy) / denom_y)
+            if factors:
+                avg_factor = sum(factors) / len(factors)
+                implied_z_obj = cz * (1.0 - avg_factor)
+        except Exception:
+            pass
+
     _vision_calibration_snapshot = {
         'captured_at_t':     time.monotonic(),
         'tag_id':            tag_id,
@@ -2059,8 +2099,15 @@ def _recalage_pick_own_tag(known_x_mm, known_y_mm,
             'dx_mm': corrected_x - float(known_x_mm),
             'dy_mm': corrected_y - float(known_y_mm),
         },
-        'heading_offset_rad': _vision_heading_offset_rad,
-        'robot_z_mm':         robot_z_mm,
+        'heading_offset_rad':   _vision_heading_offset_rad,
+        'robot_z_mm':           robot_z_mm,
+        # Tuning aids — current parallax params + a single-pose-derived
+        # suggestion. The user can plug `implied_z_obj` into ROBOT_Z_MM
+        # in vision_pipelines_def.py and see whether the corrected
+        # residual drops on the next recalage.
+        'cam_xyz_used':         cam_xyz_used,
+        'parallax_object_z_mm': parallax_object_z_mm,
+        'implied_object_z_mm':  implied_z_obj,
     }
 
     return {

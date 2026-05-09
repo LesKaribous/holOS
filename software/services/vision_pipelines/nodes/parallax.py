@@ -61,6 +61,15 @@ from ._coords_helpers import (
 
 @register_node('parallax')
 class ParallaxCorrectionNode(Node):
+    def __init__(self, params=None):
+        super().__init__(params)
+        # cam_xyz / object_z actually used by the last process() tick
+        # (factoring in any wired cam_xyz override). Exposed via
+        # get_state() so the recalage snapshot can capture them and
+        # the debug page can compute an implied z_obj.
+        self._last_cam_xyz: 'tuple[float, float, float]' = (0.0, 0.0, 0.0)
+        self._last_object_z_mm: float = 0.0
+
     IO = NodeIO(
         inputs=[
             Port('pose_list', PortKind.POSE_LIST),
@@ -172,6 +181,12 @@ class ParallaxCorrectionNode(Node):
         oz = float(self._params.get('object_z_mm', 490.0))
         use_naive  = bool(self._params.get('use_naive_xy', False))
         write_back = str(self._params.get('write_back', 'overwrite'))
+
+        # Snapshot the values we actually used this tick — recalage
+        # snapshot reads these so the debug page can compute an implied
+        # object_z_mm from the (naive, known, cam) triple.
+        self._last_cam_xyz = (cx, cy, cz)
+        self._last_object_z_mm = oz
 
         # factor = (Zc - z_object) / Zc — degenerates as Zc → z_object.
         if cz <= oz + 1e-3:
@@ -336,12 +351,18 @@ class ParallaxCorrectionNode(Node):
         return result
 
     def get_state(self):
+        # cam_xyz_param: what the user has set in params (constant when
+        # nothing is wired into cam_xyz input).
+        # cam_xyz_used: the value that fed the last correction (matches
+        # cam_xyz_param if no wire, else reflects the wired value).
         return {
-            'cam_xyz':     [
+            'cam_xyz_param': [
                 float(self._params.get('cam_x_mm', 1500.0)),
                 float(self._params.get('cam_y_mm', -200.0)),
                 float(self._params.get('cam_z_mm', 1600.0)),
             ],
-            'object_z_mm': float(self._params.get('object_z_mm', 490.0)),
-            'last_error':  self._last_error,
+            'cam_xyz_used':  list(self._last_cam_xyz),
+            'object_z_mm':   float(self._last_object_z_mm
+                                   or self._params.get('object_z_mm', 490.0)),
+            'last_error':    self._last_error,
         }
