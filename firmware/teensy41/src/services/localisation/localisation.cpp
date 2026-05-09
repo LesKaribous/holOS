@@ -161,15 +161,25 @@ FLASHMEM void Localisation::requestHomographyCapture() {
 //   x in mm (int), y in mm (int), theta in milliradians (int).
 // holOS divides t by 1000 to recover radians.
 FLASHMEM void Localisation::requestVisionCalibration(Vec3 known_pos) {
-    String frame;
-    frame.reserve(64);
-    frame  = "T:vis cal_request x=";
-    frame += (int)known_pos.x;
-    frame += " y=";
-    frame += (int)known_pos.y;
-    frame += " t=";
-    frame += (int)(known_pos.z * 1000.0f);
-    jetsonBridge.pushVisionFrame(frame.c_str());
+    // Build the frame with snprintf %d only (newlib-nano supports
+    // integer formats — only %f is the broken one). Convention:
+    //   x in mm (int), y in mm (int), theta in milliradians (int).
+    // holOS divides t by 1000 to recover radians.
+    //
+    // Arduino String + concat was tried and silently dropped — likely
+    // reallocation invalidated c_str() between build and pushVisionFrame.
+    char frame[80];
+    int n = snprintf(frame, sizeof(frame),
+                     "T:vis cal_request x=%d y=%d t=%d",
+                     (int)known_pos.x,
+                     (int)known_pos.y,
+                     (int)(known_pos.z * 1000.0f));
+    if (n <= 0 || n >= (int)sizeof(frame)) {
+        // Diagnostic — should never fire since %d is always supported
+        jetsonBridge.pushVisionFrame("T:vis cal_format_failed");
+        return;
+    }
+    jetsonBridge.pushVisionFrame(frame);
     Console::info("Localisation")
         << "Vision recalage requested at (" << known_pos.x << ", "
         << known_pos.y << ", " << known_pos.z << ")" << Console::endl;
