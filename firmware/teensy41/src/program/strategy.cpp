@@ -484,6 +484,18 @@ FLASHMEM void waitMs(unsigned long time){
 }
 
 FLASHMEM void recalage(){
+    // ── Multi-pose vision parallax calibration toggle ────────────────────
+    // When true, after the standard recalage the robot drives through 3
+    // known table positions and triggers one vision recalage at each.
+    // holOS pools the resulting (naive, true) pairs through the LSQ
+    // solver, auto-applies the implied object_z_mm to the parallax
+    // node, and persists the calibration to data/parallax_calibration.json
+    // so subsequent boots reuse it without rerunning the procedure.
+    // Set to true once after every camera (re)mount; flip back to
+    // false for normal match-day flows — the saved config is loaded
+    // automatically by holOS at boot.
+    constexpr bool CALIBRATE_VISION_PARALLAX = false;
+
     // ── Homography capture (preparation phase) ───────────────────────────
     // Ask holOS to freeze the table↔camera homography NOW, before the
     // robot moves into the field of view and partially occludes the
@@ -552,6 +564,48 @@ FLASHMEM void recalage(){
     if (localisation.isVisionCalibrated()) {
         Vec3 offset = localisation.syncToVision();
         (void)offset;   // syncToVision logs the vision − otos delta itself
+    }
+
+    // ── Multi-pose parallax calibration sweep ────────────────────────────
+    // Drive through 3 calibration points across the team's half of the
+    // table. Each cal_request adds a (naive, true) pair on the holOS
+    // side; after every pair the LSQ solver re-fits factor → object_z_mm
+    // and pushes it to the live parallax node. After the 3 points the
+    // robot returns to the start zone via the first waypoint.
+    //
+    // Coordinates are written in the YELLOW frame; the X axis mirrors
+    // (3000 - X) for BLUE so the same call site covers both teams.
+    if (CALIBRATE_VISION_PARALLAX) {
+        Console::info("Strategy")
+            << "[calib] Multi-pose vision parallax — start" << Console::endl;
+
+        const bool isBlue = ihm.isColor(Settings::BLUE);
+        // Lambda picks the right X for the active team. ihm is a global
+        // singleton so the empty capture list is fine.
+        auto X = [isBlue](float x) -> float {
+            return isBlue ? (3000.0f - x) : x;
+        };
+        // Drive to a pose, settle so the camera sees a stationary tag,
+        // fire one cal_request, give holOS time to reply (the auto-tune
+        // happens server-side as soon as the pair is appended).
+        auto captureAt = [](Vec2 pos) {
+            async motion.go(pos);
+            waitMs(500);
+            localisation.requestVisionCalibration(localisation.getPosition());
+            waitMs(500);
+        };
+
+        captureAt(Vec2(X(350),  650));
+        captureAt(Vec2(X(500),  1000));
+        captureAt(Vec2(X(1000), 850));
+        // Return-trip transit waypoints (no capture — just to avoid
+        // clipping the central obstacles on the way back to start).
+        async motion.go(Vec2(X(350), 650));
+        async motion.go(Vec2(X(350), 300));
+
+        Console::info("Strategy")
+            << "[calib] Multi-pose vision parallax — done (config saved by holOS)"
+            << Console::endl;
     }
 
     initPump(); //TODO : Integrate into Actuators

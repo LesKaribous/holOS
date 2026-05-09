@@ -144,6 +144,7 @@ except Exception as _pe:
     print(f"[Vision] Pipeline registry unavailable: {_pe}")
 
 VISION_PIPELINES_PATH = os.path.join(_HERE, 'data', 'vision_pipelines.json')
+PARALLAX_CALIB_PATH   = os.path.join(_HERE, 'data', 'parallax_calibration.json')
 
 # Auto-sync heading state — set when match_start fires; the heading-sync
 # routine then waits for the recalage routine to settle.
@@ -2145,6 +2146,10 @@ def _recalage_pick_own_tag(known_x_mm, known_y_mm,
                             f'→ {new_z:.0f} mm  (rms={auto_tune_rms_mm:.1f}mm '
                             f'over {res["pair_count"]} pair'
                             f'{"s" if res["pair_count"]>1 else ""})')
+                        # Persist immediately — every successful auto-tune
+                        # writes the JSON so a power loss / restart
+                        # doesn't lose the calibration.
+                        _save_parallax_calibration()
                     except Exception as e:
                         auto_tune_status = f'set_params failed: {e}'
                         _vlog(f'parallax auto-tune set_params failed: {e}', 'err')
@@ -2290,6 +2295,96 @@ def api_vision_robot_pose():
     if pose is None:
         return jsonify({'ok': False, 'error': 'no own-team pose available'}), 404
     return jsonify({'ok': True, 'pose': pose})
+
+
+def _save_parallax_calibration() -> None:
+    """Persist the current team's parallax calibration to disk so the
+    next boot can restore it without re-running the firmware multi-pose
+    procedure. The file groups configs by team name — calibrations for
+    blue and yellow live side-by-side in one JSON.
+
+    Called after every successful auto-tune in `_recalage_pick_own_tag`.
+    Failures are non-fatal (logged + ignored) — the running pipeline
+    keeps the in-memory tune either way.
+    """
+    rec, src_kind = _get_pose_source_record()
+    if rec is None or src_kind != 'parallax':
+        return
+    try:
+        st = rec.instance.get_state() or {}
+        z_obj   = st.get('object_z_mm')
+        cam_xyz = st.get('cam_xyz_used') or st.get('cam_xyz_param')
+    except Exception:
+        return
+    if z_obj is None:
+        return
+
+    team = sim_state.get('team', 'blue')
+    data = {}
+    if os.path.exists(PARALLAX_CALIB_PATH):
+        try:
+            with open(PARALLAX_CALIB_PATH, 'r') as f:
+                data = json.load(f) or {}
+        except Exception:
+            data = {}
+    data[team] = {
+        'object_z_mm': float(z_obj),
+        'cam_xyz':     [float(c) for c in (cam_xyz or [])],
+        'pairs':       list(_vision_calibration_pairs),
+        't_iso':       time.strftime('%Y-%m-%d %H:%M:%S'),
+    }
+    try:
+        os.makedirs(os.path.dirname(PARALLAX_CALIB_PATH), exist_ok=True)
+        with open(PARALLAX_CALIB_PATH, 'w') as f:
+            json.dump(data, f, indent=2)
+        _vlog(f'parallax calibration saved (team={team}, z_obj={z_obj:.0f}mm, '
+              f'{len(_vision_calibration_pairs)} pairs)')
+    except Exception as e:
+        _vlog(f'parallax calibration save failed: {e}', 'err')
+
+
+def _load_parallax_calibration_for_team(team: str) -> bool:
+    """Restore the saved object_z_mm + (naive, true) pairs for `team`
+    into the running pipeline. Idempotent — pushing an already-current
+    z_obj is a no-op. Returns True iff something was actually applied.
+
+    Called from `_apply_team` (boot via force=True, and at every team
+    flip). When no saved config exists for the team, leaves the
+    pipeline at its build-time default.
+    """
+    if not os.path.exists(PARALLAX_CALIB_PATH):
+        return False
+    try:
+        with open(PARALLAX_CALIB_PATH, 'r') as f:
+            data = json.load(f) or {}
+    except Exception as e:
+        _vlog(f'parallax calibration load failed: {e}', 'err')
+        return False
+    cfg = data.get(team)
+    if not cfg:
+        return False
+
+    applied = False
+    z_obj = cfg.get('object_z_mm')
+    rec, src_kind = _get_pose_source_record()
+    if rec is not None and src_kind == 'parallax' and z_obj is not None:
+        try:
+            rec.instance.set_params({'object_z_mm': float(z_obj)})
+            applied = True
+        except Exception as e:
+            _vlog(f'parallax restore set_params failed: {e}', 'err')
+
+    pairs = cfg.get('pairs') or []
+    if pairs:
+        # Reseed the pair history so the next force-recalage refines on
+        # top of the saved data instead of starting from zero.
+        _vision_calibration_pairs.extend(pairs)
+
+    if applied:
+        _vlog(f"parallax restored for team={team}: object_z_mm="
+              f"{z_obj:.0f}mm, {len(pairs)} pair(s) reseeded "
+              f"(saved {cfg.get('t_iso','?')})")
+    return applied
 
 
 def _solve_factor_lsq(pairs: list, cam_x: float, cam_y: float) -> 'Optional[float]':
@@ -3379,6 +3474,16 @@ def _apply_team(team: str, source: str = 'ui',
                 brain.log(f'[VISION] team-sync failed for {p.name}: {e}')
     if cam_x_for_team is not None:
         _vlog(f'team={team} → camera X mirrored to {cam_x_for_team:.0f} mm')
+
+    # Restore the saved parallax calibration for this team (if any).
+    # Runs both at boot (force=True) and on every team flip — the cam_xy
+    # mirror that just got pushed is paired with this team's tuned
+    # object_z_mm + pair history, so subsequent force-recalages refine
+    # on top of the stored data instead of starting from defaults.
+    try:
+        _load_parallax_calibration_for_team(team)
+    except Exception as e:
+        brain.log(f'[VISION] parallax restore failed: {e}')
 
 
 def _start_hw_team_poller():
