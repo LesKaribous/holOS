@@ -540,24 +540,35 @@ function renderCalib() {
     html += `<span class="k">Δheading (robot − tag)</span>
              <span class="v">${fmtDeg(snap.heading_offset_rad)}</span>`;
 
-    // Tuning hint: implied object_z_mm derived from (naive, known, cam).
-    // If the residual is small, current params are good. If it's big and
-    // the implied z_obj differs from the configured one, plug the
-    // suggestion into ROBOT_Z_MM (vision_pipelines_def.py) and re-run.
+    // Auto-tune outcome — single-pose at recalage time. Multi-pose
+    // refinement happens via the Solver tile below; this is the
+    // immediate result that the parallax node already consumed.
     if (snap.cam_xyz_used != null) {
-      html += '<div class="section">Parallax tuning hint</div>';
+      html += '<div class="section">Parallax auto-tune (applied to running pipeline)</div>';
       const cam = snap.cam_xyz_used;
       html += `<span class="k">cam_xyz used</span>
                <span class="v">(${fmt(cam[0],0)}, ${fmt(cam[1],0)}, ${fmt(cam[2],0)}) mm</span>`;
-      html += `<span class="k">object_z_mm (current)</span>
-               <span class="v">${fmt(snap.parallax_object_z_mm, 0)} mm</span>`;
-      const impliedClass = (snap.implied_object_z_mm != null
-                            && snap.parallax_object_z_mm != null
-                            && Math.abs(snap.implied_object_z_mm
-                                       - snap.parallax_object_z_mm) > 50)
-                           ? 'v warn' : 'v';
-      html += `<span class="k">object_z_mm (implied)</span>
-               <span class="${impliedClass}">${fmt(snap.implied_object_z_mm, 0)} mm</span>`;
+      const status = snap.auto_tune_status || '—';
+      const ok = (snap.auto_tuned_z_mm != null);
+      html += `<span class="k">status</span>
+               <span class="v ${ok ? '' : 'warn'}">${status}</span>`;
+      if (ok) {
+        html += `<span class="k">object_z_mm (now applied)</span>
+                 <span class="v" style="color:var(--good); font-weight:600;">
+                   ${fmt(snap.auto_tuned_z_mm, 0)} mm</span>`;
+        html += `<span class="k">solver RMS</span>
+                 <span class="v ${(snap.auto_tune_rms_mm > 30) ? 'warn' : ''}">
+                   ${fmt(snap.auto_tune_rms_mm, 1)} mm
+                   (${snap.pair_count || 1} pair${(snap.pair_count||1)>1?'s':''})
+                 </span>`;
+      } else {
+        html += `<span class="k">object_z_mm (still in use)</span>
+                 <span class="v">${fmt(snap.parallax_object_z_mm, 0)} mm</span>`;
+        if (snap.implied_object_z_mm != null) {
+          html += `<span class="k">single-pose implied</span>
+                   <span class="v">${fmt(snap.implied_object_z_mm, 0)} mm</span>`;
+        }
+      }
     }
   }
   html += '</div>';

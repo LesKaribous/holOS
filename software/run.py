@@ -2096,9 +2096,9 @@ def _recalage_pick_own_tag(known_x_mm, known_y_mm,
             pass
 
     # Append to the calibration pair history — ANY successful recalage
-    # contributes a sample. The user clicks the force-recalage button at
-    # different physical positions, then triggers the solver to fit
-    # cam_xy + factor across all collected pairs.
+    # contributes a sample. The auto-tune below pools every pair
+    # captured under the current camera position; clear them via the
+    # /vision_debug button when the camera moves or the team flips.
     _vision_calibration_pairs.append({
         't_mono':  time.monotonic(),
         'tag_id':  tag_id,
@@ -2107,6 +2107,58 @@ def _recalage_pick_own_tag(known_x_mm, known_y_mm,
         'true_x':  float(known_x_mm),
         'true_y':  float(known_y_mm),
     })
+
+    # ── Auto-tune object_z_mm on the parallax node ────────────────
+    # Without this, the solver's `implied_z_obj` is just a number on
+    # the debug page that the operator has to copy into
+    # vision_pipelines_def.py manually. Auto-applying it here closes
+    # the loop: every recalage tightens the parallax correction so
+    # subsequent T:vis pose_request replies are world-frame accurate
+    # without a holOS restart. The solver runs over ALL collected
+    # pairs (better with > 1; works with 1 by pooling x+y in LSQ).
+    auto_tuned_z_mm: 'Optional[float]' = None
+    auto_tune_status: str = 'skipped'
+    auto_tune_rms_mm: 'Optional[float]' = None
+    if src_kind == 'parallax' and cam_xyz_used is not None:
+        try:
+            cx_par = float(cam_xyz_used[0])
+            cy_par = float(cam_xyz_used[1])
+            cz_par = float(cam_xyz_used[2])
+            res = _solve_parallax_from_pairs(
+                list(_vision_calibration_pairs), cx_par, cy_par, cz_par)
+            if res.get('ok'):
+                new_z = float(res['implied_z_obj_mm'])
+                auto_tune_rms_mm = float(res.get('rms_mm') or 0.0)
+                # Sanity bounds — accept anything from a flat sticker
+                # (10 mm) up to a tall mast (1.5 m). Outside that, the
+                # fit is degenerate (cam_xyz wrong, or the pair is
+                # noise) and we keep the previous value.
+                if 10.0 < new_z < 1500.0:
+                    try:
+                        src_rec.instance.set_params({'object_z_mm': new_z})
+                        auto_tuned_z_mm = new_z
+                        auto_tune_status = 'applied'
+                        # Reflect the new value in the snapshot below.
+                        parallax_object_z_mm = new_z
+                        _vlog(
+                            f'parallax auto-tuned: object_z_mm '
+                            f'→ {new_z:.0f} mm  (rms={auto_tune_rms_mm:.1f}mm '
+                            f'over {res["pair_count"]} pair'
+                            f'{"s" if res["pair_count"]>1 else ""})')
+                    except Exception as e:
+                        auto_tune_status = f'set_params failed: {e}'
+                        _vlog(f'parallax auto-tune set_params failed: {e}', 'err')
+                else:
+                    auto_tune_status = (f'rejected (implied_z={new_z:.0f}mm '
+                                        f'out of 10..1500 mm)')
+                    _vlog(f'parallax auto-tune REJECTED: implied_z='
+                          f'{new_z:.0f}mm out of sanity range', 'warn')
+            else:
+                auto_tune_status = f"solver: {res.get('error', 'unknown')}"
+                _vlog(f'parallax auto-tune skipped: {res.get("error")}', 'warn')
+        except Exception as e:
+            auto_tune_status = f'exception: {e}'
+            _vlog(f'parallax auto-tune error: {e}', 'err')
 
     _vision_calibration_snapshot = {
         'captured_at_t':     time.monotonic(),
@@ -2147,12 +2199,15 @@ def _recalage_pick_own_tag(known_x_mm, known_y_mm,
         'heading_offset_rad':   _vision_heading_offset_rad,
         'robot_z_mm':           robot_z_mm,
         # Tuning aids — current parallax params + a single-pose-derived
-        # suggestion. The user can plug `implied_z_obj` into ROBOT_Z_MM
-        # in vision_pipelines_def.py and see whether the corrected
-        # residual drops on the next recalage.
+        # suggestion + the value that was actually applied this tick
+        # (None when auto-tune was skipped/rejected — see auto_tune_status).
         'cam_xyz_used':         cam_xyz_used,
         'parallax_object_z_mm': parallax_object_z_mm,
         'implied_object_z_mm':  implied_z_obj,
+        'auto_tuned_z_mm':      auto_tuned_z_mm,
+        'auto_tune_status':     auto_tune_status,
+        'auto_tune_rms_mm':     auto_tune_rms_mm,
+        'pair_count':           len(_vision_calibration_pairs),
     }
 
     return {
@@ -3265,9 +3320,21 @@ def _apply_team(team: str, source: str = 'ui',
     """
     if team not in ('blue', 'yellow'):
         return
-    if not force and sim_state.get('team') == team:
+    team_actually_changed = (sim_state.get('team') != team)
+    if not force and not team_actually_changed:
         return   # already there — don't spam logs / save
     sim_state['team'] = team
+
+    # Camera mirrors per team → calibration pairs captured under the
+    # previous cam_xy are no longer valid for the parallax solver.
+    # Drop them so the solver never mixes pre/post-mirror data. Only
+    # fires when the team actually flipped (boot-time force=True with
+    # the same team is a no-op).
+    if team_actually_changed and len(_vision_calibration_pairs) > 0:
+        n = len(_vision_calibration_pairs)
+        _vision_calibration_pairs.clear()
+        _vlog(f'team changed → cleared {n} stale calibration pair'
+              f'{"s" if n > 1 else ""}')
     try:
         robot.reset_to_start(team)
     except Exception:
