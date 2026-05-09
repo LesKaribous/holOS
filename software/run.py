@@ -2217,6 +2217,37 @@ def api_vision_robot_pose():
     return jsonify({'ok': True, 'pose': pose})
 
 
+@app.route('/api/vision/force_recalage', methods=['POST'])
+def api_vision_force_recalage():
+    """Debug aid — runs the OWN-tag pick + heading-offset capture using
+    the robot's current OTOS pose, WITHOUT firing the firmware motion
+    routine. Useful to debug `_recalage_pick_own_tag` independently
+    when the snapshot isn't populating: position the robot manually at
+    a known pose, hit this endpoint, watch the vision log.
+
+    Body (optional JSON): {x_mm, y_mm, theta_rad} to override the OTOS
+    pose. Defaults to robot.pos.x / robot.pos.y / robot.theta.
+    """
+    try:
+        body = request.get_json(silent=True) or {}
+    except Exception:
+        body = {}
+    try:
+        kx = float(body.get('x_mm', robot.pos.x))
+        ky = float(body.get('y_mm', robot.pos.y))
+        kt = float(body.get('theta_rad', robot.theta))
+    except (TypeError, ValueError, AttributeError) as e:
+        return jsonify({'ok': False, 'error': f'pose unavailable: {e}'}), 400
+
+    _vlog(f'force_recalage: triggered manually (x={kx:.0f} y={ky:.0f} '
+          f't={math.degrees(kt):+.1f}°)')
+    result = _recalage_pick_own_tag(kx, ky, known_theta_rad=kt)
+    if result is None:
+        return jsonify({'ok': False,
+                        'error': 'see vision log for the failure reason'})
+    return jsonify({'ok': True, **result})
+
+
 @app.route('/api/vision/calibration', methods=['GET'])
 def api_vision_calibration():
     """Snapshot of the recalage handshake: known robot pose, raw vision

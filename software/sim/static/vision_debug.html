@@ -100,6 +100,13 @@
   <span class="badge">connected to holOS</span>
   <span class="badge phase-idle" id="phase-badge">homography: idle</span>
   <span style="flex:1"></span>
+  <button id="btn-force-recalage" onclick="forceRecalage()"
+          title="Run OWN-tag pick + heading-offset capture using the robot's CURRENT OTOS pose, without firing the firmware motion routine. Useful to debug the snapshot pipeline independently."
+          style="padding:4px 10px; background:#1f2937; color:var(--accent);
+                 border:1px solid var(--border); border-radius:4px;
+                 cursor:pointer; font:12px ui-monospace,monospace;">
+    ⌖ Force recalage (otos pose)
+  </button>
   <span class="badge" id="last-update">—</span>
 </header>
 
@@ -209,6 +216,26 @@ async function pollVision() {
 }
 setInterval(pollVision, 500);
 pollVision();
+
+async function forceRecalage() {
+  const btn = document.getElementById('btn-force-recalage');
+  if (btn) { btn.disabled = true; btn.textContent = '⌖ Running…'; }
+  try {
+    const r = await fetch('/api/vision/force_recalage',
+                          {method: 'POST', headers: {'Content-Type':'application/json'},
+                           body: '{}'});
+    const j = await r.json();
+    if (j.ok) {
+      console.log('[VISION] force_recalage OK', j);
+    } else {
+      console.warn('[VISION] force_recalage failed:', j);
+    }
+  } catch (e) {
+    console.error('[VISION] force_recalage error:', e);
+  }
+  pollVision();   // refresh tiles + log immediately
+  if (btn) { btn.disabled = false; btn.textContent = '⌖ Force recalage (otos pose)'; }
+}
 
 function renderLog() {
   const el = document.getElementById('t-log');
