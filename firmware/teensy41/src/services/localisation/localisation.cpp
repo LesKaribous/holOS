@@ -150,27 +150,26 @@ FLASHMEM void Localisation::requestHomographyCapture() {
 // Push a "calibrate me at this known position" frame to holOS. Async —
 // the response comes back asynchronously via onVisionCalibrationReply().
 //
-// IMPORTANT — integer-only encoding. snprintf with %f silently breaks
-// on this build (newlib-nano without -u _printf_float): the format
-// returns -1 / leaves the buffer uninitialised, _pushFrame's outer
-// snprintf then sees an oversize garbage string and drops the frame.
-// Same convention as T:a aggregated telemetry: x/y in mm (int), theta
-// in milliradians (int). holOS divides t by 1000 to recover radians.
+// IMPORTANT — built with Arduino String, NOT snprintf. On this build
+// (newlib-nano without -u _printf_float) snprintf silently breaks
+// when given %f, returning -1 / leaving the buffer uninitialised,
+// which then corrupts _pushFrame's outer snprintf and drops the
+// frame entirely. String += handles ints directly and never reaches
+// libc's vsnprintf, so it's bulletproof regardless of build flags.
+//
+// Wire format (integer-only, same convention as T:a):
+//   x in mm (int), y in mm (int), theta in milliradians (int).
+// holOS divides t by 1000 to recover radians.
 FLASHMEM void Localisation::requestVisionCalibration(Vec3 known_pos) {
-    char frame[80];
-    frame[0] = '\0';
-    int n = snprintf(frame, sizeof(frame),
-                     "T:vis cal_request x=%d y=%d t=%d",
-                     (int)known_pos.x,
-                     (int)known_pos.y,
-                     (int)(known_pos.z * 1000.0f));
-    if (n <= 0 || n >= (int)sizeof(frame)) {
-        Console::error("Localisation")
-            << "cal_request frame format failed (n=" << n << ")"
-            << Console::endl;
-        return;
-    }
-    jetsonBridge.pushVisionFrame(frame);
+    String frame;
+    frame.reserve(64);
+    frame  = "T:vis cal_request x=";
+    frame += (int)known_pos.x;
+    frame += " y=";
+    frame += (int)known_pos.y;
+    frame += " t=";
+    frame += (int)(known_pos.z * 1000.0f);
+    jetsonBridge.pushVisionFrame(frame.c_str());
     Console::info("Localisation")
         << "Vision recalage requested at (" << known_pos.x << ", "
         << known_pos.y << ", " << known_pos.z << ")" << Console::endl;
