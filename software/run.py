@@ -3922,20 +3922,34 @@ def _do_connect(port: str):
                     _vlog(f'rx ← T:vis unknown subcommand: {line!r}', 'warn')
             t.subscribe_telemetry('vis', _on_vis)
 
-            # Diagnostic raw-line sniffer for vision frames. The transport's
-            # `_raw` channel fires for EVERY incoming line BEFORE parse_frame
-            # validates the CRC, so if the firmware really emits a
-            # `T:vis cal_request …` frame we'll see it here even when CRC
-            # mismatch causes the formal dispatch to drop it. Filtered to
-            # `cal_request` only — homography_capture is short and the
-            # working path, no need to spam.
+            # Diagnostic raw-line sniffer. The transport's `_raw` channel
+            # fires for EVERY incoming line BEFORE parse_frame validates
+            # the CRC, so we catch both:
+            #   (1) properly-framed `T:vis cal_request …|crc` frames
+            #       even when CRC mismatch would silently drop them at
+            #       parse_frame, and
+            #   (2) unframed firmware Console::info log lines (no `|crc`
+            #       suffix → parse_frame drops them) — these prove the
+            #       firmware function was at least entered.
+            # Filtered to a few keywords to avoid drowning the buffer in
+            # generic motion/safety telemetry.
+            _RAW_KEYWORDS = ('cal_request', 'Vision recalage',
+                             'Homography capture', '(Localisation)',
+                             'T:vis ')
             def _on_raw_vis_sniff(line):
-                if 'cal_request' in line:
-                    # Trim CRC suffix if present, keep enough to debug.
-                    s = line.strip()
-                    if len(s) > 100:
-                        s = s[:100] + '…'
-                    _vlog(f'raw RX (cal_request): {s!r}', 'warn')
+                s = line.strip()
+                if not s:
+                    return
+                if not any(k in s for k in _RAW_KEYWORDS):
+                    return
+                # Skip echoes of our OWN reply commands going back to T41
+                # (e.g. "42:vis_cal_done(...)|crc"). Those start with
+                # a digit:colon and don't carry diagnostic value.
+                if s and s[0].isdigit() and ':' in s.split('|', 1)[0]:
+                    return
+                if len(s) > 120:
+                    s = s[:120] + '…'
+                _vlog(f'raw RX: {s!r}', 'warn')
             t.subscribe_telemetry('_raw', _on_raw_vis_sniff)
 
             # ── T:c → chrono: elapsed ms (same format) ───────────────────
