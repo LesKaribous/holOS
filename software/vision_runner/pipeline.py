@@ -80,10 +80,10 @@ WORLD_FLIP_THETA = True
 # a 2-anchor + heading similarity if you've extended it.  Either way,
 # this dict is the source of truth for the physical positions.
 ANCHORS = {
-    'top_left':     {'tag_id': 23, 'x_mm':  600, 'y_mm':  600},
-    'top_right':    {'tag_id': 22, 'x_mm': 2400, 'y_mm':  600},
-    'bottom_right': {'tag_id': 20, 'x_mm': 2400, 'y_mm': 1400},
-    'bottom_left':  {'tag_id': 21, 'x_mm':  600, 'y_mm': 1400},
+    'top_left':     {'tag_id': 20, 'x_mm':  600, 'y_mm':  600},
+    'top_right':    {'tag_id': 21, 'x_mm': 2400, 'y_mm':  600},
+    'bottom_right': {'tag_id': 23, 'x_mm': 2400, 'y_mm': 2400},
+    'bottom_left':  {'tag_id': 22, 'x_mm':  600, 'y_mm': 2400},
 }
 
 
