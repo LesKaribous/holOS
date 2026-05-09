@@ -62,11 +62,18 @@ WORLD_FLIP_THETA    = True
 #
 # Build helper in §4 converts these world-frame values to BEV-native
 # automatically using WORLD_ORIGIN_CORNER + table dimensions.
+# Physical layout: 4 ArUcos placed 600 mm from each edge of the
+# 3000 × 2000 mm table → inner rectangle 1800 × 800 mm. With
+# WORLD_ORIGIN_CORNER='bottom_right' (left-handed: X+ left, Y+ up):
+#   Tag 20  BR  (right, bottom) → small X, small Y → ( 600,  600)
+#   Tag 21  BL  (left,  bottom) → large X, small Y → (2400,  600)
+#   Tag 22  TR  (right, top)    → small X, large Y → ( 600, 1400)
+#   Tag 23  TL  (left,  top)    → large X, large Y → (2400, 1400)
 ANCHORS = {
-    'top_left':     {'tag_id': 23, 'x_mm': 1400, 'y_mm': 1400, 'yaw_deg': 0},
+    'top_left':     {'tag_id': 23, 'x_mm': 2400, 'y_mm': 1400, 'yaw_deg': 0},
     'top_right':    {'tag_id': 22, 'x_mm':  600, 'y_mm': 1400, 'yaw_deg': 0},
     'bottom_right': {'tag_id': 20, 'x_mm':  600, 'y_mm':  600, 'yaw_deg': 0},
-    'bottom_left':  {'tag_id': 21, 'x_mm': 1400, 'y_mm':  600, 'yaw_deg': 0},
+    'bottom_left':  {'tag_id': 21, 'x_mm': 2400, 'y_mm':  600, 'yaw_deg': 0},
 }
 
 
