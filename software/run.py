@@ -3854,9 +3854,14 @@ def _do_connect(port: str):
                     threading.Thread(target=_do_unlock, daemon=True,
                                      name='vis-hunlock').start()
                 elif line.startswith('cal_request'):
+                    # Firmware sends INTEGERS only — newlib-nano on the
+                    # Teensy 4.1 silently breaks snprintf %f, so the
+                    # protocol agrees on mm (x, y) and milliradians (t)
+                    # as scaled integers. Same convention as T:a.
                     kx = _kv(line, 'x', float, 0.0)
                     ky = _kv(line, 'y', float, 0.0)
-                    kt = _kv(line, 't', float, None)
+                    kt_mrad = _kv(line, 't', float, None)
+                    kt = (kt_mrad / 1000.0) if kt_mrad is not None else None
                     kt_deg = (math.degrees(kt) if kt is not None else None)
                     _vlog(f'rx ← T:vis cal_request x={kx:.0f} y={ky:.0f} '
                           f't={kt_deg:+.1f}°' if kt is not None else
