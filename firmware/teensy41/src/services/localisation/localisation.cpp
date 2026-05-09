@@ -149,15 +149,27 @@ FLASHMEM void Localisation::requestHomographyCapture() {
 
 // Push a "calibrate me at this known position" frame to holOS. Async —
 // the response comes back asynchronously via onVisionCalibrationReply().
+//
+// IMPORTANT — integer-only encoding. snprintf with %f silently breaks
+// on this build (newlib-nano without -u _printf_float): the format
+// returns -1 / leaves the buffer uninitialised, _pushFrame's outer
+// snprintf then sees an oversize garbage string and drops the frame.
+// Same convention as T:a aggregated telemetry: x/y in mm (int), theta
+// in milliradians (int). holOS divides t by 1000 to recover radians.
 FLASHMEM void Localisation::requestVisionCalibration(Vec3 known_pos) {
     char frame[80];
-    // Format: T:vis cal_request x=600.0 y=500.0 t=0.000
-    // holOS parses this in run.py and replies with:
-    //   T:vis cal_done own=1 team=blue x=623.4 y=498.1 t=0.012
-    // (or cal_failed reason=...)
-    snprintf(frame, sizeof(frame),
-             "T:vis cal_request x=%.1f y=%.1f t=%.3f",
-             (double)known_pos.x, (double)known_pos.y, (double)known_pos.z);
+    frame[0] = '\0';
+    int n = snprintf(frame, sizeof(frame),
+                     "T:vis cal_request x=%d y=%d t=%d",
+                     (int)known_pos.x,
+                     (int)known_pos.y,
+                     (int)(known_pos.z * 1000.0f));
+    if (n <= 0 || n >= (int)sizeof(frame)) {
+        Console::error("Localisation")
+            << "cal_request frame format failed (n=" << n << ")"
+            << Console::endl;
+        return;
+    }
     jetsonBridge.pushVisionFrame(frame);
     Console::info("Localisation")
         << "Vision recalage requested at (" << known_pos.x << ", "
