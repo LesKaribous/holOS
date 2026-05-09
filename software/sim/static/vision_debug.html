@@ -78,6 +78,19 @@
                     border-bottom:1px solid var(--border);
                     padding:6px 0 2px; margin-top:4px; }
   .calib .section:first-child { margin-top:0; }
+
+  /* Log tile — newest at the top, monospace, color by level */
+  .log { width:100%; height:100%; overflow:auto;
+         padding:6px 10px;
+         font:11px/1.4 ui-monospace,SFMono-Regular,monospace; }
+  .log .row { display:flex; gap:8px; padding:1px 0;
+              border-bottom:1px dotted rgba(255,255,255,0.04); }
+  .log .row:last-child { border-bottom:none; }
+  .log .t { color:var(--muted); flex:0 0 auto; }
+  .log .m { flex:1 1 auto; word-break:break-word; }
+  .log .row.lvl-info { color:var(--text); }
+  .log .row.lvl-warn .m { color:var(--warn); }
+  .log .row.lvl-err  .m { color:var(--err); }
 </style>
 </head>
 <body>
@@ -121,6 +134,12 @@
     <header class="tile-head">Recalage parameters
       <span class="tile-meta" id="m-calib"></span></header>
     <div class="tile-body" id="t-calib"></div>
+  </section>
+  <section class="tile" style="grid-column: 1 / -1;">
+    <header class="tile-head">Vision log
+      <span class="tile-meta" id="m-log"></span></header>
+    <div class="tile-body" id="t-log"
+         style="align-items:stretch; justify-content:flex-start;"></div>
   </section>
 </main>
 
@@ -185,10 +204,29 @@ async function pollVision() {
 
   renderCompare();
   renderCalib();
+  renderLog();
   updatePhaseBadge();
 }
 setInterval(pollVision, 500);
 pollVision();
+
+function renderLog() {
+  const el = document.getElementById('t-log');
+  const log = (_calibInfo && Array.isArray(_calibInfo.log)) ? _calibInfo.log : [];
+  if (!log.length) {
+    el.innerHTML = '<div class="empty">no events yet — interact with vision (recalage / homography_capture) to populate</div>';
+    return;
+  }
+  // Newest at top.
+  const rows = log.slice().reverse().map(e => {
+    const lvl = e.level || 'info';
+    const t   = e.t_iso || '';
+    const m   = (e.msg || '').replace(/[<>]/g, c => c === '<' ? '&lt;' : '&gt;');
+    return `<div class="row lvl-${lvl}"><span class="t">${t}</span><span class="m">${m}</span></div>`;
+  }).join('');
+  el.innerHTML = `<div class="log">${rows}</div>`;
+  document.getElementById('m-log').textContent = `${log.length} entries`;
+}
 
 function renderPoseTable(container, poses) {
   if (!poses.length) { container.innerHTML = `<div class="empty">no poses</div>`; return; }

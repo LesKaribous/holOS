@@ -171,6 +171,32 @@ _vision_heading_offset_rad: 'Optional[float]' = None
 #   tag_id, team, robot_z_mm, captured_at_t
 _vision_calibration_snapshot: 'Optional[dict]' = None
 
+# Rolling buffer of vision-pipeline events. Surfaced via the
+# /api/vision/calibration endpoint so the debug page can show them
+# live — saves the operator from grepping the holOS console when
+# trying to figure out why a recalage didn't take.
+import collections as _collections
+_vision_log_buffer: '_collections.deque' = _collections.deque(maxlen=100)
+
+
+def _vlog(msg: str, level: str = 'info') -> None:
+    """Mirror an event to (a) the holOS console and (b) the rolling
+    vision-debug log. `level` is one of 'info' / 'warn' / 'err' and
+    drives the row color in the debug tile."""
+    try:
+        _vision_log_buffer.append({
+            't_mono': time.monotonic(),
+            't_iso':  time.strftime('%H:%M:%S'),
+            'level':  level,
+            'msg':    msg,
+        })
+    except Exception:
+        pass
+    try:
+        brain.log(f'[VISION] {msg}')
+    except Exception:
+        pass
+
 # ── Hardware transport (real robot, optional) ─────────────────────────────────
 # When connected, terminal/actuator/strategy commands are routed here instead
 # of the VirtualTransport.  The physics simulation continues running for map
@@ -1910,7 +1936,7 @@ def _recalage_pick_own_tag(known_x_mm, known_y_mm,
     global _vision_heading_offset_rad, _vision_calibration_snapshot
     inst, rec = _get_localization_node()
     if inst is None:
-        brain.log('[VISION] recalage failed: no localization node in active pipeline')
+        _vlog('recalage failed: no localization node in active pipeline', 'err')
         return None
     p = _pipeline_registry.active()
 
@@ -1921,8 +1947,8 @@ def _recalage_pick_own_tag(known_x_mm, known_y_mm,
     with p._lock:
         poses = list(src_rec.outputs.get('pose_list') or [])
     if not poses:
-        brain.log(f'[VISION] recalage failed: no poses emitted by {src_kind} '
-                  f'node yet (homography locked? localization running?)')
+        _vlog(f'recalage failed: no poses emitted by {src_kind} node yet '
+              f'(homography locked? localization running?)', 'err')
         return None
 
     # Determine OWN range from current team (IHM-driven). 'blue' →
@@ -1961,20 +1987,19 @@ def _recalage_pick_own_tag(known_x_mm, known_y_mm,
     cand_str = ', '.join(f"#{tid}@{d:.0f}mm{'(own)' if own else '(other)'}"
                           for tid, d, own in sorted(candidates, key=lambda c: c[1]))
     if best is None:
-        brain.log(f'[VISION] recalage failed: no OWN-range tag detected for '
-                  f'team={team} (own range {sorted(own_range)}). '
-                  f'Candidates this tick: [{cand_str or "none"}]')
+        _vlog(f'recalage failed: no OWN-range tag detected for team={team} '
+              f'(own range {sorted(own_range)}). Candidates this tick: '
+              f'[{cand_str or "none"}]', 'err')
         return None
     if best_d2 > tolerance_mm * tolerance_mm:
-        brain.log(f'[VISION] recalage failed: closest OWN tag #{best.get("tag_id")} '
-                  f'is {best_d2 ** 0.5:.0f}mm from known pos '
-                  f'({known_x_mm:.0f}, {known_y_mm:.0f}) — > tolerance '
-                  f'{tolerance_mm:.0f}mm. Source: {src_kind}. '
-                  f'All candidates: [{cand_str}]')
+        _vlog(f'recalage failed: closest OWN tag #{best.get("tag_id")} is '
+              f'{best_d2 ** 0.5:.0f}mm from known pos ({known_x_mm:.0f}, '
+              f'{known_y_mm:.0f}) — > tolerance {tolerance_mm:.0f}mm. '
+              f'Source: {src_kind}. All candidates: [{cand_str}]', 'err')
         return None
     tag_id = int(best.get('tag_id', 0))
     if tag_id <= 0:
-        brain.log(f'[VISION] recalage failed: best candidate has invalid tag_id={tag_id}')
+        _vlog(f'recalage failed: best candidate has invalid tag_id={tag_id}', 'err')
         return None
 
     # Lock down: only track the picked OWN tag + the opponent range.
@@ -1984,7 +2009,7 @@ def _recalage_pick_own_tag(known_x_mm, known_y_mm,
     try:
         inst.set_params({'team': team, 'track_ids': new_track})
     except Exception as e:
-        brain.log(f'[VISION] recalage: set_params failed: {e}')
+        _vlog(f'recalage: set_params failed: {e}', 'err')
     # No _apply_team call: the team came from sim_state in the first
     # place, so the topbar / pipelines are already consistent.
 
@@ -2003,8 +2028,8 @@ def _recalage_pick_own_tag(known_x_mm, known_y_mm,
         _vision_heading_offset_rad = _wrap_pi(
             float(known_theta_rad) - raw_tag_theta)
         corrected_theta = float(known_theta_rad)
-        brain.log(
-            f"[VISION] recalage OK — own tag #{tag_id}, team={team}, "
+        _vlog(
+            f"recalage OK — own tag #{tag_id}, team={team}, "
             f"d={best_d2 ** 0.5:.0f}mm  Δheading="
             f"{math.degrees(_vision_heading_offset_rad):+.1f}° "
             f"(tag={math.degrees(raw_tag_theta):+.1f}°, "
@@ -2013,8 +2038,8 @@ def _recalage_pick_own_tag(known_x_mm, known_y_mm,
         # Caller didn't pass a known theta — leave the offset alone (may be
         # set from a previous recalage) and echo back the raw tag heading.
         corrected_theta = raw_tag_theta
-        brain.log(f"[VISION] recalage OK — own tag #{tag_id}, team={team}, "
-                  f"d={best_d2 ** 0.5:.0f}mm  (no heading sync)")
+        _vlog(f"recalage OK — own tag #{tag_id}, team={team}, "
+              f"d={best_d2 ** 0.5:.0f}mm  (no heading sync)")
 
     # Persist a snapshot for the debug page. Single source of truth for
     # the operator: which tag we locked, the (vision − known) residual
@@ -2218,6 +2243,13 @@ def api_vision_calibration():
         snap_payload['heading_offset_deg'] = (math.degrees(ho)
                                               if ho is not None else None)
 
+    # Tail of the rolling vision-event log — debug page polls this
+    # endpoint at 2 Hz and renders the entries. Copy each entry so
+    # appending `age_s` doesn't mutate the buffer in place.
+    now_t = time.monotonic()
+    log_tail = [{**entry, 'age_s': now_t - entry.get('t_mono', now_t)}
+                for entry in list(_vision_log_buffer)]
+
     return jsonify({
         'snapshot':         snap_payload,
         'heading_offset_rad': _vision_heading_offset_rad,
@@ -2225,6 +2257,7 @@ def api_vision_calibration():
                                if _vision_heading_offset_rad is not None
                                else None),
         'rectify':          rect_state,
+        'log':              log_tail,
     })
 
 
@@ -3339,10 +3372,12 @@ def _do_connect(port: str):
                     except Exception as e:
                         print(f"[T:vis] reply failed: {e}")
                 if line.startswith('homography_capture'):
+                    _vlog('rx ← T:vis homography_capture')
                     def _do_lock():
                         global _vision_heading_offset_rad
                         rect_node, _ = _get_rectify_node()
                         if rect_node is None:
+                            _vlog('homography lock failed: no rectify node', 'err')
                             _send('vis_h_locked(ok=0,reason=no_rectify_node)')
                             return
                         # Arm the node — its worker thread will fit H on
@@ -3363,9 +3398,8 @@ def _do_connect(port: str):
                             # the previous H, drop it so we can't apply
                             # a stale one.
                             _vision_heading_offset_rad = None
-                            brain.log(
-                                f"[VISION] homography locked "
-                                f"(mode={result.get('mode','?')}, "
+                            _vlog(
+                                f"homography locked (mode={result.get('mode','?')}, "
                                 f"anchors={result.get('detected_anchor_ids', [])})")
                             _send('vis_h_locked(ok=1)')
                         else:
@@ -3374,11 +3408,12 @@ def _do_connect(port: str):
                             # spinning forever on every subsequent tick.
                             rect_node.release_capture()
                             reason = (result or {}).get('reason', 'timeout_no_anchors')
-                            brain.log(f'[VISION] homography lock failed: {reason}')
+                            _vlog(f'homography lock failed: {reason}', 'err')
                             _send(f'vis_h_locked(ok=0,reason={reason})')
                     threading.Thread(target=_do_lock, daemon=True,
                                      name='vis-hlock').start()
                 elif line.startswith('homography_release'):
+                    _vlog('rx ← T:vis homography_release')
                     def _do_unlock():
                         global _vision_heading_offset_rad, _vision_calibration_snapshot
                         rect_node, _ = _get_rectify_node()
@@ -3386,7 +3421,7 @@ def _do_connect(port: str):
                             rect_node.release_capture()
                         _vision_heading_offset_rad = None
                         _vision_calibration_snapshot = None
-                        brain.log('[VISION] homography released')
+                        _vlog('homography released')
                         _send('vis_h_locked(ok=0,reason=released)')
                     threading.Thread(target=_do_unlock, daemon=True,
                                      name='vis-hunlock').start()
@@ -3394,6 +3429,10 @@ def _do_connect(port: str):
                     kx = _kv(line, 'x', float, 0.0)
                     ky = _kv(line, 'y', float, 0.0)
                     kt = _kv(line, 't', float, None)
+                    kt_deg = (math.degrees(kt) if kt is not None else None)
+                    _vlog(f'rx ← T:vis cal_request x={kx:.0f} y={ky:.0f} '
+                          f't={kt_deg:+.1f}°' if kt is not None else
+                          f'rx ← T:vis cal_request x={kx:.0f} y={ky:.0f} t=?')
                     def _do_cal():
                         result = _recalage_pick_own_tag(
                             kx, ky, known_theta_rad=kt)
@@ -3410,6 +3449,9 @@ def _do_connect(port: str):
                     threading.Thread(target=_do_cal, daemon=True,
                                      name='vis-cal').start()
                 elif line.startswith('pose_request'):
+                    # Don't log every single pose_request — they fire
+                    # every time the strategy queries vision (potentially
+                    # 5-10 Hz during match), would drown the buffer.
                     def _do_pose():
                         pose = _get_latest_own_pose()
                         if pose is None:
@@ -3423,7 +3465,7 @@ def _do_connect(port: str):
                     threading.Thread(target=_do_pose, daemon=True,
                                      name='vis-pose').start()
                 else:
-                    print(f"[T:vis] unknown subcommand: {line!r}")
+                    _vlog(f'rx ← T:vis unknown subcommand: {line!r}', 'warn')
             t.subscribe_telemetry('vis', _on_vis)
 
             # ── T:c → chrono: elapsed ms (same format) ───────────────────
