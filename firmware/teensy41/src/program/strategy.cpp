@@ -45,9 +45,11 @@ Adafruit_PWMServoDriver pwm = Adafruit_PWMServoDriver();
 // Durée estimée des déplacements principaux (ms) — à affiner selon les mesures
 namespace Timing {
     constexpr uint32_t COLLECT_STOCK_A = 8000;
-    constexpr uint32_t COLLECT_STOCK_B = 6000;
+    constexpr uint32_t COLLECT_STOCK_B = 8000;
+    constexpr uint32_t COLLECT_STOCK_C = 8000;
     constexpr uint32_t STORE_STOCK_A = 8000;
-    constexpr uint32_t STORE_STOCK_B = 6000;
+    constexpr uint32_t STORE_STOCK_B = 8000;
+    constexpr uint32_t STORE_STOCK_C = 8000;
     constexpr uint32_t THERMO_SET = 15000;
 }
 
@@ -222,7 +224,6 @@ static BlockResult blockStoreB() {
 static BlockResult blockCollectC() {
     waitMs(800);
     localisation.syncToVision(1000);
-    probeBorder(TableCompass::SOUTH, RobotCompass::BC, 100, 300);
     if(ihm.isColor(Settings::BLUE)) {
         collectStock(POI::stockBlue_04+ Vec2(20,-30), TableCompass::NORTH, RobotCompass::AB);
     } else {
@@ -250,12 +251,35 @@ static BlockResult thermometer_set() {
     motion.collide(false);
     motion.snap(false);
     motion.yield(true);
+
+    waitMs(500); // Attente avant de démarrer (stabilisation éventuelle)
+    
+    actuators.getActuatorGroup(RobotCompass::CA).moveServoToPose((int)ServoIDs::ELEVATOR, (int) ElevatorPose::UP, 100);
+
     if(ihm.isColor(Settings::BLUE)) {
-        async motion.goAlign(POI::thermometer_hot_blue_approach, RobotCompass::C, getCompassOrientation(TableCompass::SOUTH));
+        async motion.goAlign(POI::thermometer_hot_blue_approach - Vec2(0,200), RobotCompass::C, getCompassOrientation(TableCompass::SOUTH));
+        localisation.syncToVision(1000); // Sync initial localisation to vision (blocking, 2s timeout)
+
+        async motion.go(POI::thermometer_hot_blue_approach);
+        probeBorder(TableCompass::SOUTH, RobotCompass::BC, 100, 300);
+        probeBorder(TableCompass::EAST, RobotCompass::CA, 100, 300);
+        
+        async motion.go(POI::thermometer_hot_blue_approach);
+        async motion.align(RobotCompass::C, getCompassOrientation(TableCompass::SOUTH));
+
         RuntimeConfig::setInt("motion.timeout_ms", 2000); // 5 secondes
         async motion.go(POI::thermometer_hot_blue);
     } else {
-        async motion.goAlign(POI::thermometer_hot_yellow_approach, RobotCompass::C, getCompassOrientation(TableCompass::WEST));
+        async motion.goAlign(POI::thermometer_hot_yellow_approach - Vec2(0,200), RobotCompass::C, getCompassOrientation(TableCompass::WEST));
+        localisation.syncToVision(1000); // Sync initial localisation to vision (blocking, 2s timeout)
+
+        async motion.go(POI::thermometer_hot_yellow_approach);
+        probeBorder(TableCompass::SOUTH, RobotCompass::CA, 100, 300);
+        probeBorder(TableCompass::WEST, RobotCompass::C, 100, 300);
+
+        async motion.go(POI::thermometer_hot_yellow_approach);
+        async motion.align(RobotCompass::C, getCompassOrientation(TableCompass::WEST));
+
         RuntimeConfig::setInt("motion.timeout_ms", 2000); // 5 secondes
         async motion.go(POI::thermometer_hot_yellow);
     }
@@ -383,8 +407,8 @@ FLASHMEM void registerBlocks() {
     reg.add("store_A",   10, 150, Timing::STORE_STOCK_A,   blockStoreA);
     reg.add("collect_B",   10, 150, Timing::COLLECT_STOCK_B,   blockCollectB, isZoneBFree);
     reg.add("store_B",   10, 150, Timing::STORE_STOCK_B,   blockStoreB, isZoneBFree);
-    reg.add("collect_C",   10, 150, Timing::COLLECT_STOCK_B,   blockCollectC, isZoneCFree);
-    reg.add("store_C",   10, 150, Timing::STORE_STOCK_B,   blockStoreC, isZoneCFree);
+    reg.add("collect_C",   10, 150, Timing::COLLECT_STOCK_C,   blockCollectC, isZoneCFree);
+    //reg.add("store_C",   10, 150, Timing::STORE_STOCK_C,   blockStoreC, isZoneCFree);
     reg.add("thermo_set", 8, 150, Timing::THERMO_SET,   thermometer_set, isZoneThermoFree);
     // reg.add("collect_B", 8, 80, Timing::COLLECT_STOCK_B, blockCollectB, isZoneBFree);
     // reg.add("store_B",   8, 80, Timing::STORE_STOCK_B,   blockStoreB);
@@ -404,7 +428,7 @@ FLASHMEM void registerBlocks() {
 FLASHMEM void match() {
     Console::info("Strategy") << "match() entry  SP=" << String(freeStack()) << Console::endl;
 
-    motion.setFeedrate(0.6f);
+    motion.setFeedrate(0.8f);
     motion.enableCruiseMode();
     motion.collide(false);
     motion.snap(false);
@@ -455,22 +479,23 @@ FLASHMEM void match() {
     m.setMaxRetries(Mission::INFINITE_RETRIES);
 
     Mission& stockC = planner.addMission("stock_C", 5, 150);
-    stockC.addStep("collect_B", Timing::COLLECT_STOCK_B, blockCollectC, isZoneCFree);
-    stockC.addStep("store_B",   Timing::STORE_STOCK_B,   blockStoreC, nullptr, false);  // non-annulable : robot porte un objet
+    stockC.addStep("collect_C", Timing::COLLECT_STOCK_C, blockCollectC, isZoneCFree);
+    //stockC.addStep("store_C",   Timing::STORE_STOCK_C,   blockStoreC, nullptr, false);  // non-annulable : robot porte un objet
     stockC.addDependency(m);
     stockC.setMaxRetries(1);
 
-    waitMs(500); // Attente avant de démarrer (stabilisation éventuelle)
-    localisation.syncToVision(1000); // Sync initial localisation to vision (blocking, 2s timeout)
     //Sortir zone départ 350 550
     if(ihm.isColor(Settings::BLUE)) {
-        async motion.go(Vec2(3000-350,550));
+        async motion.go(Vec2(3000-400,550));
     } else {
-        async motion.go(Vec2(350,550));
+        async motion.go(Vec2(400,550));
     }
 
     planner.run();
     RuntimeConfig::setInt("motion.timeout_ms", 20000); // 5 secondes
+
+    waitMs(500); // Attente avant de démarrer (stabilisation éventuelle)
+    localisation.syncToVision(1000); // Sync initial localisation to vision (blocking, 2s timeout)
 
     bool success = false;
     for(int i = 0; i < 5; i++){
@@ -507,13 +532,21 @@ FLASHMEM void nearEnd(){
     motion.snap(false);
     motion.yield(true);
 
+    localisation.syncToVision(1000); // Sync initial localisation to vision (blocking, 2s timeout)
+
+    actuators.getActuatorGroup(RobotCompass::CA).moveServoToPose((int)ServoIDs::GRABBER_RIGHT, (int) ManipulatorPose::STORE, 100);
+    actuators.getActuatorGroup(RobotCompass::CA).moveServoToPose((int)ServoIDs::ELEVATOR, (int) ElevatorPose::DOWN, 100);
+    actuators.getActuatorGroup(RobotCompass::CA).moveServoToPose((int)ServoIDs::GRABBER_LEFT, (int) ManipulatorPose::STORE, 100);
+    actuators.store(RobotCompass::AB);//take object in case we are still holding it
+    actuators.moveElevator(RobotCompass::CA, ElevatorPose::STORE);
+    actuators.moveElevator(RobotCompass::AB, ElevatorPose::STORE);
+    waitMs(800);
 
     if(ihm.isColor(Settings::BLUE)) {
-        async motion.go(Vec2(3000-350,700));
+        async motion.goAlign(Vec2(3000-350,700), RobotCompass::BC, getCompassOrientation(TableCompass::NORTH));
     } else {
-        async motion.go(Vec2(350,700));
+        async motion.goAlign(Vec2(350,700), RobotCompass::C, getCompassOrientation(TableCompass::NORTH));
     }
-
 
     if(ihm.isColor(Settings::BLUE)) {
         async motion.go(POI::startBlue + Vec2(0,-100));
@@ -522,6 +555,7 @@ FLASHMEM void nearEnd(){
         async motion.go(POI::startYellow + Vec2(0,-100));
     }
     motion.collide(false);
+    actuators.drop(RobotCompass::AB);//take object in case we are still holding it
     // // Time to wait befor SIMAs leave the Backstage
     // unsigned long left = chrono.getTimeLeft();
     // unsigned long waitSima = (left > 5000) ? (left - 5000) : 0; 

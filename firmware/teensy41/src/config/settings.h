@@ -128,12 +128,12 @@ namespace Settings {
 
         // ---- PID timing ----
         const int
-        PID_INTERVAL     = 2000;              // µs — période cible du cycle de contrôle
+        PID_INTERVAL     = 1800;              // µs — période cible du cycle de contrôle
 
         // ---- Limites cinématiques ----
         const float
-        MAX_SPEED     = 2800,             // mm/s  (OTOS max tracking speed : 2.5 m/s)
-        MAX_ACCEL     = 1500,             // mm/s²
+        MAX_SPEED     = 2000,             // mm/s  (OTOS max tracking speed : 2.5 m/s)
+        MAX_ACCEL     = 2000,             // mm/s²
         MAX_ROT_SPEED = 10,               // rad/s
         MAX_ROT_ACCEL = 30.0f;            // rad/s²
 

@@ -429,6 +429,7 @@ FLASHMEM void visionRecalage(){
     captureAt(Vec2(X(350),  650));
     captureAt(Vec2(X(500),  1000));
     captureAt(Vec2(X(1000), 850));
+    captureAt(Vec2(X(600), 600));
     // Examples to add later (uncomment + adjust to your table layout):
     // captureAt(Vec2(X(800),  500));
     // captureAt(Vec2(X(1300), 1500));
