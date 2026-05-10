@@ -13,13 +13,13 @@ Modes:
                         videos/images/USB cams, bypass virtual camera).
   - One argument      → treat it as a source path. Kind auto-detected by
                         extension.
-                            python vision.py vision/homography/data/video.3.mp4
-                            python vision.py 0
-                            python vision.py http://other-host:5174/stream.mjpg
+                            python tools/vision_runner.py vision/homography/data/video.3.mp4
+                            python tools/vision_runner.py 0
+                            python tools/vision_runner.py http://other-host:5174/stream.mjpg
   - Two arguments     → kind + path, same as the runner CLI:
-                            python vision.py video path/to/clip.mp4
-                            python vision.py camera 0
-                            python vision.py image path/to/pic.png
+                            python tools/vision_runner.py video path/to/clip.mp4
+                            python tools/vision_runner.py camera 0
+                            python tools/vision_runner.py image path/to/pic.png
 
 Pass --port / --host / etc. through the same way as the runner.
 """
@@ -32,9 +32,10 @@ import os
 import sys
 from pathlib import Path
 
-_HERE = Path(__file__).resolve().parent
-_RUNNER_DIR = _HERE / 'vision_runner'
-_LAST = _RUNNER_DIR / 'last_source.json'
+_HERE     = Path(__file__).resolve().parent       # software/tools
+_SW       = _HERE.parent                            # software/
+_RUNNER_DIR = _SW / 'vision_runner'
+_LAST     = _RUNNER_DIR / 'last_source.json'
 
 VIDEO_EXTS = {'.mp4', '.mkv', '.avi', '.mov', '.webm', '.m4v'}
 IMAGE_EXTS = {'.png', '.jpg', '.jpeg', '.bmp', '.tif', '.tiff'}
@@ -54,8 +55,8 @@ def _scan_sources() -> list[tuple[str, str, str]]:
     """Scan well-known media folders. Returns list of (kind, path, label)."""
     found = []
     candidates = [
-        _HERE / 'vision' / 'data',
-        _HERE / 'vision' / 'homography' / 'data',
+        _SW / 'vision' / 'data',
+        _SW / 'vision' / 'homography' / 'data',
     ]
     for root in candidates:
         if not root.is_dir():
@@ -64,10 +65,10 @@ def _scan_sources() -> list[tuple[str, str, str]]:
             ext = f.suffix.lower()
             if ext in VIDEO_EXTS:
                 found.append(('video', str(f),
-                              f.relative_to(_HERE).as_posix()))
+                              f.relative_to(_SW).as_posix()))
             elif ext in IMAGE_EXTS:
                 found.append(('image', str(f),
-                              f.relative_to(_HERE).as_posix()))
+                              f.relative_to(_SW).as_posix()))
     # Always offer camera 0 as last option
     found.append(('camera', '0', 'camera (device 0)'))
     return found
@@ -171,10 +172,11 @@ def main() -> None:
         raise SystemExit('usage: python vision.py [SOURCE_KIND] SOURCE_PATH '
                          '[--port N] [--host H] [--pick]')
 
-    # Hand over to the runner
+    # Hand over to the runner. vision_runner is a sibling package of
+    # tools/ at software/, so push the software root onto sys.path.
     sys.argv = ['vision_runner', kind, path, *extras]
-    if str(_HERE) not in sys.path:
-        sys.path.insert(0, str(_HERE))
+    if str(_SW) not in sys.path:
+        sys.path.insert(0, str(_SW))
     from vision_runner.runner import main as runner_main
     runner_main()
 

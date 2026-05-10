@@ -26,7 +26,8 @@
     </div>
     <button class="btn green" id="btn-start" onclick="unifiedStart()" title="Start match (HW: firmware start, Sim: run strategy)">▶ Start</button>
     <button class="btn red"   id="btn-stop"  onclick="unifiedStop()"  title="Stop/Pause match">⏸ Stop</button>
-    <button class="btn"       id="btn-recalage" onclick="runRecalage()" title="Trigger the firmware recalage routine (wall-probe + vision recalage). Hardware only.">⌖ Recalage</button>
+    <button class="btn"       id="btn-recalage" onclick="runRecalage()" title="Classical recalage: homography lock + prise d'origine. Hardware only.">⌖ Recalage</button>
+    <button class="btn"       id="btn-vision-recalage" onclick="runVisionRecalage()" title="Vision parallax calibration sweep — drives the robot through several known points to refine the parallax fit. Requires classical recalage first.">📐 Vision calib</button>
     <button class="btn"       onclick="resetSim()"    title="Reset simulation">↺</button>
     <button class="btn"       onclick="reloadStrategy()" title="Hot-reload strategy">⟳</button>
   </div>

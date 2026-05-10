@@ -4468,6 +4468,58 @@ def on_hw_fire(data):
 
 # ── Match control (remote start/stop via bridge) ─────────────────────────────
 
+@socketio.on('vision_recalage')
+def on_vision_recalage():
+    """Fire the firmware `vision_recalage()` routine — the multi-pose
+    parallax calibration sweep. Requires the homography to be locked
+    first (= classical `recalage()` must have run), otherwise emits an
+    error event without sending the command to the firmware.
+
+    Server-side, every cal_request the firmware fires during the sweep
+    auto-tunes the parallax and persists to disk. After the sweep the
+    saved config sticks across reboots — no need to rerun every match.
+    """
+    t = _active_transport()
+    if t is None or not t.is_connected:
+        _vlog('vision_recalage: no HW transport connected', 'err')
+        socketio.emit('vision_recalage_state',
+                      {'running': False, 'ok': False, 'error': 'not_connected'})
+        return
+
+    # Guard: homography must be locked. The firmware would log its own
+    # error and bail, but we'd rather catch it here so the user sees a
+    # clear toast instead of a silent firmware "ok" reply.
+    rect_node, _ = _get_rectify_node()
+    if rect_node is not None:
+        try:
+            rect_state = rect_node.get_state() or {}
+            if not rect_state.get('homography_locked'):
+                _vlog('vision_recalage: homography NOT locked — run '
+                      'classical recalage first', 'err')
+                socketio.emit('vision_recalage_state',
+                              {'running': False, 'ok': False,
+                               'error': 'homography_not_locked'})
+                return
+        except Exception as e:
+            _vlog(f'vision_recalage: rect_node state read failed: {e}', 'warn')
+
+    def _do():
+        _vlog('vision_recalage: command sent to firmware (HW)')
+        socketio.emit('vision_recalage_state', {'running': True})
+        # 120 s ceiling: 3-pose sweep at 5 s per waypoint + transit ≈
+        # 30-40 s typical. Leaving plenty of headroom for extended
+        # waypoint lists.
+        ok, res = t.execute('vision_recalage()', timeout_ms=120000)
+        if ok:
+            _vlog(f'vision_recalage: firmware reply OK ({res})')
+        else:
+            _vlog(f'vision_recalage: firmware reply FAIL ({res})', 'err')
+        socketio.emit('vision_recalage_state',
+                      {'running': False, 'ok': bool(ok), 'res': res})
+
+    threading.Thread(target=_do, daemon=True, name='vision-recalage-cmd').start()
+
+
 @socketio.on('recalage')
 def on_recalage():
     """Fire the firmware `recalage()` routine (= long-press on the robot's

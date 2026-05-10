@@ -56,6 +56,7 @@ FLASHMEM void registerCommands() {
     //CommandHandler::registerCommand("open(side)", "Open actuator on a specific side", command_open);
     //CommandHandler::registerCommand("close(side)", "Close actuator on a specific side", command_close);
     CommandHandler::registerCommand("recalage()", "Execute recalage routine", command_recalage);
+    CommandHandler::registerCommand("vision_recalage()", "Execute vision parallax calibration sweep (requires recalage first)", command_vision_recalage);
 
     //Actuators
     CommandHandler::registerCommand("elevator(side, pose)", "Raise elevator to desired pose", command_elevator);
@@ -866,6 +867,10 @@ FLASHMEM void command_lower(const args_t& args){
 
 FLASHMEM void command_recalage(const args_t& args){
     recalage();
+}
+
+FLASHMEM void command_vision_recalage(const args_t& args){
+    visionRecalage();
 }
 
 

@@ -11,7 +11,8 @@ inline const T& choose(bool cond, const T& a, const T& b) {
 #define RIGHT true
 #define LEFT false
 
-void recalage();
+void recalage();          // Classical: homography lock + prise d'origine
+void visionRecalage();    // Multi-pose parallax sweep (requires recalage() first)
 void match();
 void registerBlocks();   // Register all C++ blocks into BlockRegistry (called at boot)
 

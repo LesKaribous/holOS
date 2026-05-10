@@ -483,27 +483,33 @@ FLASHMEM void waitMs(unsigned long time){
     //delay(time);
 }
 
-FLASHMEM void recalage(){
-    // ── Multi-pose vision parallax Scalibration toggle ────────────────────
-    // When true, after the standard recalage the robot drives through 3
-    // known table positions and triggers one vision recalage at each.
-    // holOS pools the resulting (naive, true) pairs through the LSQ
-    // solver, auto-applies the implied object_z_mm to the parallax
-    // node, and persists the calibration to data/parallax_calibration.json
-    // so subsequent boots reuse it without rerunning the procedure.
-    // Set to true once after every camera (re)mount; flip back to
-    // false for normal match-day flows — the saved config is loaded
-    // automatically by holOS at boot.
-    constexpr bool CALIBRATE_VISION_PARALLAX = true;
+// ============================================================
+//  recalage() — classical match-day recalage.
+//
+//  Just two things: ask holOS to freeze the homography, then drive
+//  the robot to its known starting pose. NO vision-tag pick, NO
+//  parallax sweep — those moved into visionRecalage() (separate
+//  command, opt-in, must run AFTER classical recalage so the H is
+//  already locked).
+//
+//  Match-day flow:
+//    1. Press the on-robot reset button (long press) or the holOS
+//       UI button → this routine runs (~5 s). The persisted parallax
+//       calibration is already in effect (loaded at holOS boot from
+//       data/parallax_calibration.json).
+//    2. Match starts.
+//
+//  Vision-calib day flow (once per camera (re)mount):
+//    1. Run classical recalage above. ✓ appears.
+//    2. Press the holOS "Vision calib" button → multi-pose sweep,
+//       refits parallax z_obj, persists to disk.
+// ============================================================
 
-    // ── Homography capture (preparation phase) ───────────────────────────
-    // Ask holOS to freeze the table↔camera homography NOW, before the
-    // robot moves into the field of view and partially occludes the
-    // anchor tags. The request is async — the lock will be acknowledged
-    // by the time we reach the vision-recalage block at the end of this
-    // routine. No need to wait synchronously: even on the slow XBee
-    // path, the next-frame capture finishes in well under a second
-    // while the motion sequence below takes several seconds.
+FLASHMEM void recalage(){
+    // Ask holOS to freeze the table↔camera homography NOW, while the
+    // robot is still outside the field of view (or far from the
+    // anchor tags). The request is async — the lock is acknowledged
+    // within 1-2 frames, well before the start-zone goAlign finishes.
     localisation.requestHomographyCapture();
 
     motion.engage();
@@ -512,119 +518,105 @@ FLASHMEM void recalage(){
     waitMs(600);
 
     if(ihm.isColor(Settings::BLUE)){
-
         motion.setAbsPosition(Vec3( Vec2(3000-140,100), 150 * DEG_TO_RAD));
         motion.goAlign(Vec2(3000-350, 300), RobotCompass::AB, getCompassOrientation(TableCompass::WEST));
         actuators.moveElevator(RobotCompass::CA, ElevatorPose::DOWN);
-        /*
-        motion.setFeedrate(0.2);
-        probeBorder(TableCompass::SOUTH, RobotCompass::BC,100);
-        probeBorder(TableCompass::EAST,  RobotCompass::CA,100);//when starting this line
-        motion.setFeedrate(1.0);
-        */
-        //calibrate();
-
-        //async motion.go(POI::testB);
-        //async motion.go(POI::b2);
-        
-        //async motion.align(RobotCompass::BC, getCompassOrientation(TableCompass::SOUTH));
-        //motion.setAbsPosition(Vec3(POI::b2, motion.getOrientation()));
-
     }else{
         motion.setAbsPosition(Vec3(140, 125 ,-90 * DEG_TO_RAD));
         motion.goAlign(Vec2(350, 300), RobotCompass::AB, getCompassOrientation(TableCompass::EAST));
-        /*
-        motion.setFeedrate(0.2);
-        probeBorder(TableCompass::SOUTH, RobotCompass::BC,100);
-        probeBorder(TableCompass::WEST,  RobotCompass::AB,100);
-        motion.setFeedrate(1.0);
-        */
-        //calibrate();
-
-        //async motion.go(POI::y2);
-        //async motion.go(POI::y2);
-
-        //async motion.align(RobotCompass::BC, getCompassOrientation(TableCompass::SOUTH));
-        //motion.setAbsPosition(Vec3(POI::y2, motion.getOrientation()));
     }
-    //motion.disengage();
     motion.setFeedrate(1.0);
 
-    // ── Vision recalage ──────────────────────────────────────────────────
-    // Robot is now stationary at a known pose. Hand it to holOS so vision
-    // can lock the closest ArUco as our OWN tag, infer team from the tag
-    // id range, and capture the heading offset between the robot frame
-    // and the (random) tag-mount orientation. Then sync OTOS to whatever
-    // vision reports — every subsequent vision pose is corrected by that
-    // offset so the firmware always sees its own heading in the table
-    // frame, even though the tag itself can be glued on at any angle.
-    os.wait(3000);  // settle so the camera sees a still frame (motion
-                     // blur on the tag is the #1 cause of cal_request
-                     // failures — overshoot the camera shutter time
-                     // generously, recalage is not time-critical)
+    initPump(); //TODO : Integrate into Actuators
+}
+
+
+// ============================================================
+//  visionRecalage() — multi-pose vision parallax calibration.
+//
+//  REQUIRES the homography to be locked first (= classical recalage
+//  must have run). Bails with an error log if not.
+//
+//  Drives the robot through N known waypoints across its half of
+//  the table. At each waypoint the robot stops, settles, and fires
+//  a cal_request to holOS. Server-side, every pair refits the
+//  parallax solver and the resulting object_z_mm is pushed to the
+//  live parallax node + persisted to disk.
+//
+//  Run this once per camera (re)mount. The persisted config is
+//  reloaded at every holOS boot so match-day recalage doesn't
+//  re-run the sweep.
+//
+//  To improve reliability: add more entries to WAYPOINTS below.
+//  Spread them across the team's half of the table to give the
+//  solver coverage in both X and Y.
+// ============================================================
+
+FLASHMEM void visionRecalage(){
+    if (!localisation.isHomographyLocked()) {
+        Console::error("Strategy")
+            << "[visionRecalage] homography NOT locked — run classical "
+            << "recalage() first" << Console::endl;
+        return;
+    }
+
+    Console::info("Strategy")
+        << "[visionRecalage] start (multi-pose parallax sweep)" << Console::endl;
+
+    const bool isBlue = ihm.isColor(Settings::BLUE);
+    // Mirror X for the BLUE team. Yellow frame is canonical.
+    auto X = [isBlue](float x) -> float {
+        return isBlue ? (3000.0f - x) : x;
+    };
+    // Drive to a pose, settle, fire one cal_request, wait for reply.
+    // 3 s settle covers the chassis velocity tail + camera shutter.
+    // 1.5 s reply wait covers up to 3 server-side retries.
+    auto captureAt = [](Vec2 pos) {
+        async motion.go(pos);
+        os.wait(3000);
+        localisation.requestVisionCalibration(localisation.getPosition());
+        os.wait(1500);
+    };
+
+    motion.engage();
+    motion.setFeedrate(0.6);
+
+    // Initial cal_request at the current (start zone) pose. Adds
+    // a near-edge sample to the calibration set. The robot is
+    // assumed to be at the recalage start position from a prior
+    // classical recalage.
+    os.wait(3000);
     localisation.requestVisionCalibration(localisation.getPosition());
-    os.wait(1500);  // wait for vis_cal_done — bumped to cover up to 3
-                     // server-side retries (each gated on a fresh
-                     // pipeline tick @ 4 fps = ~250 ms)
+    os.wait(1500);
     if (localisation.isVisionCalibrated()) {
         Vec3 offset = localisation.syncToVision();
-        (void)offset;   // syncToVision logs the vision − otos delta itself
+        (void)offset;
     }
 
-    // ── Multi-pose parallax calibration sweep ────────────────────────────
-    // Drive through 3 calibration points across the team's half of the
-    // table. Each cal_request adds a (naive, true) pair on the holOS
-    // side; after every pair the LSQ solver re-fits factor → object_z_mm
-    // and pushes it to the live parallax node. After the 3 points the
-    // robot returns to the start zone via the first waypoint.
-    //
-    // Coordinates are written in the YELLOW frame; the X axis mirrors
-    // (3000 - X) for BLUE so the same call site covers both teams.
-    if (CALIBRATE_VISION_PARALLAX) {
-        Console::info("Strategy")
-            << "[calib] Multi-pose vision parallax — start" << Console::endl;
+    // ── Calibration waypoints (add more here for better coverage) ───
+    // Coordinates in YELLOW frame, auto-mirrored to (3000 - x) for BLUE.
+    // Spread across the half-table — different X and Y to constrain
+    // the parallax factor in both axes. RMS in /vision_debug should
+    // drop as more pairs are added.
+    captureAt(Vec2(X(350),  650));
+    captureAt(Vec2(X(500),  1000));
+    captureAt(Vec2(X(1000), 850));
+    // Examples to add later (uncomment + adjust to your table layout):
+    // captureAt(Vec2(X(800),  500));
+    // captureAt(Vec2(X(1300), 1500));
+    // captureAt(Vec2(X(200),  1800));
 
-        const bool isBlue = ihm.isColor(Settings::BLUE);
-        // Lambda picks the right X for the active team. ihm is a global
-        // singleton so the empty capture list is fine.
-        auto X = [isBlue](float x) -> float {
-            return isBlue ? (3000.0f - x) : x;
-        };
-        // Drive to a pose, settle so the camera sees a stationary tag,
-        // fire one cal_request, give holOS time to reply (the auto-tune
-        // happens server-side as soon as the pair is appended).
-        // 3 s settle: the holonomic chassis still has a small velocity
-        // tail after motion.go reports done, and the overhead camera
-        // shutter is slow — anything under ~2 s gives us a blurred tag.
-        // 1.5 s reply wait covers the Python-side retry loop (up to 3
-        // attempts × ~500 ms each).
-        auto captureAt = [](Vec2 pos) {
-            async motion.go(pos);
-            os.wait(3000);
-            localisation.requestVisionCalibration(localisation.getPosition());
-            os.wait(1500);
-        };
+    // Return to start zone with proper orientation.
+    const float startCompass = isBlue
+        ? getCompassOrientation(TableCompass::WEST)
+        : getCompassOrientation(TableCompass::EAST);
+    async motion.goAlign(Vec2(X(350), 650), RobotCompass::AB, startCompass);
+    async motion.goAlign(Vec2(X(350), 300), RobotCompass::AB, startCompass);
+    motion.setFeedrate(1.0);
 
-        captureAt(Vec2(X(350),  650));
-        captureAt(Vec2(X(500),  1000));
-        captureAt(Vec2(X(1000), 850));
-        // Return-trip transit waypoints — same target orientation as the
-        // initial start-zone goAlign so the robot ends the routine with
-        // its actuator face pointed where the strategy expects it (away
-        // from the wall on the team's near side: EAST in yellow, WEST
-        // in blue). No capture on these transits.
-        const float startCompass = isBlue
-            ? getCompassOrientation(TableCompass::WEST)
-            : getCompassOrientation(TableCompass::EAST);
-        async motion.goAlign(Vec2(X(350), 650), RobotCompass::AB, startCompass);
-        async motion.goAlign(Vec2(X(350), 300), RobotCompass::AB, startCompass);
-
-        Console::info("Strategy")
-            << "[calib] Multi-pose vision parallax — done (config saved by holOS)"
-            << Console::endl;
-    }
-
-    initPump(); //TODO : Integrate into Actuators
+    Console::info("Strategy")
+        << "[visionRecalage] done — calibration saved by holOS"
+        << Console::endl;
 }
 
 

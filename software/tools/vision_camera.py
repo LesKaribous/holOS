@@ -16,8 +16,9 @@ import json
 import sys
 from pathlib import Path
 
-_HERE = Path(__file__).resolve().parent
-_LAST = _HERE / 'vision_camera' / 'last_source.json'
+_HERE = Path(__file__).resolve().parent     # software/tools
+_SW   = _HERE.parent                         # software/
+_LAST = _SW / 'vision_camera' / 'last_source.json'
 
 VIDEO_EXTS = {'.mp4', '.mkv', '.avi', '.mov', '.webm', '.m4v'}
 IMAGE_EXTS = {'.png', '.jpg', '.jpeg', '.bmp', '.tif', '.tiff'}
@@ -33,15 +34,15 @@ def _kind_from_path(p: str) -> str:
 
 def _scan_sources():
     found = []
-    for root in [_HERE / 'vision' / 'data',
-                 _HERE / 'vision' / 'homography' / 'data']:
+    for root in [_SW / 'vision' / 'data',
+                 _SW / 'vision' / 'homography' / 'data']:
         if root.is_dir():
             for f in sorted(root.iterdir()):
                 ext = f.suffix.lower()
                 if ext in VIDEO_EXTS:
-                    found.append(('video', str(f), f.relative_to(_HERE).as_posix()))
+                    found.append(('video', str(f), f.relative_to(_SW).as_posix()))
                 elif ext in IMAGE_EXTS:
-                    found.append(('image', str(f), f.relative_to(_HERE).as_posix()))
+                    found.append(('image', str(f), f.relative_to(_SW).as_posix()))
     found.append(('camera', '0', 'camera (device 0)'))
     return found
 
@@ -109,9 +110,11 @@ def main():
         kind, path = positional[0], positional[1]
         _save_last(kind, path)
 
+    # vision_camera is a sibling package of tools/ at software/. Push
+    # the software root onto sys.path so `from vision_camera.camera` resolves.
     sys.argv = ['vision_camera', kind, path, *extras]
-    if str(_HERE) not in sys.path:
-        sys.path.insert(0, str(_HERE))
+    if str(_SW) not in sys.path:
+        sys.path.insert(0, str(_SW))
     from vision_camera.camera import main as cam_main
     cam_main()
 

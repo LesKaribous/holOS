@@ -59,9 +59,6 @@ _VISION_DIR = os.path.join(
 _INTRINSICS_PATH = os.path.abspath(os.path.join(
     _VISION_DIR, 'calibrations', 'camera_intrinsics.json'
 ))
-_TWINVISION_SETTINGS_PATH = os.path.abspath(os.path.join(
-    _VISION_DIR, 'twinvision_settings.json'
-))
 
 CV2_AVAILABLE = False
 try:
