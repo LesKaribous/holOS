@@ -309,6 +309,42 @@ FLASHMEM void JetsonBridge::handleRequest(Request& req) {
         return;
     }
 
+    // ── Embed-cam detection reply ─────────────────────────────────────
+    //  Sent by holOS in response to our `T:vis embed_detect`. holOS
+    //  fetches one JPEG from the ESP32-CAM, runs blob detection, and
+    //  returns the lateral offset (mm, image frame) + bias hint we use
+    //  in the strategy to align the gripper on the 4 stock objects.
+    //  Shape: embed_detect_reply(n=..,offset=..,bias=..,valid=0|1)
+    if (cmd.startsWith("embed_detect_reply(")) {
+        EmbedDetect r{};
+        int o = cmd.indexOf('(') + 1, c = cmd.lastIndexOf(')');
+        String body = cmd.substring(o, c);
+        int p;
+        p = body.indexOf("n=");
+        if (p >= 0) {
+            int e = body.indexOf(',', p); if (e < 0) e = body.length();
+            r.n = body.substring(p + 2, e).toInt();
+        }
+        p = body.indexOf("offset=");
+        if (p >= 0) {
+            int e = body.indexOf(',', p); if (e < 0) e = body.length();
+            r.offset_mm = body.substring(p + 7, e).toFloat();
+        }
+        p = body.indexOf("bias=");
+        if (p >= 0) {
+            int e = body.indexOf(',', p); if (e < 0) e = body.length();
+            r.bias = body.substring(p + 5, e).toInt();
+        }
+        p = body.indexOf("valid=");
+        if (p >= 0) {
+            int e = body.indexOf(',', p); if (e < 0) e = body.length();
+            r.valid = (body.substring(p + 6, e).toInt() != 0);
+        }
+        vision.onEmbedDetectReply(r);
+        req.reply("ok");
+        return;
+    }
+
     // ── Vision pose reply: vis_pose(x=..,y=..,t=..,valid=0|1)
     //  Sent by holOS in response to our T:vis pose_request.
     if (cmd.startsWith("vis_pose(")) {

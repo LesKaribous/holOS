@@ -1621,6 +1621,37 @@
         <span class="vd-pill" id="vd-det-frames">frames: 0</span>
       </div>
 
+      <!-- ── Embedded camera (ESP32-CAM) one-shot detect ───────────────── -->
+      <!-- Drives services/embed_cam.py via /api/embed_cam/detect, then -->
+      <!-- displays the annotated preview + results in the tiles below. -->
+      <div class="vd-bar" style="background:var(--surface2,#1f2a36);border-top:1px solid rgba(255,255,255,.05);">
+        <b style="color:var(--text-dim);font-size:12px">Embed cam:</b>
+        <button class="btn-sm accent" onclick="embedCamDetect()"
+                title="Fetch a JPEG from the robot-mounted ESP32-CAM and run blob detection.">
+          ▶ Detect
+        </button>
+        <label class="toggle" title="Re-trigger detection at ~1 Hz">
+          <input type="checkbox" id="embed-cam-loop"
+                 onchange="embedCamSetLoop(this.checked)"> loop
+        </label>
+        <span style="flex:1"></span>
+        <button class="btn-sm" onclick="embedCamToggleConfig()" id="embed-cam-cfg-btn"
+                title="Show / hide tuning parameters">⚙</button>
+      </div>
+      <div id="embed-cam-cfg" class="hidden"
+           style="padding:8px 14px;background:var(--surface,#0f1620);border-bottom:1px solid rgba(255,255,255,.05);font-size:12px;display:flex;flex-wrap:wrap;gap:8px 18px;align-items:center;">
+        <label>URL <input type="text" id="ec-url" style="width:240px" value="http://192.168.1.81/capture"></label>
+        <label>expected count <input type="number" id="ec-expected-count" min="1" max="10" value="4" style="width:55px"></label>
+        <label>spread (mm) <input type="number" id="ec-spread-mm" min="10" max="2000" value="150" style="width:65px"></label>
+        <label>min area <input type="number" id="ec-min-area" min="1" value="80" style="width:65px"></label>
+        <label>max area <input type="number" id="ec-max-area" min="100" value="20000" style="width:75px"></label>
+        <label>blur k <input type="number" id="ec-blur" min="1" max="31" step="2" value="5" style="width:45px"></label>
+        <label>thr block <input type="number" id="ec-thr-block" min="3" max="99" step="2" value="31" style="width:55px"></label>
+        <label>thr C <input type="number" id="ec-thr-C" min="-20" max="20" value="7" style="width:45px"></label>
+        <label>fallback mm/px <input type="number" id="ec-fallback-scale" step="0.01" value="0.5" style="width:65px"></label>
+        <button class="btn-sm" onclick="embedCamSaveConfig()">Save</button>
+      </div>
+
       <!-- 2-column grid: live preview (annotated) + check results table.
            The pipeline must publish:
              detect_preview → annotated frame (color masks, ROIs, found markers)

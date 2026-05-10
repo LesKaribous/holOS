@@ -197,6 +197,12 @@ _vision_log_buffer: '_collections.deque' = _collections.deque(maxlen=100)
 _vision_recalage_user_evt: 'threading.Event' = threading.Event()
 _vision_recalage_user_state: 'Optional[str]' = None   # 'ok' | 'cancel' | None
 
+# pose_request invalid-streak tracking — fires a rate-limited warning into
+# the vision-debug log when the pipeline keeps returning no own-team pose
+# while the firmware is actively asking. Reset to 0 on the next valid reply.
+_pose_request_invalid_streak: int = 0
+_pose_request_invalid_last_warn_mono: float = 0.0
+
 
 def _vlog(msg: str, level: str = 'info') -> None:
     """Mirror an event to (a) the holOS console and (b) the rolling
@@ -1483,6 +1489,72 @@ def api_missions_run_step():
         return jsonify({'ok': False, 'error': f'No firmware command for step type {t!r}'}), 400
     ok, res = _hw_transport.execute(cmd, timeout_ms=15000)
     return jsonify({'ok': ok, 'cmd': cmd, 'response': res})
+
+
+# ── Embedded camera (ESP32-CAM on the robot) ─────────────────────────────────
+# Drives the Detection sub-tab. Fetches a single JPEG from
+# http://<robot-cam>/capture, runs blob detection, returns the lateral
+# offset + bias hint the strategy needs to align the gripper on the 4
+# stock objects (see services/embed_cam.py for the algorithm).
+try:
+    from services import embed_cam as _embed_cam
+except Exception as _ec_err:
+    _embed_cam = None
+    print(f"[EmbedCam] module unavailable: {_ec_err}")
+
+
+def _emit_embed_detect_feeds(result: dict) -> None:
+    """Publish a detection result to the Detection sub-tab. Sends two
+    `vision_feed` SocketIO frames: an annotated preview (image) and a
+    list of check rows (json)."""
+    if _embed_cam is None:
+        return
+    import base64 as _b64
+    try:
+        jpeg = _embed_cam.preview_to_jpeg(result)
+        if jpeg:
+            socketio.emit('vision_feed', {
+                'feed_id':  'detect_preview',
+                'pipeline': 'embed_cam',
+                'kind':     'frame',
+                'jpeg':     _b64.b64encode(jpeg).decode(),
+                'meta':     {'label': 'Embed cam · ESP32'},
+            })
+        checks = _embed_cam.result_to_checks(result)
+        socketio.emit('vision_feed', {
+            'feed_id':  'detect_results',
+            'pipeline': 'embed_cam',
+            'kind':     'json',
+            'data':     checks,
+            'meta':     {'label': 'Embed cam · checks'},
+        })
+    except Exception as e:
+        print(f"[EmbedCam] feed emit failed: {e}")
+
+
+@app.route('/api/embed_cam/detect', methods=['POST'])
+def api_embed_cam_detect():
+    """One-shot detection trigger — invoked by the Detection sub-tab.
+    Optional body `{config: {...}}` patches the runtime tuning knobs
+    (blur, thresholds, expected count, scale fallback…)."""
+    if _embed_cam is None:
+        return jsonify({'ok': False, 'error': 'embed_cam unavailable'}), 503
+    body = request.get_json(silent=True) or {}
+    if isinstance(body.get('config'), dict):
+        _embed_cam.set_config(body['config'])
+    result = _embed_cam.detect_once()
+    _emit_embed_detect_feeds(result)
+    return jsonify({'ok': True, 'result': _embed_cam.result_to_json(result)})
+
+
+@app.route('/api/embed_cam/config', methods=['GET', 'POST'])
+def api_embed_cam_config():
+    if _embed_cam is None:
+        return jsonify({'ok': False, 'error': 'embed_cam unavailable'}), 503
+    if request.method == 'POST':
+        body = request.get_json(silent=True) or {}
+        _embed_cam.set_config(body)
+    return jsonify({'ok': True, 'config': _embed_cam.get_config()})
 
 
 # ── Vision API ────────────────────────────────────────────────────────────────
@@ -4033,6 +4105,33 @@ def _do_connect(port: str):
                         )
                     threading.Thread(target=_do_pose, daemon=True,
                                      name='vis-pose').start()
+                elif line.startswith('embed_detect'):
+                    # Robot-mounted ESP32-CAM detection (see
+                    # services/embed_cam.py). Pulled by the strategy
+                    # before closing the gripper on the 4 stock objects.
+                    # Reply with `embed_detect_reply(n=..,offset=..,
+                    # bias=..,valid=0|1)`. Run in a daemon thread so
+                    # the camera fetch (~200-800 ms) doesn't stall the
+                    # telemetry pipe.
+                    _vlog('rx ← T:vis embed_detect')
+                    def _do_embed():
+                        if _embed_cam is None:
+                            _send('embed_detect_reply(n=0,valid=0,'
+                                  'reason=no_module)')
+                            return
+                        result = _embed_cam.detect_once()
+                        _emit_embed_detect_feeds(result)
+                        n      = int(result.get('n', 0))
+                        off_mm = float(result.get('offset_mm', 0.0))
+                        bias   = int(result.get('bias', 0))
+                        valid  = 1 if result.get('valid', False) else 0
+                        _send(
+                            f"embed_detect_reply(n={n},"
+                            f"offset={off_mm:.1f},bias={bias},"
+                            f"valid={valid})"
+                        )
+                    threading.Thread(target=_do_embed, daemon=True,
+                                     name='vis-embed-detect').start()
                 else:
                     _vlog(f'rx ← T:vis unknown subcommand: {line!r}', 'warn')
             t.subscribe_telemetry('vis', _on_vis)

@@ -33,6 +33,18 @@ using ColorCallback = void (*)(Vec2 pos, ObjectColor color);
 using AICallback    = void (*)(const char* result);
 
 
+// ─── Embedded-camera detection (ESP32-CAM mounted on the robot) ──────
+// Returned by TwinVision::queryEmbedDetect() — see vision.cpp.
+// Strategy uses `offset_mm` to nudge the gripper laterally so all 4
+// stock objects sit centred in the camera frame before grabbing.
+struct EmbedDetect {
+    int   n        = 0;        ///< tags detected (0..expected)
+    float offset_mm= 0.0f;     ///< lateral offset (image frame, +X = right)
+    int   bias     = 0;        ///< when n<expected: -1 → move LEFT, +1 → RIGHT, 0 → no hint
+    bool  valid    = false;    ///< true iff scale calibrated and n >= 1
+};
+
+
 class TwinVision : public Service {
 public:
     TwinVision();
@@ -48,9 +60,23 @@ public:
     void        requestAI(const char* type, const char* params,
                           AICallback cb = nullptr, uint32_t timeoutMs = 2000);
 
+    /// Blocking-with-timeout query of the robot-mounted ESP32-CAM via
+    /// holOS (services/embed_cam.py). Returns false on timeout.  The
+    /// host runs blob detection on a single JPEG fetched from the
+    /// embed cam and replies with `embed_detect_reply(...)`.
+    bool queryEmbedDetect(EmbedDetect& out, uint32_t timeoutMs = 2500);
+
+    /// Called from JetsonBridge when an embed_detect_reply lands.
+    /// Not for user code.
+    void onEmbedDetectReply(const EmbedDetect& r);
+
     bool isConnected() const;
 
     SINGLETON(TwinVision);
+
+private:
+    volatile bool m_pendingEmbedReply = false;
+    EmbedDetect   m_lastEmbed{};
 };
 
 SINGLETON_EXTERN(TwinVision, vision)

@@ -1,4 +1,7 @@
 #include "vision.h"
+#include "os/console.h"
+#include "services/jetson/jetson_bridge.h"
+#include <Arduino.h>   // millis()
 
 SINGLETON_INSTANTIATE(TwinVision, vision)
 
@@ -58,3 +61,36 @@ void        TwinVision::requestAI(const char*, const char*, AICallback cb, uint3
     if (cb) cb("unavailable");
 }
 bool        TwinVision::isConnected() const                      { return false; }
+
+// ─── Embedded-camera detection ─────────────────────────────────────
+//
+// Same request/reply shape as Localisation::queryVisionPose: push a
+// `T:vis embed_detect` frame to holOS, then spin-wait while the bridge
+// keeps draining serial.  holOS replies asynchronously with
+// `embed_detect_reply(n=..,offset=..,bias=..,valid=0|1)` which lands
+// in onEmbedDetectReply().
+
+bool TwinVision::queryEmbedDetect(EmbedDetect& out, uint32_t timeoutMs) {
+    m_pendingEmbedReply = true;
+    m_lastEmbed = EmbedDetect{};
+    jetsonBridge.pushVisionFrame("T:vis embed_detect");
+    unsigned long t0 = millis();
+    while (m_pendingEmbedReply && (millis() - t0) < timeoutMs) {
+        jetsonBridge.run();
+        delay(2);
+    }
+    if (m_pendingEmbedReply) {
+        m_pendingEmbedReply = false;
+        Console::warn("TwinVision")
+            << "queryEmbedDetect timeout after " << long(timeoutMs)
+            << "ms" << Console::endl;
+        return false;
+    }
+    out = m_lastEmbed;
+    return true;
+}
+
+void TwinVision::onEmbedDetectReply(const EmbedDetect& r) {
+    m_lastEmbed         = r;
+    m_pendingEmbedReply = false;
+}

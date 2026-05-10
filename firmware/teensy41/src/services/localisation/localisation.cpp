@@ -255,6 +255,10 @@ FLASHMEM void Localisation::requestVisionCalibrationManual(Vec3 target_pos) {
 }
 
 // Block (with timeout) waiting for the next pose reply from holOS.
+// Retries on valid=0 replies (own tag not in latest pipeline tick) as long
+// as time remains — the pipeline emits an 'own' pose only on ticks where
+// the camera actually sees the OWN-range tag, so a single miss can happen
+// even when the system is fully healthy.
 FLASHMEM bool Localisation::queryVisionPose(Vec3& out_pose,
                                             unsigned long timeout_ms) {
     if (!m_visionCalibrated) {
@@ -263,32 +267,42 @@ FLASHMEM bool Localisation::queryVisionPose(Vec3& out_pose,
             << Console::endl;
         return false;
     }
-    // Mark a pending request so onVisionPoseReply can flip the flag back.
-    m_pendingPoseReply = true;
-    m_lastPoseValid    = false;
-    // Send the request frame
-    jetsonBridge.pushVisionFrame("T:vis pose_request");
-    // Spin-wait for the reply (or timeout). millis() is monotonic.
     unsigned long t0 = millis();
-    while (m_pendingPoseReply && (millis() - t0) < timeout_ms) {
-        // Let other services run — JetsonBridge::run() drains the bridge
-        // serial buffer and dispatches replies.
-        jetsonBridge.run();
-        delay(2);
+    int attempts = 0;
+    while ((millis() - t0) < timeout_ms) {
+        ++attempts;
+        m_pendingPoseReply = true;
+        m_lastPoseValid    = false;
+        jetsonBridge.pushVisionFrame("T:vis pose_request");
+
+        // Spin-wait for this attempt's reply (or remaining time budget).
+        while (m_pendingPoseReply && (millis() - t0) < timeout_ms) {
+            jetsonBridge.run();
+            delay(2);
+        }
+        if (m_pendingPoseReply) {
+            // Whole budget consumed before a reply landed.
+            m_pendingPoseReply = false;
+            Console::warn("Localisation")
+                << "queryVisionPose timeout after " << long(timeout_ms)
+                << "ms (" << attempts << " attempts)"
+                << Console::endl;
+            return false;
+        }
+        if (m_lastPoseValid) {
+            out_pose = m_lastVisionPose;
+            return true;
+        }
+        // valid=0: holOS replied but no own pose in the latest tick.
+        // Give the pipeline a couple of camera ticks to catch the tag
+        // before re-asking.
+        delay(100);
     }
-    if (m_pendingPoseReply) {
-        // Timed out
-        m_pendingPoseReply = false;
-        Console::warn("Localisation")
-            << "queryVisionPose timeout after " << long(timeout_ms) << "ms"
-            << Console::endl;
-        return false;
-    }
-    if (!m_lastPoseValid) {
-        return false;
-    }
-    out_pose = m_lastVisionPose;
-    return true;
+    Console::warn("Localisation")
+        << "queryVisionPose: no valid pose after " << long(timeout_ms)
+        << "ms (" << attempts << " attempts, all valid=0)"
+        << Console::endl;
+    return false;
 }
 
 // Convenience: query then push the vision fix into Motion + OTOS.

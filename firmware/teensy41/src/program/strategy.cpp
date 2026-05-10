@@ -65,6 +65,92 @@ static uint32_t freeStack() {
     return sp;  // raw SP; compare across calls to see consumption
 }
 
+// ─── Vision refinement (embed cam) ─────────────────────────────────
+//
+// Once the robot is at the approach point, ask holOS to run blob
+// detection on a single ESP32-CAM JPEG (services/embed_cam.py).
+// Returns the lateral offset (mm, table frame) to apply to the grab
+// pose so the gripper centres on the 4 stock objects. When fewer
+// than 4 tags are visible we nudge laterally (using the `bias` hint
+// the host returns) and retry; if both directions fail we proceed
+// with the original pose and just log a warning.
+//
+//   tc            : approach direction (also the camera-facing dir)
+//   rc            : robot face doing the grab (camera is mounted here)
+//   approach      : in/out. Updated to the position we ended up at —
+//                   the caller re-uses it as the actual grab origin.
+// Returns the cumulative lateral offset (mm) to apply to `grab`.
+//
+// Side direction convention: image-frame +X (right of the camera) maps
+// to the direction `getCompassOrientation(tc) - 90°` in the table
+// frame.  Positive offset_mm → tags lean right → robot moves +X.
+static float refineWithEmbedCam(Vec2& approach, TableCompass tc, RobotCompass rc) {
+    constexpr float    NUDGE_MM     = 50.0f;
+    constexpr int      EXPECTED_N   = 4;
+    constexpr uint32_t DETECT_TIMEOUT_MS = 2500;
+    constexpr uint32_t SETTLE_MS    = 250;
+
+    const float lateral_dir_rad =
+        (getCompassOrientation(tc) - 90.0f) * DEG_TO_RAD;
+    auto sideVec = [&](float mm) -> Vec2 {
+        return PolarVec(lateral_dir_rad, mm).toVec2();
+    };
+
+    EmbedDetect r{};
+    // Attempt #1 — straight read at the approach pose.
+    if (vision.queryEmbedDetect(r, DETECT_TIMEOUT_MS)
+            && r.n >= EXPECTED_N && r.valid) {
+        Console::info("Strategy")
+            << "[vision] full read, offset=" << r.offset_mm << "mm"
+            << Console::endl;
+        return r.offset_mm;
+    }
+    Console::info("Strategy")
+        << "[vision] partial n=" << r.n << "/" << EXPECTED_N
+        << " bias=" << r.bias << Console::endl;
+
+    // Pick the direction to try first.  bias != 0 → use the hint;
+    // bias == 0 (or no tag at all) → try +1 (right) first.
+    int firstDir = (r.bias != 0) ? r.bias : +1;
+    float accum  = 0.0f;
+
+    // Attempt #2 — nudge in the hinted direction.
+    accum = firstDir * NUDGE_MM;
+    approach += sideVec(firstDir * NUDGE_MM);
+    async motion.goAlign(approach, rc, getCompassOrientation(tc));
+    waitMs(SETTLE_MS);
+    if (vision.queryEmbedDetect(r, DETECT_TIMEOUT_MS)
+            && r.n >= EXPECTED_N && r.valid) {
+        Console::info("Strategy")
+            << "[vision] full after nudge=" << accum
+            << "mm, offset=" << r.offset_mm << "mm" << Console::endl;
+        return accum + r.offset_mm;
+    }
+
+    // Attempt #3 — swing 2× in the opposite direction.
+    int secondDir = -firstDir;
+    accum += secondDir * (2.0f * NUDGE_MM);
+    approach += sideVec(secondDir * (2.0f * NUDGE_MM));
+    async motion.goAlign(approach, rc, getCompassOrientation(tc));
+    waitMs(SETTLE_MS);
+    if (vision.queryEmbedDetect(r, DETECT_TIMEOUT_MS)
+            && r.n >= EXPECTED_N && r.valid) {
+        Console::info("Strategy")
+            << "[vision] full after swing=" << accum
+            << "mm, offset=" << r.offset_mm << "mm" << Console::endl;
+        return accum + r.offset_mm;
+    }
+
+    // Couldn't see all 4 — use whatever partial fix we got, or 0.
+    Console::warn("Strategy")
+        << "[vision] could not see " << EXPECTED_N
+        << " tags — proceeding with partial offset accum=" << accum
+        << " r.n=" << r.n << " r.offset=" << r.offset_mm
+        << Console::endl;
+    return (r.valid && r.n > 0) ? (accum + r.offset_mm) : accum;
+}
+
+
 // Offset commun factored
 static void collectStock(Vec2 target, TableCompass tc, RobotCompass rc) {
     constexpr float    APPROACH_OFFSET = 350.0f;
@@ -82,6 +168,27 @@ static void collectStock(Vec2 target, TableCompass tc, RobotCompass rc) {
 
     actuators.grab(rc); //wide open
     async motion.goAlign(approach, rc, getCompassOrientation(tc));
+
+    // ── Vision-based lateral refinement on the embed cam ────────
+    // Look at the 4 objects from the approach pose and shift the
+    // gripper sideways so all 4 sit centred under it before we
+    // close. If the camera is not reachable / nothing detected,
+    // refineWithEmbedCam returns ~0 and we fall through to the
+    // original pose. `approach` is updated in-place by the helper
+    // to wherever the robot physically ended up after its nudges.
+    {
+        const float lateral_dir_rad =
+            (getCompassOrientation(tc) - 90.0f) * DEG_TO_RAD;
+        float lateral_mm = refineWithEmbedCam(approach, tc, rc);
+        // grab is still expressed relative to the ORIGINAL target —
+        // applying the full cumulative lateral offset re-centres the
+        // gripper on the (now confirmed) midpoint of the 4 tags.
+        grab += PolarVec(lateral_dir_rad, lateral_mm).toVec2();
+        Console::info("Strategy")
+            << "[vision] applied lateral offset = " << lateral_mm
+            << "mm" << Console::endl;
+    }
+
     RuntimeConfig::setInt("motion.timeout_ms", 2000); // 5 secondes
     motion.collide(true);
     async motion.goAlign(grab,     rc, getCompassOrientation(tc));

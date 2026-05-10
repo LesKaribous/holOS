@@ -300,6 +300,100 @@ function _renderChecksList(container, checks) {
   </table>`;
 }
 
+// ── Embed cam (ESP32-CAM) one-shot detect ───────────────────────────────
+// Drives services/embed_cam.py via /api/embed_cam/detect. The annotated
+// preview + check list arrive over SocketIO as standard `vision_feed`
+// frames (detect_preview / detect_results) so the existing tile renderer
+// just picks them up — no extra glue here.
+let _embedCamLoopTimer = null;
+
+function embedCamDetect() {
+  // Apply any tuning the user changed in the config drawer before firing.
+  const cfg = _embedCamReadConfig();
+  fetch('/api/embed_cam/detect', {
+    method:  'POST',
+    headers: {'Content-Type': 'application/json'},
+    body:    JSON.stringify({config: cfg}),
+  })
+  .then(r => r.json())
+  .then(j => {
+    if (!j.ok) {
+      console.warn('[embed_cam] detect failed:', j.error);
+    }
+  })
+  .catch(e => console.warn('[embed_cam] detect error:', e));
+}
+
+function embedCamSetLoop(on) {
+  if (_embedCamLoopTimer) {
+    clearInterval(_embedCamLoopTimer);
+    _embedCamLoopTimer = null;
+  }
+  if (on) {
+    embedCamDetect();
+    _embedCamLoopTimer = setInterval(embedCamDetect, 1000);
+  }
+}
+
+function embedCamToggleConfig() {
+  const el = document.getElementById('embed-cam-cfg');
+  if (el) el.classList.toggle('hidden');
+}
+
+function _embedCamReadConfig() {
+  const get = (id) => {
+    const el = document.getElementById(id);
+    return el ? el.value : null;
+  };
+  return {
+    url:                  get('ec-url'),
+    expected_count:       parseInt(get('ec-expected-count'), 10),
+    expected_spread_mm:   parseFloat(get('ec-spread-mm')),
+    min_area_px:          parseFloat(get('ec-min-area')),
+    max_area_px:          parseFloat(get('ec-max-area')),
+    blur_ksize:           parseInt(get('ec-blur'), 10),
+    thresh_block:         parseInt(get('ec-thr-block'), 10),
+    thresh_C:             parseInt(get('ec-thr-C'), 10),
+    fallback_scale_mm_per_px: parseFloat(get('ec-fallback-scale')),
+  };
+}
+
+function embedCamSaveConfig() {
+  fetch('/api/embed_cam/config', {
+    method:  'POST',
+    headers: {'Content-Type': 'application/json'},
+    body:    JSON.stringify(_embedCamReadConfig()),
+  })
+  .then(r => r.json())
+  .then(j => {
+    if (j.ok) console.log('[embed_cam] config saved');
+  });
+}
+
+// Pull current server-side defaults on first show.
+(function _embedCamInit() {
+  fetch('/api/embed_cam/config')
+    .then(r => r.json())
+    .then(j => {
+      if (!j.ok || !j.config) return;
+      const set = (id, v) => {
+        const el = document.getElementById(id);
+        if (el && v !== undefined && v !== null) el.value = v;
+      };
+      const c = j.config;
+      set('ec-url',                  c.url);
+      set('ec-expected-count',       c.expected_count);
+      set('ec-spread-mm',            c.expected_spread_mm);
+      set('ec-min-area',             c.min_area_px);
+      set('ec-max-area',             c.max_area_px);
+      set('ec-blur',                 c.blur_ksize);
+      set('ec-thr-block',            c.thresh_block);
+      set('ec-thr-C',                c.thresh_C);
+      set('ec-fallback-scale',       c.fallback_scale_mm_per_px);
+    })
+    .catch(() => {});  // endpoint not ready — defaults stay in the inputs
+})();
+
 // ── Playback strip wiring ───────────────────────────────────────────────
 // Buttons live inside `.vd-playback[data-view=...]`. They translate into
 // /api/vision/pipelines/<name>/source POST requests using the pipeline
