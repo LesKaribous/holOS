@@ -2,6 +2,7 @@
 #include "os/commands.h"
 #include "config/env.h"
 #include "config/calibration.h"
+#include "program/auto_tune.h"
 #include "config/runtime_config.h"
 #include "services/mission/mission_controller.h"
 #include "strategy.h"
@@ -30,6 +31,26 @@
  */
 FLASHMEM void programAuto() {
     Console::println("Started match");
+
+    // ── Refresh the OTOS IMU calibration RIGHT BEFORE the match runs.
+    // Boot-time calibration is taken when the chassis is cold; the few
+    // minutes of preparation (placement, recalage, team setup, waits)
+    // warm the electronics so the gyro/accel bias drifts. Re-calibrating
+    // here rebases the bias against the current operating temperature.
+    //
+    // Lock the chassis (motion.engage → stepper detent torque) and let
+    // it settle for 1 s so the IMU samples a truly stationary frame.
+    // Motors should already be engaged from prior recalage, but be
+    // explicit — calibration on a floating chassis gives bad bias.
+    // Cost: ~1.6 s blocking on a 100 s match (= 1.6%). Failure here is
+    // non-fatal — we keep the previous offsets and log a warning.
+    motion.engage();
+    waitMs(1000);
+    if (!localisation.calibrate()) {
+        Console::warn("OS") << "Match-start IMU re-calibration failed — "
+                            << "keeping previous offsets" << Console::endl;
+    }
+
     ihm.setPage(IHM::Page::MATCH);
     lidar.enable();
     safety.enable();
@@ -242,6 +263,11 @@ FLASHMEM void onRobotBoot() {
     motion.engage();
     ihm.drawBootProgress("Linking Localisation...");
     os.attachService(&localisation); ihm.addBootProgress(10);
+    // Hold-still window before boot calibration — operator may still
+    // be wiring / placing the robot. Match-start re-calibration in
+    // programAuto() skips this since the robot is already settled.
+    Console::println("Ensure the OTOS is flat and stationary");
+    delay(2000);
     localisation.calibrate();
     motion.disengage();
 

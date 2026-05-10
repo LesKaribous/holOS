@@ -7,6 +7,7 @@
 #include "services/mission/mission_controller.h"
 #include "program/routines.h"
 #include "program/strategy.h"
+#include "program/auto_tune.h"
 #include "config/poi.h"
 
 FLASHMEM void registerCommands() {

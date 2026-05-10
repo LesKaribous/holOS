@@ -132,7 +132,7 @@ namespace Settings {
 
         // ---- Limites cinématiques ----
         const float
-        MAX_SPEED     = 1800,             // mm/s  (OTOS max tracking speed : 2.5 m/s)
+        MAX_SPEED     = 2800,             // mm/s  (OTOS max tracking speed : 2.5 m/s)
         MAX_ACCEL     = 1500,             // mm/s²
         MAX_ROT_SPEED = 10,               // rad/s
         MAX_ROT_ACCEL = 30.0f;            // rad/s²
@@ -229,18 +229,19 @@ namespace Settings {
         // Open-loop profile : StepperController (aucune correction OTOS).
         inline const CalibrationProfile Stepper = {
             { 1.0f,    1.0f,    1.0f   },   // Holonomic : A   B   C
-            { 1.089f, -1.089f,  0.831f },   // Cartesian : X   Y   ROT
+            { 1.211321, -1.211321,  0.831f },   // Cartesian : X   Y   ROT
+            //{ 1.089f, -1.089f,  0.831f },   // Cartesian : X   Y   ROT
         };
         // Closed-loop profile : PositionController + OTOS + PID.
         inline const CalibrationProfile Cruise = {
             { 1.0f,       1.0f,       1.0f   },   // Holonomic : A   B   C
-            { 1.223249f, -1.203677f,  0.831f },   // Cartesian : X   Y   ROT
+            { 1.211321, -1.211321,  0.831f }   // Cartesian : X   Y   ROT
         };
         // Alias : utilisé pour initialiser Calibration::Current
         // (mode par défaut = cruise closed-loop).
         inline const CalibrationProfile& DEFAULTS = Cruise;
 
-        constexpr float OTOS_LINEAR_DEFAULT  = 1.022f;
+        constexpr float OTOS_LINEAR_DEFAULT  = 0.966655f;
         constexpr float OTOS_ANGULAR_DEFAULT = 1.0f;
     }
 

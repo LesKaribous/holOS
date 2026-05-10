@@ -18,7 +18,12 @@ public:
     Vec3 getPosition();
     Vec3 getVelocity();
     void read();
-    void calibrate();
+    /// Run the OTOS IMU calibration over the full 255-sample window
+    /// (hardware max — the register is uint8_t). Verifies the OTOS
+    /// progress register reaches 0 and retries up to 3 times if the
+    /// firmware-side polling loop early-exits before convergence.
+    /// Returns true iff calibration completed and m_calibrated is set.
+    bool calibrate();
     void setLinearScale(float value);
     void setAngularScale(float value);
 

@@ -1,6 +1,7 @@
 #include "localisation.h"
 #include "os/console.h"
 #include "services/jetson/jetson_bridge.h"
+#include "services/motion/motion.h"
 
 #include <Wire.h>
 #include <SPI.h>
@@ -106,16 +107,63 @@ FLASHMEM void Localisation::read()
     //Console::info() << _unsafePosition << Console::endl;
 }
 
-FLASHMEM void Localisation::calibrate() {
-    Console::println("Ensure the OTOS is flat and stationary");
-    delay(2000);
-    Console::info("Localisation") << "Calibrating IMU...";
-    // Calibrate the IMU, which removes the accelerometer and gyroscope offsets
-    otos.calibrateImu(400, true);
-    //otos.setLinearScalar(1.05f);//maison
-    otos.setLinearScalar(m_scale);//coupe
-    Console::println("done.");
-    m_calibrated = true;
+FLASHMEM bool Localisation::calibrate() {
+    if (!m_connected) {
+        Console::warn("Localisation")
+            << "calibrate() skipped — OTOS not connected" << Console::endl;
+        m_calibrated = false;
+        return false;
+    }
+
+    // SparkFun OTOS firmware accepts up to 255 samples per calibrateImu()
+    // call (numSamples is uint8_t — register is one byte). The previous
+    // value 400 silently overflowed to 144 (400 % 256), giving a
+    // half-strength calibration. 255 = full strength = ~612 ms blocking.
+    constexpr uint8_t  SAMPLES   = 255;
+    constexpr int      MAX_TRIES = 3;
+
+    for (int attempt = 1; attempt <= MAX_TRIES; ++attempt) {
+        Console::info("Localisation")
+            << "IMU calibration (" << (int)SAMPLES
+            << " samples, try " << attempt << "/" << MAX_TRIES << ")..."
+            << Console::endl;
+
+        // calibrateImu(true) blocks polling kRegImuCalib until it reaches
+        // 0 (= done) or the polling loop hits its numSamples attempts
+        // ceiling. The "early exit" failure mode the field reports is
+        // exactly that ceiling — comm latency or a slow OTOS boot can
+        // push the register past the polling window.
+        sfTkError_t err = otos.calibrateImu(SAMPLES, true);
+
+        // Belt-and-suspenders verification: re-read the progress register.
+        // After a successful calibrateImu(true), it MUST read 0. If the
+        // lib returned Ok but the register still has remaining samples,
+        // we don't trust it (treat as early exit).
+        uint8_t remaining = 0xFF;
+        otos.getImuCalibrationProgress(remaining);
+
+        if (err == ksfTkErrOk && remaining == 0) {
+            otos.setLinearScalar(m_scale);
+            m_calibrated = true;
+            Console::success("Localisation")
+                << "IMU calibration OK (try " << attempt
+                << ", linear scale " << m_scale << ")" << Console::endl;
+            return true;
+        }
+
+        Console::warn("Localisation")
+            << "IMU calibration early-exit — err=" << (int)err
+            << " remaining=" << (int)remaining
+            << " — retrying after 200 ms" << Console::endl;
+        delay(200);
+    }
+
+    Console::error("Localisation")
+        << "IMU calibration FAILED after " << MAX_TRIES
+        << " attempts — running with stale offsets, drift expected"
+        << Console::endl;
+    m_calibrated = false;
+    return false;
 }
 
 FLASHMEM void Localisation::setLinearScale(float value){
@@ -226,14 +274,18 @@ FLASHMEM bool Localisation::queryVisionPose(Vec3& out_pose,
     return true;
 }
 
-// Convenience: query then setPosition() to overwrite OTOS.
+// Convenience: query then push the vision fix into Motion + OTOS.
+// Goes through motion.setAbsPosition() (not just localisation.setPosition)
+// so the motion module's cached _position / _startPosition stay in sync —
+// otherwise the next pursuit/cruise cycle would still reference the stale
+// OTOS-only pose.
 FLASHMEM Vec3 Localisation::syncToVision(unsigned long timeout_ms) {
     Vec3 vp;
     if (!queryVisionPose(vp, timeout_ms)) {
         return Vec3{0, 0, 0};
     }
     Vec3 before = getPosition();
-    setPosition(vp);
+    motion.setAbsPosition(vp);   // updates Motion::_position AND OTOS
     Vec3 offset = {vp.x - before.x, vp.y - before.y, vp.z - before.z};
     Console::success("Localisation")
         << "OTOS recalibrated to vision: ("
