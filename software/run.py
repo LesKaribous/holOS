@@ -2331,16 +2331,18 @@ def _get_latest_own_pose():
 
 @app.route('/api/vision/robot_pose', methods=['GET'])
 def api_vision_robot_pose():
-    """Pull endpoint: returns the latest own-team robot pose if available,
-    or 404 when not. The caller (strategy code) decides whether to apply
-    it — vision never auto-updates robot.pos.
+    """Pull endpoint: returns the latest own-team robot pose if available.
+    The caller (strategy code) decides whether to apply it — vision never
+    auto-updates robot.pos.
 
-    Response on hit: { ok, pose: { tag_id, x_mm, y_mm, theta_rad, … } }
-    Response on miss: 404 with { ok: false, error: '...' }
+    Response: 200 always with { ok: bool, pose?: {...}, error?: '...' }.
+    "No pose yet" is a normal state (homography idle / no own tag in
+    frame) and the vision_debug page polls this every 500ms — returning
+    a 404 spammed the chromium console with red errors.
     """
     pose = _get_latest_own_pose()
     if pose is None:
-        return jsonify({'ok': False, 'error': 'no own-team pose available'}), 404
+        return jsonify({'ok': False, 'error': 'no own-team pose available'})
     return jsonify({'ok': True, 'pose': pose})
 
 

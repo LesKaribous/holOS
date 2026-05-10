@@ -300,7 +300,8 @@ def build_localization() -> Pipeline:
                {'object_z_mm':         ROBOT_Z_MM,
                 'use_naive_xy':        True,
                 'preview_draw_camera': True,
-                'preview_draw_grid':   False})
+                'preview_draw_grid':   False,
+                'preview_gate_feed':   'loc_corrected'})
     p.connect(loc_naive, 'pose_list', par, 'pose_list')
     p.connect(cam, 'cam_xyz',         par, 'cam_xyz')
     p.connect(rec, 'frame',           par, 'frame')

@@ -136,6 +136,16 @@ class ParallaxCorrectionNode(Node):
                                   'label': 'preview: draw mm grid',
                                   'description': 'overlay a 200 mm grid on '
                                                  'the BEV preview'},
+        'preview_gate_feed':     {'type': 'str',  'default': '',
+                                  'label': 'gate preview on feed',
+                                  'description': 'when set, the preview-'
+                                                 'drawing block runs only if '
+                                                 'this downstream feed has a '
+                                                 'live subscriber (avoids '
+                                                 'wasted cv2 copies on the '
+                                                 'Jetson when no debug page '
+                                                 'is open). Empty = always '
+                                                 'draw.'},
     }
 
     def process(self, inputs):
@@ -146,8 +156,12 @@ class ParallaxCorrectionNode(Node):
         # e.g. overlay.restrict_aruco_to_pose_list will hide every marker).
         if poses is None:
             return {}
-        if len(poses) == 0:
-            return {'pose_list': []}
+        # Empty pose_list still needs to flow downstream (so overlays can
+        # clear stale markers) AND we still want to emit a preview when a
+        # frame is wired — otherwise the loc_corrected debug feed goes
+        # blank during recalage (homography locks before any robot tag
+        # appears in frame). Fall through with poses=[] instead of
+        # short-circuiting.
 
         # Precedence: wired cam_xyz input > params. The wired path is the
         # debug-friendly one — a camera.auto / camera.manual node up
@@ -198,7 +212,7 @@ class ParallaxCorrectionNode(Node):
         factor = (cz - oz) / cz
 
         out = []
-        for q in poses:
+        for q in (poses or []):
             if not isinstance(q, dict):
                 continue
             # Pick the source xy
@@ -244,8 +258,16 @@ class ParallaxCorrectionNode(Node):
         # the parallax correction — visual sanity-check that cam_xyz +
         # object_z_mm are sensible. If the line is huge or points the
         # wrong way, your camera position params are off.
+        # Skip the cv2.copy() + draws when nobody's watching the
+        # downstream feed — saves Jetson CPU during a match where the
+        # debug page is closed.
+        gate_feed = str(self._params.get('preview_gate_feed', '')).strip()
+        if gate_feed and self._pipeline is not None:
+            preview_active = self._pipeline.is_feed_active(gate_feed)
+        else:
+            preview_active = True
         frame = inputs.get('frame')
-        if frame is not None and _CV2_OK:
+        if preview_active and frame is not None and _CV2_OK:
             try:
                 vis = frame.copy()
                 scale  = float(self._params.get('preview_bev_scale', 0.25))
