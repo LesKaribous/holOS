@@ -58,7 +58,7 @@ FLASHMEM void registerCommands() {
     //CommandHandler::registerCommand("close(side)", "Close actuator on a specific side", command_close);
     CommandHandler::registerCommand("recalage()", "Execute recalage routine", command_recalage);
     CommandHandler::registerCommand("vision_recalage()", "Execute vision parallax calibration sweep (requires recalage first)", command_vision_recalage);
-    CommandHandler::registerCommand("test_sync_vision()", "Diag: go (1000,1000), syncToVision, go (1000,1000) — should land on target if vision sync works", command_test_sync_vision);
+    CommandHandler::registerCommand("test_sync_vision()", "Diag: go (1000,1000), syncToVision, go (1000,1000); 2nd move should land on target if vision sync works", command_test_sync_vision);
 
     //Actuators
     CommandHandler::registerCommand("elevator(side, pose)", "Raise elevator to desired pose", command_elevator);

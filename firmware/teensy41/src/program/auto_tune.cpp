@@ -396,7 +396,7 @@ FLASHMEM void visionRecalage(){
     auto X = [isBlue](float x) -> float {
         return isBlue ? (3000.0f - x) : x;
     };
-    // Target heading the operator will hold throughout the sweep —
+    // Target heading the operator will hold throughout the sweep --
     // same orientation classical recalage exits with (AB axis pointing
     // toward EAST on yellow, WEST on blue). Robot's world theta is the
     // compass orientation minus the AB axis offset. Encoded in radians
@@ -410,7 +410,7 @@ FLASHMEM void visionRecalage(){
     // Manual-confirm capture: drive close, free the wheels, hand the
     // robot over to the operator who pushes it to the exact target,
     // then resume once holOS replies (after the user clicks OK on the
-    // webapp modal). The TARGET is sent as ground truth — OTOS is not
+    // webapp modal). The TARGET is sent as ground truth -- OTOS is not
     // used here because its drift is exactly what we're calibrating
     // around. Returns true on success, false on failure / timeout so
     // the outer sweep can abort cleanly instead of soldiering on with
@@ -465,13 +465,13 @@ FLASHMEM void visionRecalage(){
 }
 
 // ─────────────────────────────────────────────────────────────────────────
-//  testSyncToVision — diagnostic for the OTOS<-vision sync round-trip.
+//  testSyncToVision -- diagnostic for the OTOS<-vision sync round-trip.
 //
 //  Procedure: drive the robot to (1000, 1000) using the current OTOS
 //  scale (which the operator may have intentionally detuned to expose
 //  the bug), then call syncToVision() to overwrite OTOS with the vision
 //  fix, then drive to (1000, 1000) AGAIN. With sync working, the second
-//  move ends at the physical (1000, 1000) on the table — drift of the
+//  move ends at the physical (1000, 1000) on the table -- drift of the
 //  first move is what gets cancelled.
 //
 //  Requires homography locked + a successful classical recalage so an
@@ -480,13 +480,13 @@ FLASHMEM void visionRecalage(){
 FLASHMEM void testSyncToVision() {
     if (!localisation.isHomographyLocked()) {
         Console::error("Strategy")
-            << "[testSyncToVision] homography NOT locked — run recalage() first"
+            << "[testSyncToVision] homography NOT locked - run recalage() first"
             << Console::endl;
         return;
     }
     if (!localisation.isVisionCalibrated()) {
         Console::error("Strategy")
-            << "[testSyncToVision] vision NOT calibrated — run recalage() first"
+            << "[testSyncToVision] vision NOT calibrated - run recalage() first"
             << Console::endl;
         return;
     }
@@ -505,7 +505,7 @@ FLASHMEM void testSyncToVision() {
     Vec3 offset = localisation.syncToVision();
     if (offset.x == 0.0f && offset.y == 0.0f && offset.z == 0.0f) {
         Console::error("Strategy")
-            << "[testSyncToVision] syncToVision FAILED — no fresh vision pose"
+            << "[testSyncToVision] syncToVision FAILED - no fresh vision pose"
             << Console::endl;
         motion.setFeedrate(1.0);
         return;
@@ -517,7 +517,7 @@ FLASHMEM void testSyncToVision() {
         << Console::endl;
 
     Console::info("Strategy")
-        << "[testSyncToVision] go #2 to (1000, 1000) — should be on target now"
+        << "[testSyncToVision] go #2 to (1000, 1000) - should be on target now"
         << Console::endl;
     async motion.go(Vec2(1000, 1000));
     motion.setFeedrate(1.0);
