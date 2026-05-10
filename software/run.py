@@ -4142,17 +4142,22 @@ def _do_connect(port: str):
                     # Robot-mounted ESP32-CAM detection (see
                     # services/embed_cam.py). Pulled by the strategy
                     # before closing the gripper on the 4 stock objects.
-                    # Reply with `embed_detect_reply(n=..,offset=..,
-                    # bias=..,valid=0|1)`. Run in a daemon thread so
-                    # the camera fetch (~200-800 ms) doesn't stall the
-                    # telemetry pipe.
-                    _vlog('rx ← T:vis embed_detect')
-                    def _do_embed():
+                    # Optional `team=<blue|yellow>` arg restricts the
+                    # accepted ArUco IDs so an opposite-colour stock in
+                    # the FOV doesn't poison the result with a `mixed`
+                    # readout. Reply with `embed_detect_reply(...)` —
+                    # run in a daemon thread so the camera fetch
+                    # (~200-800 ms) doesn't stall the telemetry pipe.
+                    team_arg = _kv(line, 'team', str, None)
+                    if isinstance(team_arg, str):
+                        team_arg = team_arg.strip().lower()
+                    _vlog(f'rx ← T:vis embed_detect team={team_arg}')
+                    def _do_embed(_team=team_arg):
                         if _embed_cam is None:
                             _send('embed_detect_reply(n=0,valid=0,'
                                   'reason=no_module)')
                             return
-                        result = _embed_cam.detect_once()
+                        result = _embed_cam.detect_once(team_override=_team)
                         _emit_embed_detect_feeds(result)
                         n      = int(result.get('n', 0))
                         off_mm = float(result.get('offset_mm', 0.0))

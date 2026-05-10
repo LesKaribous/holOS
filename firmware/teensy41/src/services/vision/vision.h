@@ -62,9 +62,16 @@ public:
 
     /// Blocking-with-timeout query of the robot-mounted ESP32-CAM via
     /// holOS (services/embed_cam.py). Returns false on timeout.  The
-    /// host runs blob detection on a single JPEG fetched from the
+    /// host runs ArUco detection on a single JPEG fetched from the
     /// embed cam and replies with `embed_detect_reply(...)`.
-    bool queryEmbedDetect(EmbedDetect& out, uint32_t timeoutMs = 2500);
+    ///
+    /// `team` ∈ {"", "blue", "yellow"}: when non-empty, the host
+    /// filters to that team's ArUco ID (36 blue / 47 yellow) and the
+    /// opposite-team stock in the FOV is ignored.  Empty == accept
+    /// both IDs (cfg.team default).
+    bool queryEmbedDetect(EmbedDetect& out,
+                          const char* team = nullptr,
+                          uint32_t timeoutMs = 2500);
 
     /// Called from JetsonBridge when an embed_detect_reply lands.
     /// Not for user code.

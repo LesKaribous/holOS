@@ -70,10 +70,22 @@ bool        TwinVision::isConnected() const                      { return false;
 // `embed_detect_reply(n=..,offset=..,bias=..,valid=0|1)` which lands
 // in onEmbedDetectReply().
 
-bool TwinVision::queryEmbedDetect(EmbedDetect& out, uint32_t timeoutMs) {
+bool TwinVision::queryEmbedDetect(EmbedDetect& out,
+                                  const char* team,
+                                  uint32_t timeoutMs) {
     m_pendingEmbedReply = true;
     m_lastEmbed = EmbedDetect{};
-    jetsonBridge.pushVisionFrame("T:vis embed_detect");
+    // Build frame: either bare `T:vis embed_detect` or with the team
+    // qualifier so the host drops opposite-colour stray IDs.
+    char frame[48];
+    if (team && team[0]) {
+        snprintf(frame, sizeof(frame),
+                 "T:vis embed_detect team=%s", team);
+    } else {
+        strncpy(frame, "T:vis embed_detect", sizeof(frame) - 1);
+        frame[sizeof(frame) - 1] = 0;
+    }
+    jetsonBridge.pushVisionFrame(frame);
     unsigned long t0 = millis();
     while (m_pendingEmbedReply && (millis() - t0) < timeoutMs) {
         jetsonBridge.run();

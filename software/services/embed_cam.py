@@ -214,18 +214,22 @@ def _get_detector():
     return _det_cache
 
 
-def _team_filter() -> set:
-    """Return the set of tag IDs we accept this run, based on cfg.team."""
-    team = str(_cfg.get('team', 'auto')).lower()
+def _team_filter(override: 'Optional[str]' = None) -> set:
+    """Return the set of tag IDs we accept this run, based on cfg.team
+    or an explicit override ('blue' / 'yellow' / 'auto' / None)."""
+    team = str(override if override is not None else _cfg.get('team', 'auto')).lower()
     if team == 'blue':   return {TAG_BLUE}
     if team == 'yellow': return {TAG_YELLOW}
     return set(_STOCK_IDS)
 
 
-def _detect_tags(frame: 'np.ndarray') -> list[dict]:
+def _detect_tags(frame: 'np.ndarray',
+                 team_override: 'Optional[str]' = None) -> list[dict]:
     """Run ArUco detection, filter to stock-object IDs (36 blue / 47
     yellow), return a list of {tag_id, team, cx, cy, corners} sorted
-    by cx."""
+    by cx. `team_override` ('blue'/'yellow'/'auto') wins over the
+    cfg-level default — the firmware passes its own team here so the
+    opposite-color tag IDs never enter the result."""
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     cache = _get_detector()
     if _HAS_NEW_ARUCO_API:
@@ -235,7 +239,7 @@ def _detect_tags(frame: 'np.ndarray') -> list[dict]:
             gray, cache['dict'], parameters=cache['params'])
     if ids is None or len(ids) == 0:
         return []
-    accepted = _team_filter()
+    accepted = _team_filter(team_override)
     out: list[dict] = []
     for c, tag_id in zip(corners, ids.flatten().tolist()):
         if int(tag_id) not in accepted:
@@ -303,11 +307,14 @@ def _annotate(frame: 'np.ndarray', tags: list[dict],
     return img
 
 
-def analyze_frame(frame: 'np.ndarray') -> dict:
+def analyze_frame(frame: 'np.ndarray',
+                  team_override: 'Optional[str]' = None) -> dict:
     """Run ArUco detection on `frame` and compute the offset/scale
-    geometry. Returns a dict with every field the firmware + UI need."""
+    geometry. Returns a dict with every field the firmware + UI need.
+    `team_override` lets a caller (the firmware) restrict the accepted
+    tag IDs without touching the persistent cfg."""
     global _last_scale_mm_per_px
-    tags = _detect_tags(frame)
+    tags = _detect_tags(frame, team_override=team_override)
     h, w = frame.shape[:2]
     cx_img = w / 2.0
     expected = int(_cfg.get('expected_count', 4))
@@ -378,15 +385,16 @@ def analyze_frame(frame: 'np.ndarray') -> dict:
     }
 
 
-def detect_once() -> dict:
+def detect_once(team_override: 'Optional[str]' = None) -> dict:
     """Fetch + analyse + return result dict.  On failure, the dict
-    still has all keys but `valid=False`, `n=0` and `preview=None`."""
+    still has all keys but `valid=False`, `n=0` and `preview=None`.
+    `team_override` ('blue' | 'yellow' | 'auto') trumps cfg.team."""
     if not _CV2_OK:
         return _empty('opencv-unavailable')
     frame = fetch_frame()
     if frame is None:
         return _empty('fetch-failed')
-    return analyze_frame(frame)
+    return analyze_frame(frame, team_override=team_override)
 
 
 def _empty(reason: str) -> dict:
