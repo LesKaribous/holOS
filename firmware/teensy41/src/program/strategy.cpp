@@ -232,6 +232,9 @@ static void storeStock(Vec2 target, TableCompass tc, RobotCompass rc) {
 
     RuntimeConfig::setInt("motion.timeout_ms", 6000); // 5 secondes
     async motion.goAlign(approach, rc, getCompassOrientation(tc));
+    localisation.syncToVision(1000);
+    async motion.goAlign(approach, rc, getCompassOrientation(tc));
+
     safety.disable();
     motion.setFeedrate(0.3f);
     RuntimeConfig::setInt("motion.timeout_ms", 5000); // 5 secondes
@@ -278,7 +281,7 @@ static bool pantryEmpty = false;
 
 static BlockResult blockCollectA() {
     waitMs(800);
-    localisation.syncToVision(1000);
+    
     if(ihm.isColor(Settings::BLUE)) {
         collectStock(POI::stockBlue_01 + Vec2(0,0), TableCompass::EAST, RobotCompass::AB);
     } else {
@@ -290,7 +293,7 @@ static BlockResult blockCollectA() {
 
 static BlockResult blockStoreA() {
     waitMs(800);
-    localisation.syncToVision(1000);
+
     if(ihm.isColor(Settings::BLUE)) {
         storeStock(POI::pantry_07 + Vec2(0,0) + pantryEmpty * Vec2(30,0), TableCompass::EAST, RobotCompass::AB);
     } else {
@@ -304,7 +307,7 @@ static BlockResult blockStoreA() {
 
 static BlockResult blockCollectB() {
     waitMs(800);
-    localisation.syncToVision(1000);
+
     if(ihm.isColor(Settings::BLUE)) {
         collectStock(POI::stockBlue_02+ Vec2(0,0), TableCompass::EAST, RobotCompass::AB);
     } else {
@@ -316,7 +319,7 @@ static BlockResult blockCollectB() {
 
 static BlockResult blockStoreB() {
     waitMs(800);
-    localisation.syncToVision(1000);
+=
     if(ihm.isColor(Settings::BLUE)) {
         storeStock(POI::pantry_07 + Vec2(0,0) + pantryEmpty * Vec2(30,0), TableCompass::EAST, RobotCompass::AB);
     } else {
@@ -330,7 +333,7 @@ static BlockResult blockStoreB() {
 
 static BlockResult blockCollectC() {
     waitMs(800);
-    localisation.syncToVision(1000);
+=
     if(ihm.isColor(Settings::BLUE)) {
         collectStock(POI::stockBlue_04+ Vec2(20,-30), TableCompass::NORTH, RobotCompass::AB);
     } else {
@@ -342,7 +345,7 @@ static BlockResult blockCollectC() {
 
 static BlockResult blockStoreC() {
     waitMs(800);
-    localisation.syncToVision(1000);
+=
     if(ihm.isColor(Settings::BLUE)) {
         storeStock(POI::pantry_06 + Vec2(-30,-250) + pantryEmpty * Vec2(0, 50), TableCompass::SOUTH, RobotCompass::AB);
     } else {

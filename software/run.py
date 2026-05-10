@@ -4115,16 +4115,26 @@ def _do_connect(port: str):
                                     'warn')
                             _send('vis_pose(valid=0)')
                             return
-                        if _pose_request_invalid_streak > 0:
-                            _vlog(
-                                f'pose_request recovered after '
-                                f'{_pose_request_invalid_streak} miss(es)',
-                                'info')
-                            _pose_request_invalid_streak = 0
+                        # valid=1 — log every successful syncToVision answer
+                        # so the operator can see the vision→OTOS hand-off
+                        # firing in real time. Includes a recovery suffix
+                        # when this reply ended a valid=0 streak.
+                        theta_rad = pose.get('theta_rad') or 0.0
+                        recovery = (f' (recovered after '
+                                    f'{_pose_request_invalid_streak} miss(es))'
+                                    if _pose_request_invalid_streak > 0
+                                    else '')
+                        _vlog(
+                            f"pose_request → valid=1 "
+                            f"x={pose['x_mm']:.1f} y={pose['y_mm']:.1f} "
+                            f"θ={math.degrees(theta_rad):+.1f}° "
+                            f"src={pose.get('source','?')} "
+                            f"tag=#{pose.get('tag_id','?')}{recovery}")
+                        _pose_request_invalid_streak = 0
                         _send(
                             f"vis_pose(x={pose['x_mm']:.1f},"
                             f"y={pose['y_mm']:.1f},"
-                            f"t={pose.get('theta_rad') or 0:.3f},valid=1)"
+                            f"t={theta_rad:.3f},valid=1)"
                         )
                     threading.Thread(target=_do_pose, daemon=True,
                                      name='vis-pose').start()
