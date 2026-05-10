@@ -74,6 +74,11 @@ public:
     // pollute the parallax fit.
     void requestVisionCalibrationManual(Vec3 target_pos);
     bool isVisionCalibrated() const { return m_visionCalibrated; }
+    // True once a vision_cal reply has landed (success OR failure).
+    // Lets the visionRecalage() poll loop break out of its 125 s
+    // wait the moment holOS sends vis_cal_failed, instead of
+    // burning the full timeout per failed point.
+    bool visionCalibrationReplyReceived() const { return m_visionCalibrationReplyReceived; }
     bool queryVisionPose(Vec3& out_pose, unsigned long timeout_ms = 300);
     Vec3 syncToVision(unsigned long timeout_ms = 500);
 
@@ -116,6 +121,8 @@ private :
     bool   m_visionCalibrated = false;
     int    m_visionOwnTag     = -1;
     char   m_visionTeam[8]    = {0};
+    // Cleared by request*(), set true on ANY reply (success or fail).
+    bool   m_visionCalibrationReplyReceived = false;
 
     // queryVisionPose() is request/reply across XBee; we wait for the
     // reply by polling these flags (filled by onVisionPoseReply()).

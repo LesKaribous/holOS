@@ -235,6 +235,7 @@ FLASHMEM void Localisation::requestVisionCalibration(Vec3 known_pos) {
         << "Vision recalage requested at (" << known_pos.x << ", "
         << known_pos.y << ", " << known_pos.z << ")" << Console::endl;
     m_visionCalibrated = false;   // set true by reply handler
+    m_visionCalibrationReplyReceived = false;
 }
 
 // Manual / human-in-the-loop variant of cal_request. Same wire format
@@ -250,6 +251,7 @@ FLASHMEM void Localisation::requestVisionCalibrationManual(Vec3 target_pos) {
              (int)(target_pos.z * 1000.0f));
     jetsonBridge.pushVisionFrameDirect(frame);
     m_visionCalibrated = false;
+    m_visionCalibrationReplyReceived = false;
 }
 
 // Block (with timeout) waiting for the next pose reply from holOS.
@@ -332,6 +334,7 @@ FLASHMEM void Localisation::onVisionCalibrationReply(int own_tag,
         m_visionTeam[sizeof(m_visionTeam) - 1] = 0;
     }
     m_visionCalibrated = (own_tag > 0);
+    m_visionCalibrationReplyReceived = true;
     if (m_visionCalibrated) {
         Console::success("Localisation")
             << "Vision recalage OK — own tag #" << own_tag

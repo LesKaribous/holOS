@@ -3884,6 +3884,19 @@ def _do_connect(port: str):
                         global _vision_recalage_user_state
                         _vision_recalage_user_state = None
                         _vision_recalage_user_evt.clear()
+                        # Helper: surface a failure on the modal AND
+                        # tell the firmware. The modal flips into an
+                        # error state and stays open so the operator
+                        # actually reads what happened — they dismiss
+                        # it with the Close button. Every reason ends
+                        # the sweep (firmware aborts on first failure).
+                        def _fail(reason: str, human: str):
+                            socketio.emit('vision_recalage_wait_done', {
+                                'ok': False,
+                                'reason': reason,
+                                'message': human,
+                            })
+                            _send(f'vis_cal_failed(reason={reason})')
                         # Notify every connected webapp client. The
                         # modal listens on this event and renders the
                         # target coords + waiting state.
@@ -3896,18 +3909,18 @@ def _do_connect(port: str):
                         # (~125 s with padding). Operator has plenty of
                         # time to walk to the table, push, walk back.
                         signaled = _vision_recalage_user_evt.wait(120.0)
-                        # Always close the modal, regardless of how we
-                        # exited (ok / cancel / timeout).
-                        socketio.emit('vision_recalage_wait_done', {})
                         if not signaled:
                             _vlog('cal_request_manual: TIMEOUT (no operator '
                                   'OK in 120 s) — sending vis_cal_failed', 'err')
-                            _send('vis_cal_failed(reason=user_timeout)')
+                            _fail('user_timeout',
+                                  'Timed out waiting for the operator to '
+                                  'confirm the position (120 s).')
                             return
                         if _vision_recalage_user_state == 'cancel':
                             _vlog('cal_request_manual: user cancelled '
                                   '— sending vis_cal_failed', 'warn')
-                            _send('vis_cal_failed(reason=user_cancel)')
+                            _fail('user_cancel',
+                                  'Sweep cancelled by the operator.')
                             return
                         # User OK'd. Vision should see the tag now —
                         # but a single tick can still miss it (motion
@@ -3931,12 +3944,17 @@ def _do_connect(port: str):
                             _vlog('cal_request_manual: tag not detected '
                                   'after 3 attempts — sending vis_cal_failed',
                                   'err')
-                            _send('vis_cal_failed(reason=no_candidate)')
+                            _fail('no_candidate',
+                                  f'No own-team tag detected near '
+                                  f'({kx:.0f}, {ky:.0f}) mm. Check that the '
+                                  f'robot is actually at the target and that '
+                                  f'the tag is visible to the camera.')
                             return
                         vp = result['vision_pose']
                         _vlog(f"cal_request_manual: OK — own tag #"
                               f"{result['tag_id']} at target ({kx:.0f}, "
                               f"{ky:.0f})")
+                        socketio.emit('vision_recalage_wait_done', {'ok': True})
                         _send(
                             f"vis_cal_done(own={result['tag_id']},"
                             f"team={result['team']},"

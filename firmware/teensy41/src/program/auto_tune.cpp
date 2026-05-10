@@ -401,23 +401,27 @@ FLASHMEM void visionRecalage(){
     // then resume once holOS replies (after the user clicks OK on the
     // webapp modal). The TARGET is sent as ground truth — OTOS is not
     // used here because its drift is exactly what we're calibrating
-    // around. The 125 s wait covers holOS's 120 s user-confirmation
-    // timeout with a small padding.
-    auto captureAt = [](Vec2 target) {
+    // around. Returns true on success, false on failure / timeout so
+    // the outer sweep can abort cleanly instead of soldiering on with
+    // half the points.
+    auto captureAt = [](Vec2 target) -> bool {
         async motion.go(target);
         os.wait(1000);                         // brief settle after motion
         motion.disengage();                    // free wheels for manual push
         Vec3 targetPose(target.x, target.y, 0.0f);
         localisation.requestVisionCalibrationManual(targetPose);
-        // Poll isVisionCalibrated() up to 125 s — exits early as soon
-        // as the holOS reply lands, so good calibrations don't burn
-        // the full window.
+        // Poll until holOS replies (success or failure) or we hit the
+        // 125 s ceiling that matches holOS's 120 s user-confirmation
+        // timeout with a small padding. The reply-received flag lets
+        // us break the moment vis_cal_failed lands instead of burning
+        // the full window on a failure.
         const unsigned long deadline = millis() + 125000UL;
-        while (millis() < deadline) {
-            if (localisation.isVisionCalibrated()) break;
+        while (millis() < deadline
+               && !localisation.visionCalibrationReplyReceived()) {
             os.wait(100);
         }
-        motion.engage();                       // re-engage for next move
+        motion.engage();                       // re-engage no matter what
+        return localisation.isVisionCalibrated();
     };
 
     motion.engage();
@@ -426,14 +430,13 @@ FLASHMEM void visionRecalage(){
     // ── Calibration waypoints ───────────────────────────────────────
     // Coordinates in YELLOW frame, auto-mirrored to (3000 - x) for BLUE.
     // Spread across the half-table — different X and Y to constrain
-    // the parallax factor in both axes. RMS in /vision_debug should
-    // drop as more pairs are added. The first one is at the start zone
-    // where the operator has the most room to align precisely against
-    // the table reference markings.
-    captureAt(Vec2(X(350),  650));
-    captureAt(Vec2(X(500),  1000));
-    captureAt(Vec2(X(1000), 850));
-    captureAt(Vec2(X(600), 600));
+    // the parallax factor in both axes. Sweep aborts on the first
+    // failed point so the operator sees the reason in the webapp modal
+    // instead of grinding through the rest of the points blindly.
+    if (!captureAt(Vec2(X(350),  650))) return;
+    if (!captureAt(Vec2(X(500),  1000))) return;
+    if (!captureAt(Vec2(X(1000), 850))) return;
+    if (!captureAt(Vec2(X(600),  600))) return;
     // Examples to add later (uncomment + adjust to your table layout):
     // captureAt(Vec2(X(800),  500));
     // captureAt(Vec2(X(1300), 1500));

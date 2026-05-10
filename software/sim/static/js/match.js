@@ -131,6 +131,36 @@ socket.on('vision_recalage_state', data => {
 // target, disengages the steppers, and waits up to 125 s for holOS's
 // reply. holOS in turn waits up to 120 s for the operator to push the
 // robot to the precise target and click Confirm.
+//
+// Modal has two states:
+//   waiting — instructions + Confirm/Cancel
+//   error   — red banner with the failure reason + a single Close
+//             button (Cancel relabelled). Sweep is already aborted
+//             firmware-side, no further user action needed.
+function _setVisionRecalageState(state) {
+  const okBtn      = document.getElementById('vision-recalage-confirm');
+  const cancelBtn  = document.getElementById('vision-recalage-cancel');
+  const errBanner  = document.getElementById('vision-recalage-error');
+  const target     = document.getElementById('vision-recalage-target');
+  const instr      = document.getElementById('vision-recalage-instructions');
+  if (state === 'error') {
+    if (okBtn)     okBtn.classList.add('hidden');
+    if (cancelBtn) cancelBtn.textContent = '✕ Close';
+    if (target)    target.style.opacity = '0.5';
+    if (instr)     instr.style.opacity = '0.5';
+    if (errBanner) errBanner.classList.remove('hidden');
+  } else { // 'waiting'
+    if (okBtn)     okBtn.classList.remove('hidden');
+    if (cancelBtn) cancelBtn.textContent = '✕ Cancel sweep';
+    if (target)    target.style.opacity = '1';
+    if (instr)     instr.style.opacity = '1';
+    if (errBanner) {
+      errBanner.classList.add('hidden');
+      errBanner.textContent = '';
+    }
+  }
+}
+
 function _showVisionRecalageModal(target) {
   const modal = document.getElementById('vision-recalage-modal');
   const body  = document.getElementById('vision-recalage-target');
@@ -144,20 +174,44 @@ function _showVisionRecalageModal(target) {
     ? `<br>θ ≈ ${tt >= 0 ? '+' : ''}${tt.toFixed(1)}° <span style="color:var(--muted,#6b7a8d);">(approximate — align by eye)</span>`
     : '';
   body.innerHTML = xyLine + thetaLine;
+  _setVisionRecalageState('waiting');
   modal.classList.remove('hidden');
+}
+
+function _showVisionRecalageError(reason, message) {
+  const modal     = document.getElementById('vision-recalage-modal');
+  const errBanner = document.getElementById('vision-recalage-error');
+  if (!modal || !errBanner) return;
+  // If the modal isn't open (race: user already closed it), surface
+  // the failure as a toast instead so they don't miss it entirely.
+  if (modal.classList.contains('hidden')) {
+    showToast(`Vision calib failed: ${message || reason || 'unknown'}`);
+    return;
+  }
+  const tag = reason ? ` (${reason})` : '';
+  errBanner.textContent = `Calibration failed${tag}: ${message || reason || 'unknown'}`;
+  _setVisionRecalageState('error');
 }
 
 function _hideVisionRecalageModal() {
   const modal = document.getElementById('vision-recalage-modal');
   if (modal) modal.classList.add('hidden');
+  _setVisionRecalageState('waiting');   // reset for next time
 }
 
 socket.on('vision_recalage_wait_user', target => {
   _showVisionRecalageModal(target || {});
 });
 
-socket.on('vision_recalage_wait_done', () => {
-  _hideVisionRecalageModal();
+socket.on('vision_recalage_wait_done', payload => {
+  // Server reports per-point outcome via {ok, reason, message}. On
+  // failure, keep the modal up and switch it into the error state so
+  // the operator actually reads what went wrong. On success, close.
+  if (payload && payload.ok === false) {
+    _showVisionRecalageError(payload.reason, payload.message);
+  } else {
+    _hideVisionRecalageModal();
+  }
 });
 
 document.addEventListener('DOMContentLoaded', () => {
@@ -168,9 +222,16 @@ document.addEventListener('DOMContentLoaded', () => {
     socket.emit('vision_recalage_user_ok');
   });
   if (cancelBtn) cancelBtn.addEventListener('click', () => {
+    // Two roles: in 'waiting' state this is "Cancel the sweep" and
+    // we tell holOS so the firmware aborts. In 'error' state the
+    // sweep is already dead — just dismiss.
+    const errVisible = !document.getElementById('vision-recalage-error')
+                          .classList.contains('hidden');
     _hideVisionRecalageModal();
-    socket.emit('vision_recalage_user_cancel');
-    showToast('Vision calibration sweep cancelled');
+    if (!errVisible) {
+      socket.emit('vision_recalage_user_cancel');
+      showToast('Vision calibration sweep cancelled');
+    }
   });
 });
 
