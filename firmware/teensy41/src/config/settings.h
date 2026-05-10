@@ -243,7 +243,7 @@ namespace Settings {
 
         //0.966655f; Jules Table
         //1.040243 (valeur bracq table)
-        constexpr float OTOS_LINEAR_DEFAULT  = 0.966655f; 
+        constexpr float OTOS_LINEAR_DEFAULT  = 1.040243f; 
         constexpr float OTOS_ANGULAR_DEFAULT = 1.0f;
     }
 

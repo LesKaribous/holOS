@@ -4631,6 +4631,39 @@ def on_vision_recalage():
     threading.Thread(target=_do, daemon=True, name='vision-recalage-cmd').start()
 
 
+@socketio.on('test_sync_vision')
+def on_test_sync_vision():
+    """Fire the firmware `test_sync_vision()` diagnostic. Drives to
+    (1000, 1000), syncs OTOS to vision, then drives to (1000, 1000)
+    again — the second move should physically land on target if the
+    vision sync round-trip works (even with a detuned OTOS scale).
+
+    Hardware-only. Requires homography locked + a successful classical
+    recalage so an own-team tag is registered.
+    """
+    t = _active_transport()
+    if t is None or not t.is_connected:
+        _vlog('test_sync_vision: no HW transport connected', 'err')
+        socketio.emit('test_sync_vision_state',
+                      {'running': False, 'ok': False, 'error': 'not_connected'})
+        return
+
+    def _do():
+        _vlog('test_sync_vision: command sent to firmware (HW)')
+        socketio.emit('test_sync_vision_state', {'running': True})
+        # Two go(1000,1000) at feedrate 0.6 + a 1.5 s settle + sync.
+        # Worst case ~30 s; 60 s gives margin for slow approaches.
+        ok, res = t.execute('test_sync_vision()', timeout_ms=60000)
+        if ok:
+            _vlog(f'test_sync_vision: firmware reply OK ({res})')
+        else:
+            _vlog(f'test_sync_vision: firmware reply FAIL ({res})', 'err')
+        socketio.emit('test_sync_vision_state',
+                      {'running': False, 'ok': bool(ok), 'res': res})
+
+    threading.Thread(target=_do, daemon=True, name='test-sync-vision').start()
+
+
 @socketio.on('vision_recalage_user_ok')
 def on_vision_recalage_user_ok():
     """Operator confirmed the robot is at the requested target — wakes

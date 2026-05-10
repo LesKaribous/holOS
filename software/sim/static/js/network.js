@@ -20,7 +20,7 @@ const _nNodes = [
   { id:'t40',    label:'Teensy 4.0',    icon:'🔧', role:'Secondary MCU',            sw:['TwinActuator firmware','PlatformIO · C++17','Static map (RAM)'], xr:0.88, yr:0.35 },
   { id:'sim',    label:'Simulator',     icon:'🎮', role:'Virtual robot',            sw:['SimBridge · Physics','VirtualTransport'],                 xr:0.12, yr:0.75 },
   { id:'jetson', label:'NVIDIA Jetson', icon:'🤖', role:'Edge computer',            sw:['holOS Server','ROS2 Humble'],                             xr:0.50, yr:0.75, offline:true },
-  { id:'espcam', label:'ESP32-CAM',     icon:'📷', role:'Vision module',            sw:['TwinVision firmware','MJPEG stream'],                     xr:0.12, yr:0.25, offline:true },
+  { id:'espcam', label:'ESP32-CAM',     icon:'📷', role:'Vision module',            sw:['TwinVision firmware','MJPEG stream'],                     xr:0.50, yr:0.9, offline:true },
 ];
 
 const _nLinks = [

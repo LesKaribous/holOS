@@ -125,6 +125,44 @@ socket.on('vision_recalage_state', data => {
   }
 });
 
+// ── Diagnostic: test syncToVision round-trip ─────────────────────────────
+// Drives to (1000,1000), syncs OTOS to vision, drives to (1000,1000) again.
+// With a detuned OTOS scale, the first move overshoots/undershoots; the
+// second move should land on the physical target if vision sync works.
+function runTestSyncVision() {
+  const isHw = _currentConnectionMode === 'usb' || _currentConnectionMode === 'xbee';
+  if (!isHw) {
+    showToast('Test sync is hardware only — connect to the robot first');
+    return;
+  }
+  if (!_recalageDone) {
+    showToast('Run classical recalage first — vision must be calibrated');
+    return;
+  }
+  socket.emit('test_sync_vision');
+}
+
+socket.on('test_sync_vision_state', data => {
+  const btn = document.getElementById('btn-test-sync-vision');
+  if (!btn) return;
+  if (data && data.running) {
+    btn.disabled = true;
+    btn.textContent = '🎯 Testing…';
+    showToast('Test sync running — watch the robot');
+  } else {
+    btn.disabled = false;
+    btn.textContent = '🎯 Test sync';
+    if (data && data.error === 'not_connected') {
+      showToast('Test sync failed: no robot connected');
+    } else if (data && data.ok === false) {
+      showToast(`Test sync failed: ${data.res || 'firmware did not ack'}`);
+    } else if (data && data.ok === true) {
+      showToast('Test sync done — measure the actual position vs (1000, 1000)');
+    }
+  }
+});
+
+
 // ── Manual-confirm modal for the per-point capture ───────────────────────
 // Driven by holOS's `vision_recalage_wait_user` event during the firmware
 // vision_recalage() sweep. The firmware drives the robot near each

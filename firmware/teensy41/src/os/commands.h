@@ -69,6 +69,7 @@ void command_printServo(const args_t& args);
 //Routine
 void command_recalage(const args_t& args);
 void command_vision_recalage(const args_t& args);
+void command_test_sync_vision(const args_t& args);
 
 //Terminal
 void command_help(const args_t& args);
