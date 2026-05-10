@@ -4093,11 +4093,34 @@ def _do_connect(port: str):
                     # Don't log every single pose_request — they fire
                     # every time the strategy queries vision (potentially
                     # 5-10 Hz during match), would drown the buffer.
+                    # We DO surface a rate-limited warning to the
+                    # vision-debug log when the pipeline keeps returning
+                    # no own pose (firmware retries on valid=0, so a real
+                    # tag occlusion would otherwise be silent).
                     def _do_pose():
+                        global _pose_request_invalid_streak
+                        global _pose_request_invalid_last_warn_mono
                         pose = _get_latest_own_pose()
                         if pose is None:
+                            _pose_request_invalid_streak += 1
+                            now_mono = time.monotonic()
+                            if (now_mono -
+                                    _pose_request_invalid_last_warn_mono
+                                    >= 1.0):
+                                _pose_request_invalid_last_warn_mono = now_mono
+                                _vlog(
+                                    f'pose_request → valid=0 '
+                                    f'(no own pose in last pipeline tick, '
+                                    f'streak={_pose_request_invalid_streak})',
+                                    'warn')
                             _send('vis_pose(valid=0)')
                             return
+                        if _pose_request_invalid_streak > 0:
+                            _vlog(
+                                f'pose_request recovered after '
+                                f'{_pose_request_invalid_streak} miss(es)',
+                                'info')
+                            _pose_request_invalid_streak = 0
                         _send(
                             f"vis_pose(x={pose['x_mm']:.1f},"
                             f"y={pose['y_mm']:.1f},"
