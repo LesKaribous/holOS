@@ -127,10 +127,13 @@ CAMERA_X_MM_BY_TEAM = {
     'yellow': 1275.0,
     'blue':   3000.0 - 1275.0,
 }
-CAMERA_Y_MM = 0.0
-CAMERA_Z_MM = 1410.0   # camera height above the table — adjust when the
-                        # rig moves; affects correction magnitude (factor
-                        # = (cam_z − robot_tag_z) / cam_z).
+
+#CAMERA_Y_MM = 0.0 #table jules
+#CAMERA_Z_MM = 1410.0   # camera height above the table — adjust when the rig moves; affects correction magnitude (factor = (cam_z − robot_tag_z) / cam_z).
+
+CAMERA_Y_MM = -100.0 #table adrien
+CAMERA_Z_MM = 110.0   # camera height above the table — adjust when the
+
 
 # Initial value used at pipeline build — overwritten by _apply_team in
 # run.py at every team flip (and also at boot via force=True). So this
