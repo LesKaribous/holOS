@@ -1641,13 +1641,31 @@
       <div id="embed-cam-cfg" class="hidden"
            style="padding:8px 14px;background:var(--surface,#0f1620);border-bottom:1px solid rgba(255,255,255,.05);font-size:12px;display:flex;flex-wrap:wrap;gap:8px 18px;align-items:center;">
         <label>URL <input type="text" id="ec-url" style="width:240px" value="http://192.168.1.81/capture"></label>
+        <label>dict
+          <select id="ec-aruco-dict">
+            <option value="4x4_50" selected>4x4_50</option>
+            <option value="4x4_100">4x4_100</option>
+            <option value="4x4_250">4x4_250</option>
+            <option value="5x5_50">5x5_50</option>
+            <option value="6x6_50">6x6_50</option>
+          </select>
+        </label>
+        <label>refine
+          <select id="ec-refine">
+            <option value="none">none</option>
+            <option value="subpix" selected>subpix</option>
+            <option value="contour">contour</option>
+          </select>
+        </label>
+        <label>team filter
+          <select id="ec-team" title="Restrict detection to one stock colour (auto = accept both IDs 36 + 47)">
+            <option value="auto" selected>auto</option>
+            <option value="blue">blue (id 36)</option>
+            <option value="yellow">yellow (id 47)</option>
+          </select>
+        </label>
         <label>expected count <input type="number" id="ec-expected-count" min="1" max="10" value="4" style="width:55px"></label>
         <label>spread (mm) <input type="number" id="ec-spread-mm" min="10" max="2000" value="150" style="width:65px"></label>
-        <label>min area <input type="number" id="ec-min-area" min="1" value="80" style="width:65px"></label>
-        <label>max area <input type="number" id="ec-max-area" min="100" value="20000" style="width:75px"></label>
-        <label>blur k <input type="number" id="ec-blur" min="1" max="31" step="2" value="5" style="width:45px"></label>
-        <label>thr block <input type="number" id="ec-thr-block" min="3" max="99" step="2" value="31" style="width:55px"></label>
-        <label>thr C <input type="number" id="ec-thr-C" min="-20" max="20" value="7" style="width:45px"></label>
         <label>fallback mm/px <input type="number" id="ec-fallback-scale" step="0.01" value="0.5" style="width:65px"></label>
         <button class="btn-sm" onclick="embedCamSaveConfig()">Save</button>
       </div>

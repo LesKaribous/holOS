@@ -347,13 +347,11 @@ function _embedCamReadConfig() {
   };
   return {
     url:                  get('ec-url'),
+    aruco_dict:           get('ec-aruco-dict'),
+    refine:               get('ec-refine'),
+    team:                 get('ec-team'),
     expected_count:       parseInt(get('ec-expected-count'), 10),
     expected_spread_mm:   parseFloat(get('ec-spread-mm')),
-    min_area_px:          parseFloat(get('ec-min-area')),
-    max_area_px:          parseFloat(get('ec-max-area')),
-    blur_ksize:           parseInt(get('ec-blur'), 10),
-    thresh_block:         parseInt(get('ec-thr-block'), 10),
-    thresh_C:             parseInt(get('ec-thr-C'), 10),
     fallback_scale_mm_per_px: parseFloat(get('ec-fallback-scale')),
   };
 }
@@ -382,13 +380,11 @@ function embedCamSaveConfig() {
       };
       const c = j.config;
       set('ec-url',                  c.url);
+      set('ec-aruco-dict',           c.aruco_dict);
+      set('ec-refine',               c.refine);
+      set('ec-team',                 c.team);
       set('ec-expected-count',       c.expected_count);
       set('ec-spread-mm',            c.expected_spread_mm);
-      set('ec-min-area',             c.min_area_px);
-      set('ec-max-area',             c.max_area_px);
-      set('ec-blur',                 c.blur_ksize);
-      set('ec-thr-block',            c.thresh_block);
-      set('ec-thr-C',                c.thresh_C);
       set('ec-fallback-scale',       c.fallback_scale_mm_per_px);
     })
     .catch(() => {});  // endpoint not ready — defaults stay in the inputs

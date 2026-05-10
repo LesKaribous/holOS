@@ -1,23 +1,26 @@
 """
 embed_cam.py — ESP32-CAM embedded vision: fetch a single JPEG from the
-robot-mounted camera, run OpenCV blob detection, return tag positions +
-the lateral offset/distance needed to align the gripper on the 4 stock
-objects.
+robot-mounted camera, run ArUco detection, return the lateral offset
+needed to align the gripper on the 4 stock objects.
 
-Self-calibrating: when all 4 tags are detected the known leftmost↔
-rightmost spread (EXPECTED_SPREAD_MM) gives us a px→mm scale on the
-fly. With <4 tags we fall back to the most recent scale (or a default
-calibrated value) and flag the result as partial.
+Each stock object carries a 4x4_50 ArUco tag at its centre:
+    id = 36  → blue object
+    id = 47  → yellow object
+The strategy expects 4 tags spread over EXPECTED_SPREAD_MM (=150 mm).
+
+Self-calibrating: when all 4 tags are detected the leftmost↔rightmost
+pixel spread gives us a px→mm scale on the fly. With <4 tags we fall
+back to the most recent scale (or a default calibrated value) and
+flag the result as partial.
 
 Wire format expected by the firmware (see jetson_bridge.cpp):
-    embed_detect_reply(n=N,offset=Δmm,distance=Dmm,bias=-1|0|+1,valid=0|1)
+    embed_detect_reply(n=N,offset=Δmm,bias=-1|0|+1,valid=0|1)
   n        : tags detected (0..4)
   offset   : lateral offset of detection centroid in mm (image-frame,
              +X = right side of frame). Strategy converts to robot frame.
-  distance : forward distance in mm if known (0 if not estimated).
   bias     : direction hint when n < EXPECTED_COUNT:
-                -1  detections clustered left → move LEFT to find more
-                +1  detections clustered right → move RIGHT to find more
+                -1  detections clustered right → move LEFT to find more
+                +1  detections clustered left  → move RIGHT to find more
                  0  no info / centred
   valid    : 1 if scale calibrated AND n >= 1.
 
@@ -38,12 +41,21 @@ try:
     import cv2
     import numpy as np
     _CV2_OK = True
+    _HAS_NEW_ARUCO_API = hasattr(cv2.aruco, 'ArucoDetector')
 except Exception as e:                                     # pragma: no cover
     _CV2_OK = False
     _CV2_ERR = str(e)
+    _HAS_NEW_ARUCO_API = False
 
 
 # ── Configuration (mutable at runtime via set_config) ─────────────────
+# Tag id convention (stock objects, 4x4_50 dictionary):
+#   id = 36 → BLUE object
+#   id = 47 → YELLOW object
+TAG_BLUE   = 36
+TAG_YELLOW = 47
+_STOCK_IDS = {TAG_BLUE, TAG_YELLOW}
+
 _cfg: dict = {
     # ESPCAM HTTP endpoint that returns a single JPEG when fetched.
     'url':                'http://192.168.1.81/capture',
@@ -53,14 +65,13 @@ _cfg: dict = {
     # if the first attempt times out / returns a multipart payload.
     'mjpeg_url':          'http://192.168.1.81/',
     'fetch_timeout_s':    1.5,
-    # Detection knobs — start permissive, tune in the Detection tab.
-    'blur_ksize':         5,
-    'thresh_block':       31,           # adaptive thresh block
-    'thresh_C':           7,             # adaptive thresh C
-    'min_area_px':        80,
-    'max_area_px':        20000,
-    'min_aspect':         0.3,           # bbox h/w bounds
-    'max_aspect':         3.0,
+    # ArUco detection — DICT_4X4_50, IDs 36 (blue) / 47 (yellow). The
+    # `team` knob lets the operator restrict detection to one colour
+    # in the Detection sub-tab: 'auto' = both, 'blue' = id 36 only,
+    # 'yellow' = id 47 only. Strategy queries leave this on 'auto'.
+    'aruco_dict':         '4x4_50',
+    'refine':             'subpix',      # 'none' | 'subpix' | 'contour'
+    'team':               'auto',        # 'auto' | 'blue' | 'yellow'
     # Geometry priors used to project pixel offset to mm.
     'expected_count':     4,
     'expected_spread_mm': 150.0,         # mm between leftmost & rightmost
@@ -151,102 +162,168 @@ def fetch_frame() -> Optional['np.ndarray']:
     return None
 
 
-# ── Detection ─────────────────────────────────────────────────────────
+# ── ArUco detection ────────────────────────────────────────────────────
 
-def _detect_blobs(frame: 'np.ndarray') -> list[dict]:
-    """Contour-based blob detector — robust to lighting via adaptive
-    threshold. Returns list of {cx, cy, area, w, h} sorted by cx (px,
-    image frame, origin top-left, +x right, +y down)."""
+_ARUCO_DICTS: dict = {}
+if _CV2_OK:
+    _ARUCO_DICTS = {
+        '4x4_50':    cv2.aruco.DICT_4X4_50,
+        '4x4_100':   cv2.aruco.DICT_4X4_100,
+        '4x4_250':   cv2.aruco.DICT_4X4_250,
+        '5x5_50':    cv2.aruco.DICT_5X5_50,
+        '6x6_50':    cv2.aruco.DICT_6X6_50,
+    }
+
+# Cached detector: rebuilt only when the dict/refine knobs change.
+_det_cache: dict = {'key': None, 'detector': None, 'dict': None, 'params': None}
+
+
+def _build_detector(dict_name: str, refine: str):
+    """Return (detector, dict, params) for OpenCV's ArUco API. Handles
+    both the legacy (≤4.6) and the modern (4.7+) call shapes."""
+    cv_dict_id = _ARUCO_DICTS.get(dict_name, cv2.aruco.DICT_4X4_50)
+    cv_dict = cv2.aruco.getPredefinedDictionary(cv_dict_id)
+    if _HAS_NEW_ARUCO_API:
+        params = cv2.aruco.DetectorParameters()
+    else:
+        params = cv2.aruco.DetectorParameters_create()
+    # Corner refinement — same enum values across versions.
+    refine_map = {
+        'none':    cv2.aruco.CORNER_REFINE_NONE,
+        'subpix':  cv2.aruco.CORNER_REFINE_SUBPIX,
+        'contour': cv2.aruco.CORNER_REFINE_CONTOUR,
+    }
+    params.cornerRefinementMethod = refine_map.get(
+        refine, cv2.aruco.CORNER_REFINE_SUBPIX)
+    if _HAS_NEW_ARUCO_API:
+        det = cv2.aruco.ArucoDetector(cv_dict, params)
+    else:
+        det = None
+    return det, cv_dict, params
+
+
+def _get_detector():
+    key = (str(_cfg.get('aruco_dict', '4x4_50')),
+           str(_cfg.get('refine', 'subpix')))
+    if _det_cache['key'] != key:
+        det, d, p = _build_detector(*key)
+        _det_cache['key']      = key
+        _det_cache['detector'] = det
+        _det_cache['dict']     = d
+        _det_cache['params']   = p
+    return _det_cache
+
+
+def _team_filter() -> set:
+    """Return the set of tag IDs we accept this run, based on cfg.team."""
+    team = str(_cfg.get('team', 'auto')).lower()
+    if team == 'blue':   return {TAG_BLUE}
+    if team == 'yellow': return {TAG_YELLOW}
+    return set(_STOCK_IDS)
+
+
+def _detect_tags(frame: 'np.ndarray') -> list[dict]:
+    """Run ArUco detection, filter to stock-object IDs (36 blue / 47
+    yellow), return a list of {tag_id, team, cx, cy, corners} sorted
+    by cx."""
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-    k = max(3, int(_cfg.get('blur_ksize', 5)) | 1)        # force odd
-    gray = cv2.GaussianBlur(gray, (k, k), 0)
-    block = max(3, int(_cfg.get('thresh_block', 31)) | 1)
-    C     = int(_cfg.get('thresh_C', 7))
-    th = cv2.adaptiveThreshold(
-        gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-        cv2.THRESH_BINARY_INV, block, C)
-    contours, _ = cv2.findContours(th, cv2.RETR_EXTERNAL,
-                                   cv2.CHAIN_APPROX_SIMPLE)
-    min_a = float(_cfg.get('min_area_px',  80))
-    max_a = float(_cfg.get('max_area_px',  20000))
-    min_r = float(_cfg.get('min_aspect',   0.3))
-    max_r = float(_cfg.get('max_aspect',   3.0))
+    cache = _get_detector()
+    if _HAS_NEW_ARUCO_API:
+        corners, ids, _ = cache['detector'].detectMarkers(gray)
+    else:
+        corners, ids, _ = cv2.aruco.detectMarkers(
+            gray, cache['dict'], parameters=cache['params'])
+    if ids is None or len(ids) == 0:
+        return []
+    accepted = _team_filter()
     out: list[dict] = []
-    for c in contours:
-        area = cv2.contourArea(c)
-        if area < min_a or area > max_a:
+    for c, tag_id in zip(corners, ids.flatten().tolist()):
+        if int(tag_id) not in accepted:
             continue
-        x, y, w, h = cv2.boundingRect(c)
-        if w <= 0 or h <= 0:
-            continue
-        ratio = h / w
-        if ratio < min_r or ratio > max_r:
-            continue
-        M = cv2.moments(c)
-        if M['m00'] <= 0:
-            continue
-        cx = M['m10'] / M['m00']
-        cy = M['m01'] / M['m00']
+        pts = c.reshape(4, 2)
+        cx = float(pts[:, 0].mean())
+        cy = float(pts[:, 1].mean())
+        team = 'blue' if int(tag_id) == TAG_BLUE else 'yellow'
         out.append({
-            'cx':   float(cx),
-            'cy':   float(cy),
-            'area': float(area),
-            'w':    int(w),
-            'h':    int(h),
+            'tag_id':  int(tag_id),
+            'team':    team,
+            'cx':      cx,
+            'cy':      cy,
+            'corners': pts.tolist(),
         })
     out.sort(key=lambda d: d['cx'])
-    # If too many candidates survived, keep the `expected_count` largest
-    # by area then re-sort by x. Saves us from noise rows.
+    # If the camera somehow picks up more than `expected_count` tags
+    # (stray ArUco in the background), keep the cluster closest to
+    # the image centre — the stock row is centred under the gripper
+    # by definition.
     cap = int(_cfg.get('expected_count', 4))
     if cap > 0 and len(out) > cap:
-        out = sorted(out, key=lambda d: -d['area'])[:cap]
+        h, w = frame.shape[:2]
+        cx_img = w / 2.0
+        out = sorted(out, key=lambda d: abs(d['cx'] - cx_img))[:cap]
         out.sort(key=lambda d: d['cx'])
     return out
 
 
 def _annotate(frame: 'np.ndarray', tags: list[dict],
               spread_px: float, scale_mm_per_px: float,
-              offset_mm: float) -> 'np.ndarray':
-    """Overlay detection markers + summary text on a copy of `frame`."""
+              offset_mm: float, dominant_team: str) -> 'np.ndarray':
+    """Overlay ArUco corners + ID + summary line on a copy of `frame`."""
     img = frame.copy()
     h, w = img.shape[:2]
     cx_img = w / 2.0
     # Vertical centre line for the operator to eyeball alignment.
     cv2.line(img, (int(cx_img), 0), (int(cx_img), h), (60, 60, 60), 1)
     for i, t in enumerate(tags):
+        # Team-coloured box (blue for id 36, yellow for id 47).
+        col = (255, 180, 60) if t['team'] == 'blue' else (40, 220, 255)
+        pts = np.array(t['corners'], dtype=np.int32).reshape(-1, 1, 2)
+        cv2.polylines(img, [pts], True, col, 2)
         p = (int(t['cx']), int(t['cy']))
-        cv2.circle(img, p, max(6, t['w'] // 4), (0, 200, 80), 2)
-        cv2.putText(img, f"#{i}", (p[0] + 8, p[1] - 8),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 200, 80), 1,
-                    cv2.LINE_AA)
+        cv2.circle(img, p, 4, col, -1)
+        cv2.putText(img, f"#{i} id={t['tag_id']}",
+                    (p[0] + 8, p[1] - 8),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, col, 1, cv2.LINE_AA)
     if tags:
         cx_tags = sum(t['cx'] for t in tags) / len(tags)
         cv2.line(img, (int(cx_tags), 0), (int(cx_tags), h),
                  (40, 120, 255), 2)
         cv2.putText(img,
-                    f"n={len(tags)} offset={offset_mm:+.0f}mm "
+                    f"n={len(tags)} team={dominant_team} "
+                    f"offset={offset_mm:+.0f}mm "
                     f"scale={scale_mm_per_px:.3f}mm/px "
                     f"spread_px={spread_px:.0f}",
                     (8, h - 8),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1,
                     cv2.LINE_AA)
     else:
-        cv2.putText(img, "no detections",
+        cv2.putText(img, "no ArUco tags",
                     (8, h - 8), cv2.FONT_HERSHEY_SIMPLEX, 0.5,
                     (0, 0, 255), 1, cv2.LINE_AA)
     return img
 
 
 def analyze_frame(frame: 'np.ndarray') -> dict:
-    """Run blob detection on `frame` and compute the offset/distance
+    """Run ArUco detection on `frame` and compute the offset/scale
     geometry. Returns a dict with every field the firmware + UI need."""
     global _last_scale_mm_per_px
-    tags = _detect_blobs(frame)
+    tags = _detect_tags(frame)
     h, w = frame.shape[:2]
     cx_img = w / 2.0
     expected = int(_cfg.get('expected_count', 4))
     spread_mm = float(_cfg.get('expected_spread_mm', 150.0))
     n = len(tags)
+    # Dominant team: majority of detected tag IDs.  Mixed rows
+    # (shouldn't happen on a sane stock, but useful diagnostic) fall
+    # back to 'mixed'.
+    if n == 0:
+        dominant_team = 'unknown'
+    else:
+        n_blue   = sum(1 for t in tags if t['team'] == 'blue')
+        n_yellow = n - n_blue
+        if n_blue == n:   dominant_team = 'blue'
+        elif n_yellow == n: dominant_team = 'yellow'
+        else:               dominant_team = 'mixed'
     # ── Auto-scale ────────────────────────────────────────────────
     # With all 4 tags we trust the EXPECTED_SPREAD_MM prior 100% and
     # update the rolling scale. With fewer detections we hold the
@@ -283,22 +360,18 @@ def analyze_frame(frame: 'np.ndarray') -> dict:
         else:
             bias = 0
     valid = (n >= 1) and (scale is not None) and (scale > 0)
-    # Distance estimation is geometry-dependent (camera pitch /
-    # height). With a flat-mounted camera looking ahead we don't
-    # have a closed-form here, so just return 0 — the strategy
-    # uses the lateral offset only.
-    distance_mm = 0.0
-    preview = _annotate(frame, tags, spread_px, scale, offset_mm)
+    preview = _annotate(frame, tags, spread_px, scale, offset_mm, dominant_team)
     return {
         'n':           n,
         'expected':    expected,
+        'team':        dominant_team,
         'offset_mm':   offset_mm,
-        'distance_mm': distance_mm,
         'scale_mm_per_px': scale,
         'spread_px':   spread_px,
         'bias':        bias,
         'valid':       bool(valid),
         'tags':        tags,
+        'tag_ids':     [t['tag_id'] for t in tags],
         'image_w':     w,
         'image_h':     h,
         'preview':     preview,        # BGR ndarray (not JSON-serialisable)
@@ -320,13 +393,14 @@ def _empty(reason: str) -> dict:
     return {
         'n':           0,
         'expected':    int(_cfg.get('expected_count', 4)),
+        'team':        'unknown',
         'offset_mm':   0.0,
-        'distance_mm': 0.0,
         'scale_mm_per_px': _last_scale_mm_per_px or 0.0,
         'spread_px':   0.0,
         'bias':        0,
         'valid':       False,
         'tags':        [],
+        'tag_ids':     [],
         'image_w':     0,
         'image_h':     0,
         'preview':     None,
@@ -366,10 +440,19 @@ def result_to_checks(result: dict) -> list[dict]:
     valid    = bool(result.get('valid', False))
     bias     = int(result.get('bias', 0))
     bias_str = {-1: '← LEFT', 0: 'centred', +1: 'RIGHT →'}.get(bias, '?')
+    team     = result.get('team', 'unknown')
+    tag_ids  = result.get('tag_ids', [])
     rows = [
         {'name': 'tags found', 'status':
             'pass' if full else ('fail' if n == 0 else 'unknown'),
          'value': f'{n} / {expected}'},
+        {'name': 'tag IDs',
+         'status': 'pass' if n > 0 else 'unknown',
+         'value': ', '.join(str(i) for i in tag_ids) or '—'},
+        {'name': 'team',
+         'status': 'pass' if team in ('blue', 'yellow') else
+                   ('fail' if team == 'mixed' else 'unknown'),
+         'value': str(team)},
         {'name': 'lateral offset',
          'status': 'pass' if valid else 'unknown',
          'value': f"{result.get('offset_mm', 0.0):+.1f} mm"},

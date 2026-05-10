@@ -319,7 +319,7 @@ static BlockResult blockCollectB() {
 
 static BlockResult blockStoreB() {
     waitMs(800);
-=
+
     if(ihm.isColor(Settings::BLUE)) {
         storeStock(POI::pantry_07 + Vec2(0,0) + pantryEmpty * Vec2(30,0), TableCompass::EAST, RobotCompass::AB);
     } else {
@@ -333,7 +333,7 @@ static BlockResult blockStoreB() {
 
 static BlockResult blockCollectC() {
     waitMs(800);
-=
+
     if(ihm.isColor(Settings::BLUE)) {
         collectStock(POI::stockBlue_04+ Vec2(20,-30), TableCompass::NORTH, RobotCompass::AB);
     } else {
@@ -345,7 +345,7 @@ static BlockResult blockCollectC() {
 
 static BlockResult blockStoreC() {
     waitMs(800);
-=
+
     if(ihm.isColor(Settings::BLUE)) {
         storeStock(POI::pantry_06 + Vec2(-30,-250) + pantryEmpty * Vec2(0, 50), TableCompass::SOUTH, RobotCompass::AB);
     } else {
