@@ -156,7 +156,8 @@ CAMERA_Z_MM = 110.0   # camera height above the table — adjust when the
 CAMERA_X_MM = CAMERA_X_MM_BY_TEAM['blue']
 
 # Parallax
-ROBOT_Z_MM = 490.0
+ROBOT_Z_MM = 550.0 # avec porte cable et tag printed
+#ROBOT_Z_MM = 490.0
 
 # Common
 FPS_LIMIT = 4   # 4 Hz feels reactive in the dashboard. Pipeline tick
