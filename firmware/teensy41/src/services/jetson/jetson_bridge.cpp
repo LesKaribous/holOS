@@ -85,6 +85,15 @@ FLASHMEM void JetsonBridge::disable() {
 FLASHMEM void JetsonBridge::run() {
     if (!enabled()) return;
 
+    // Fix #3: drain any commands that were deferred while a long-running
+    // outer command was in flight. Doing it here (top of run()) instead
+    // of inside _executeCommand keeps the deferred dispatch off the deep
+    // _readPort → handleRequest → _executeCommand call chain — the
+    // whole reason we defer in the first place.
+    if (m_cmdDeferredHas && !m_cmdExecuting) {
+        _drainDeferredCommands();
+    }
+
     // PR-1: Flush any pending command reply (reply queue from request.cpp)
     Request::flushPendingReply();
 
@@ -675,13 +684,118 @@ FLASHMEM void JetsonBridge::handleRequest(Request& req) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-//  _executeCommand — execute via OS command interpreter, reply immediately
+//  _executeCommand — execute a bridge command and reply when done.
+//
+//  Two memory-saving paths:
+//    1. Try direct dispatch first (no Interpreter / Program / Expression
+//       on the stack) for plain "name(args)" payloads, which is what holOS
+//       sends 99% of the time.
+//    2. Serialise re-entrant calls: if a long command (e.g. recalage())
+//       yields to the bridge while running, any *new* command that arrives
+//       gets queued in a single-slot deferred buffer. The outer command
+//       drains it after it returns. Prevents the Interpreter+Program parse
+//       from stacking on top of itself and blowing the 6.7 KB stack
+//       budget reported by teensy_size.
 // ─────────────────────────────────────────────────────────────────────────────
 
 FLASHMEM void JetsonBridge::_executeCommand(const String& cmd, Request& req) {
-    String mutable_cmd = cmd;
-    os.execute(mutable_cmd);
+    // ── Re-entrant call: stash and bail (outer drain loop will execute it). ─
+    if (m_cmdExecuting) {
+        if (m_cmdDeferredHas) {
+            // Single slot already taken — refuse the third level. The
+            // protocol explicitly never silently drops a reply; "busy" is
+            // a known terminal state the host can handle / retry.
+            req.reply("busy");
+            return;
+        }
+        m_cmdDeferredHas    = true;
+        m_cmdDeferredUid    = req.ID();
+        m_cmdDeferredSource = req.source();
+        strncpy(m_cmdDeferredCmd, cmd.c_str(), sizeof(m_cmdDeferredCmd) - 1);
+        m_cmdDeferredCmd[sizeof(m_cmdDeferredCmd) - 1] = '\0';
+        // No reply yet — the drain loop will reply after actually executing.
+        return;
+    }
+
+    m_cmdExecuting = true;
+    if (!_tryDirectDispatch(cmd)) {
+        // Fall back to the full interpreter for scripts with control flow,
+        // assignments, or multiple statements.
+        String mutable_cmd = cmd;
+        os.execute(mutable_cmd);
+    }
     req.reply("ok");
+    m_cmdExecuting = false;
+
+    // Note: we DON'T drain here. _executeCommand is reached from deep
+    // inside the _readPort → handleRequest call chain, and the outer
+    // command's Request still occupies ~1.2 KB of stack above us.
+    // Running a deferred command here would push another full Request
+    // on top — exactly the stack growth Fix #3 was meant to avoid.
+    // Instead, run() drains on its next tick when the stack has fully
+    // unwound back to the OS service-loop frame.
+}
+
+FLASHMEM bool JetsonBridge::_tryDirectDispatch(const String& cmd) {
+    // Anything that looks like a script — multi-statement (;), assignment
+    // (=), or empty — must go through the full interpreter.
+    if (cmd.length() == 0)         return false;
+    if (cmd.indexOf(';') >= 0)     return false;
+    if (cmd.indexOf('=') >= 0)     return false;
+
+    int paren = cmd.indexOf('(');
+    String name;
+    args_t args;
+    if (paren < 0) {
+        // Bare command like "match_start".
+        name = cmd;
+        name.trim();
+    } else {
+        int closeParen = cmd.lastIndexOf(')');
+        if (closeParen < paren) return false;
+        name = cmd.substring(0, paren);
+        name.trim();
+        String body = cmd.substring(paren + 1, closeParen);
+        // Reject nested parens — those imply a sub-expression that needs
+        // Expression evaluation (e.g. goPolar(getCompassOrientation(EAST), 100)).
+        if (body.indexOf('(') >= 0) return false;
+        // Split on commas.
+        if (body.length() > 0) {
+            args = CommandHandler::extractArguments(body);
+            if (args.empty()) {
+                // Single-arg case: extractArguments returns empty when
+                // there's no comma. Wrap the single arg ourselves.
+                String single = body;
+                single.trim();
+                args.push_back(single);
+            }
+        }
+    }
+
+    return CommandHandler::dispatchDirect(name, args);
+}
+
+FLASHMEM void JetsonBridge::_drainDeferredCommands() {
+    // Loop in case the drained command itself yields and triggers another
+    // deferral. Caps at 4 iterations to bound worst-case time spent here —
+    // beyond that we'd be in a re-entry storm that suggests something else
+    // is wrong, and we'd rather drop than spin.
+    for (int safety = 0; safety < 4 && m_cmdDeferredHas; ++safety) {
+        // Copy the slot, then clear it so a new deferral has space.
+        String cmd(m_cmdDeferredCmd);
+        int    uid = m_cmdDeferredUid;
+        BridgeSource src = m_cmdDeferredSource;
+        m_cmdDeferredHas = false;
+
+        Request fakeReq(uid, cmd.c_str(), src);
+        m_cmdExecuting = true;
+        if (!_tryDirectDispatch(cmd)) {
+            String mutable_cmd = cmd;
+            os.execute(mutable_cmd);
+        }
+        fakeReq.reply("ok");
+        m_cmdExecuting = false;
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

@@ -41,5 +41,12 @@ public:
     static std::vector<String> extractArguments(const String& args);
     static bool hasCommand(const String& command);
     static std::map<String, Command>& getCommands();
+    // Direct dispatch for trivial "name(args)" payloads that don't need
+    // variable resolution or multi-statement scripting. Args are passed
+    // through verbatim (the command callbacks themselves do .toFloat() /
+    // .toInt() conversion on numeric args, so raw literals are fine).
+    // Bypasses Interpreter + Program + Expression, saving ~1 KB stack
+    // per nested call. Returns true if the command exists and ran.
+    static bool dispatchDirect(const String& name, const args_t& args);
 };
 

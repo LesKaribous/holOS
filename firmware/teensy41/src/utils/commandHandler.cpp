@@ -49,6 +49,15 @@ FLASHMEM void CommandHandler::execute(const String& command, const args_t& args)
     }
 }
 
+FLASHMEM bool CommandHandler::dispatchDirect(const String& name, const args_t& args) {
+    auto& commands = getCommands();
+    auto it = commands.find(name);
+    if (it == commands.end()) return false;
+    if (it->second.callback == nullptr) return false;
+    it->second.callback(args);
+    return true;
+}
+
 FLASHMEM std::vector<String> CommandHandler::extractArguments(const String& args) {
     std::vector<String> arguments;
     //int start = 0;

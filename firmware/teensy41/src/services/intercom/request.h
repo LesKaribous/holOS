@@ -16,11 +16,17 @@ enum class BridgeSource : uint8_t {
 
 class Request {
 public:
-    // Increased to 384 to accommodate pathfinding commands with multiple
-    // via() waypoints (e.g. "via(1234.5,1234.5);via(...)...;go(1234.5,1234.5)").
-    // Previous value (128) caused silent truncation and garbled commands.
-    static constexpr uint16_t CONTENT_MAX = 384;
-    static constexpr uint16_t PAYLOAD_MAX = 400;  // CONTENT_MAX + 16 overhead for "uid:content|crc"
+    // Sized to fit a worst-case chained path command:
+    //   "via(x,y);via(x,y);...;go(x,y)" with up to 9 via points
+    //   @ ~25 chars each + a final go() = ~250 chars.
+    // Bigger than that bloats every Request instance on the stack (we
+    // pool 8 of these in Intercom and create more on _readPort each
+    // frame). With CONTENT_MAX=384 we lost ~1 KB of stack budget across
+    // the typical reentrant handleRequest chain; 256 keeps comfortable
+    // margin while still leaving room for the typical pathfinder chain.
+    // The holOS side caps MAX_VIA_POINTS to match (see motion.py).
+    static constexpr uint16_t CONTENT_MAX = 256;
+    static constexpr uint16_t PAYLOAD_MAX = 272;  // CONTENT_MAX + 16 overhead for "uid:content|crc"
 
     enum class Status {
         IDLE,

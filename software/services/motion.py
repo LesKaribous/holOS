@@ -331,10 +331,14 @@ class MotionService:
 
     # ── Internal helpers ──────────────────────────────────────────────────────
 
-    # Max via points before the chained command exceeds firmware's CONTENT_MAX
-    # (384 bytes). Each "via(XXXX.X,XXXX.X);" is ~22 chars; 14 via = ~308 chars
-    # + go() = ~330 chars — leaves room for the uid:...|crc framing.
-    MAX_VIA_POINTS = 14
+    # Max via points before the chained command exceeds firmware's
+    # CONTENT_MAX (256 bytes — shrunk from 384 to free 1 KB of stack
+    # budget across the reentrant handleRequest chain that was crashing
+    # vision_recalage). Each "via(XXXX.X,XXXX.X);" is ~22 chars;
+    # 9 via = ~198 chars + go() = ~220 chars; leaves room for "uid:...|crc"
+    # framing within CONTENT_MAX. Downsampling 14→9 over typical match
+    # paths costs <1 cm of path-following accuracy in practice.
+    MAX_VIA_POINTS = 9
 
     def _plan_path(self, target: Vec2) -> Tuple[List[Vec2], bool]:
         """Run the pathfinder once. Returns ``(via_points, found)``.

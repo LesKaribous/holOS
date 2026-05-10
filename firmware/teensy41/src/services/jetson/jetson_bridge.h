@@ -107,6 +107,26 @@ private:
     void _executeCommand(const String& cmd, Request& req);
     void _replyMotionDone(bool success);
 
+    // Fix #1: bypass Interpreter+Program+Expression for trivial "name(args)"
+    // payloads — direct lookup in CommandHandler::getCommands(). Saves ~1 KB
+    // stack per call. Falls through to false if `cmd` looks like a script
+    // (has `;`, `=`, nested parens, etc.) and the caller must use the full
+    // interpreter path.
+    bool _tryDirectDispatch(const String& cmd);
+
+    // Fix #3: serialise command execution to prevent re-entrant stack
+    // growth. If a second _executeCommand fires while one is in flight
+    // (because a long command yielded via os.wait → bridge.run → _readPort
+    // → handleRequest), the new command is queued and drained when the
+    // outer one returns. Single-slot queue is enough — under normal load
+    // there's at most one nested command pending.
+    void _drainDeferredCommands();
+    bool   m_cmdExecuting     = false;
+    bool   m_cmdDeferredHas   = false;
+    int    m_cmdDeferredUid   = 0;
+    char   m_cmdDeferredCmd[Request::CONTENT_MAX] = {0};
+    BridgeSource m_cmdDeferredSource = BridgeSource::INTERCOM;
+
     // ── Watchdog ─────────────────────────────────────────────────────────────
 
     void _checkWatchdog();

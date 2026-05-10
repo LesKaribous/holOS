@@ -467,12 +467,26 @@ FLASHMEM void visionRecalage(){
 // ─────────────────────────────────────────────────────────────────────────
 //  testSyncToVision -- diagnostic for the OTOS<-vision sync round-trip.
 //
-//  Procedure: drive the robot to (1000, 1000) using the current OTOS
-//  scale (which the operator may have intentionally detuned to expose
-//  the bug), then call syncToVision() to overwrite OTOS with the vision
-//  fix, then drive to (1000, 1000) AGAIN. With sync working, the second
-//  move ends at the physical (1000, 1000) on the table -- drift of the
-//  first move is what gets cancelled.
+//  We need OTOS to lie at the start so the first move lands off-target,
+//  then prove that syncToVision() can correct the error. Detuning the
+//  OTOS in settings.h is the wrong place: that bad scale also leaks into
+//  recalage's goAlign and trips the cooperative-scheduler watchdog
+//  (motion controller spirals on a feedback target it can't reach).
+//
+//  So the test detunes AT RUNTIME instead: save the current scale,
+//  apply ~+7%, run the demo, restore at the end (or on any early exit
+//  path so we never leave the OTOS in the wrong state).
+//
+//  Procedure:
+//    1. Detune OTOS scale by +7% (~70 mm error over 1 m of travel).
+//    2. go (1000, 1000) -- robot lands roughly 70 mm off the physical
+//       target because the controller closes the loop in OTOS-frame.
+//    3. syncToVision() -- vision sees the actual robot pose, overwrites
+//       OTOS so the controller now believes the truth.
+//    4. go (1000, 1000) -- second move is short (~70 mm) and at +7%
+//       scale lands within ~5 mm of the physical target. ArUco
+//       precision is the floor.
+//    5. Restore the saved scale.
 //
 //  Requires homography locked + a successful classical recalage so an
 //  own-team tag is registered. Aborts cleanly otherwise.
@@ -491,11 +505,22 @@ FLASHMEM void testSyncToVision() {
         return;
     }
 
+    // Snapshot the calibrated scale before we mess with it. Restored on
+    // every exit path below.
+    const float trueScale = localisation.getLinearScale();
+    const float detunedScale = trueScale * 1.07f;
     Console::info("Strategy")
-        << "[testSyncToVision] go #1 to (1000, 1000)"
+        << "[testSyncToVision] detuning OTOS scale " << trueScale
+        << " -> " << detunedScale << " for the test"
         << Console::endl;
+    localisation.setLinearScale(detunedScale);
+
     motion.engage();
     motion.setFeedrate(0.6);
+
+    Console::info("Strategy")
+        << "[testSyncToVision] go #1 to (1000, 1000) -- expect ~70 mm error"
+        << Console::endl;
     async motion.go(Vec2(1000, 1000));
     os.wait(1500);                  // let OTOS + chassis settle before syncing
 
@@ -507,6 +532,7 @@ FLASHMEM void testSyncToVision() {
         Console::error("Strategy")
             << "[testSyncToVision] syncToVision FAILED - no fresh vision pose"
             << Console::endl;
+        localisation.setLinearScale(trueScale);
         motion.setFeedrate(1.0);
         return;
     }
@@ -517,9 +543,16 @@ FLASHMEM void testSyncToVision() {
         << Console::endl;
 
     Console::info("Strategy")
-        << "[testSyncToVision] go #2 to (1000, 1000) - should be on target now"
+        << "[testSyncToVision] go #2 to (1000, 1000) - should land on target now"
         << Console::endl;
     async motion.go(Vec2(1000, 1000));
+
+    // Restore the calibrated scale before returning so subsequent moves
+    // (and a later match) don't inherit the detuned value.
+    localisation.setLinearScale(trueScale);
     motion.setFeedrate(1.0);
+    Console::info("Strategy")
+        << "[testSyncToVision] OTOS scale restored to " << trueScale
+        << Console::endl;
 }
 
