@@ -161,13 +161,17 @@ FLASHMEM void Localisation::requestHomographyCapture() {
 //   x in mm (int), y in mm (int), theta in milliradians (int).
 // holOS divides t by 1000 to recover radians.
 FLASHMEM void Localisation::requestVisionCalibration(Vec3 known_pos) {
-    // Build the frame with snprintf %d only (newlib-nano supports
-    // integer formats — only %f is the broken one). Convention:
+    // Build the cal_request frame with snprintf %d (newlib-nano-safe —
+    // only %f is unsupported in this build). Convention:
     //   x in mm (int), y in mm (int), theta in milliradians (int).
-    // holOS divides t by 1000 to recover radians.
     //
-    // Arduino String + concat was tried and silently dropped — likely
-    // reallocation invalidated c_str() between build and pushVisionFrame.
+    // Use pushVisionFrameDirect to bypass the bridge's ring buffer.
+    // Earlier diagnostic showed our 37-char cal_request frame would
+    // sit in the ring buffer for >2 s on the XBee link with no T:vis
+    // emission, while the shorter literal markers around it both
+    // got out fine. Direct write spins on TX FIFO + flushes — costs
+    // ~10 ms on a busy bridge, fully acceptable for a one-shot
+    // recalage handshake.
     char frame[80];
     int n = snprintf(frame, sizeof(frame),
                      "T:vis cal_request x=%d y=%d t=%d",
@@ -175,11 +179,10 @@ FLASHMEM void Localisation::requestVisionCalibration(Vec3 known_pos) {
                      (int)known_pos.y,
                      (int)(known_pos.z * 1000.0f));
     if (n <= 0 || n >= (int)sizeof(frame)) {
-        // Diagnostic — should never fire since %d is always supported
-        jetsonBridge.pushVisionFrame("T:vis cal_format_failed");
+        jetsonBridge.pushVisionFrameDirect("T:vis cal_format_failed");
         return;
     }
-    jetsonBridge.pushVisionFrame(frame);
+    jetsonBridge.pushVisionFrameDirect(frame);
     Console::info("Localisation")
         << "Vision recalage requested at (" << known_pos.x << ", "
         << known_pos.y << ", " << known_pos.z << ")" << Console::endl;

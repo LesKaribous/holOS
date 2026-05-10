@@ -82,6 +82,13 @@ public:
     /// without exposing our private _pushFrame plumbing.
     void pushVisionFrame(const char* frame) { _pushFrame(frame); }
 
+    /// Like pushVisionFrame but bypasses the ring buffer entirely and
+    /// blocks on BRIDGE_SERIAL.write until every byte is queued. Use
+    /// for frames that must absolutely make it out, even at the cost
+    /// of UART back-pressure (recalage cal_request payload — sweep
+    /// cadence is 5+ s anyway, blocking 10 ms is invisible).
+    void pushVisionFrameDirect(const char* frame);
+
     /// Enable/disable a telemetry channel at runtime (called by command_tel).
     /// channel: 0=pos  1=motion  2=safety  3=chrono  4=occ
     void setTelemetry(uint8_t channel, bool on);

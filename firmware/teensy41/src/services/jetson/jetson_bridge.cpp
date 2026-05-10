@@ -785,6 +785,26 @@ FLASHMEM void JetsonBridge::pushOccupancy() {
     _pushFrame(buf);
 }
 
+// Like _pushFrame but unconditional blocking write to BRIDGE_SERIAL.
+// Skips availableForWrite() / ring buffer logic so the frame cannot
+// be silently delayed or dropped on a busy bridge. Caller must accept
+// the latency cost on a flow-controlled XBee link (worst-case ~10 ms
+// for our cal_request payload, fully acceptable in the recalage path).
+FLASHMEM void JetsonBridge::pushVisionFrameDirect(const char* msg) {
+    if (msg == nullptr) return;
+    size_t mlen = strlen(msg);
+    if (mlen == 0 || mlen > 200) return;   // refuse degenerate inputs
+    char framed[256];
+    uint8_t crc = CRC8.smbus((const uint8_t*)msg, mlen);
+    int n = snprintf(framed, sizeof(framed), "%s|%d\n", msg, (int)crc);
+    if (n <= 0 || n >= (int)sizeof(framed)) return;
+    // Blocking write — Arduino HardwareSerial.write spins on full TX
+    // FIFO until interrupt frees space. For USB-CDC it's even simpler.
+    BRIDGE_SERIAL.write((const uint8_t*)framed, (size_t)n);
+    BRIDGE_SERIAL.flush();   // make sure bytes actually leave before we return
+}
+
+
 FLASHMEM void JetsonBridge::_pushFrame(const char* msg) {
     // Compute CRC and build framed message into a stack buffer.
     // Buffer sized to TQUEUE_FRAME so occupancy frames always fit.
