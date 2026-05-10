@@ -203,16 +203,22 @@ class ParallaxCorrectionNode(Node):
         self._last_object_z_mm = oz
 
         # factor = (Zc - z_object) / Zc — degenerates as Zc → z_object.
-        if cz <= oz + 1e-3:
+        # If the config is broken (cam below tag) we still want the BEV
+        # debug feed alive, just without the parallax correction. Skip
+        # the per-pose correction loop and fall through to preview.
+        broken_geom = (cz <= oz + 1e-3)
+        if broken_geom:
             self._last_error = (
                 f'cam_z_mm ({cz:.0f}) must be > object_z_mm ({oz:.0f})'
             )
-            # Pass through without correcting so downstream still gets data.
-            return {'pose_list': poses}
-        factor = (cz - oz) / cz
+            factor = 1.0
+            iter_poses = []
+        else:
+            factor = (cz - oz) / cz
+            iter_poses = poses or []
 
         out = []
-        for q in (poses or []):
+        for q in iter_poses:
             if not isinstance(q, dict):
                 continue
             # Pick the source xy
@@ -248,9 +254,15 @@ class ParallaxCorrectionNode(Node):
             out.append(new_q)
 
         # Reset error after a successful tick so the dashboard can clear it
-        self._last_error = None
+        # — but only when geometry is healthy, otherwise we'd clear the
+        # cam_z<=object_z warning we just set.
+        if not broken_geom:
+            self._last_error = None
 
-        result = {'pose_list': out}
+        # Pass the original (uncorrected) pose_list through when the
+        # geometry is broken, so the downstream Objects tab / overlays
+        # still get something meaningful instead of an empty list.
+        result = {'pose_list': (poses if broken_geom else out)}
 
         # Optional preview: draws BOTH the naive (yellow, on the BEV marker)
         # and the parallax-corrected (green, the true ground point) dots,

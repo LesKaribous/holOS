@@ -147,7 +147,7 @@ CAMERA_X_MM_BY_TEAM = {
 #CAMERA_Z_MM = 1410.0   # camera height above the table — adjust when the rig moves; affects correction magnitude (factor = (cam_z − robot_tag_z) / cam_z).
 
 CAMERA_Y_MM = -100.0 #table adrien
-CAMERA_Z_MM = 110.0   # camera height above the table — adjust when the
+CAMERA_Z_MM = 1100.0   # camera height above the table — adjust when the
 
 
 # Initial value used at pipeline build — overwritten by _apply_team in
