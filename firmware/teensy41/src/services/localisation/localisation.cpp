@@ -237,6 +237,31 @@ FLASHMEM void Localisation::requestVisionCalibration(Vec3 known_pos) {
     m_visionCalibrated = false;   // set true by reply handler
 }
 
+// Manual / human-in-the-loop variant of cal_request. holOS opens a
+// modal on the webapp telling the operator to push the robot to the
+// supplied target pose, then captures (tag_xy, target_xy) once the
+// operator clicks OK. The caller must have disengaged the steppers
+// before calling, and re-engage after isVisionCalibrated() flips true
+// (or after the firmware-side wait times out).
+FLASHMEM void Localisation::requestVisionCalibrationManual(Vec3 target_pos) {
+    char frame[80];
+    int n = snprintf(frame, sizeof(frame),
+                     "T:vis cal_request_manual x=%d y=%d t=%d",
+                     (int)target_pos.x,
+                     (int)target_pos.y,
+                     (int)(target_pos.z * 1000.0f));
+    if (n <= 0 || n >= (int)sizeof(frame)) {
+        jetsonBridge.pushVisionFrameDirect("T:vis cal_format_failed");
+        return;
+    }
+    jetsonBridge.pushVisionFrameDirect(frame);
+    Console::info("Localisation")
+        << "Vision recalage (manual) requested — push robot to ("
+        << target_pos.x << ", " << target_pos.y << ", "
+        << target_pos.z << ")" << Console::endl;
+    m_visionCalibrated = false;   // set true by reply handler when user OKs
+}
+
 // Block (with timeout) waiting for the next pose reply from holOS.
 FLASHMEM bool Localisation::queryVisionPose(Vec3& out_pose,
                                             unsigned long timeout_ms) {

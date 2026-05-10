@@ -396,36 +396,40 @@ FLASHMEM void visionRecalage(){
     auto X = [isBlue](float x) -> float {
         return isBlue ? (3000.0f - x) : x;
     };
-    // Drive to a pose, settle, fire one cal_request, wait for reply.
-    // 3 s settle covers the chassis velocity tail + camera shutter.
-    // 1.5 s reply wait covers up to 3 server-side retries.
-    auto captureAt = [](Vec2 pos) {
-        async motion.go(pos);
-        os.wait(3000);
-        localisation.requestVisionCalibration(localisation.getPosition());
-        os.wait(1500);
+    // Manual-confirm capture: drive close, free the wheels, hand the
+    // robot over to the operator who pushes it to the exact target,
+    // then resume once holOS replies (after the user clicks OK on the
+    // webapp modal). The TARGET is sent as ground truth — OTOS is not
+    // used here because its drift is exactly what we're calibrating
+    // around. The 125 s wait covers holOS's 120 s user-confirmation
+    // timeout with a small padding.
+    auto captureAt = [](Vec2 target) {
+        async motion.go(target);
+        os.wait(1000);                         // brief settle after motion
+        motion.disengage();                    // free wheels for manual push
+        Vec3 targetPose(target.x, target.y, 0.0f);
+        localisation.requestVisionCalibrationManual(targetPose);
+        // Poll isVisionCalibrated() up to 125 s — exits early as soon
+        // as the holOS reply lands, so good calibrations don't burn
+        // the full window.
+        const unsigned long deadline = millis() + 125000UL;
+        while (millis() < deadline) {
+            if (localisation.isVisionCalibrated()) break;
+            os.wait(100);
+        }
+        motion.engage();                       // re-engage for next move
     };
 
     motion.engage();
     motion.setFeedrate(0.6);
 
-    // Initial cal_request at the current (start zone) pose. Adds
-    // a near-edge sample to the calibration set. The robot is
-    // assumed to be at the recalage start position from a prior
-    // classical recalage.
-    os.wait(3000);
-    localisation.requestVisionCalibration(localisation.getPosition());
-    os.wait(1500);
-    if (localisation.isVisionCalibrated()) {
-        Vec3 offset = localisation.syncToVision();
-        (void)offset;
-    }
-
-    // ── Calibration waypoints (add more here for better coverage) ───
+    // ── Calibration waypoints ───────────────────────────────────────
     // Coordinates in YELLOW frame, auto-mirrored to (3000 - x) for BLUE.
     // Spread across the half-table — different X and Y to constrain
     // the parallax factor in both axes. RMS in /vision_debug should
-    // drop as more pairs are added.
+    // drop as more pairs are added. The first one is at the start zone
+    // where the operator has the most room to align precisely against
+    // the table reference markings.
     captureAt(Vec2(X(350),  650));
     captureAt(Vec2(X(500),  1000));
     captureAt(Vec2(X(1000), 850));

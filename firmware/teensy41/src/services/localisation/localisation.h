@@ -67,6 +67,12 @@ public:
     void requestHomographyCapture();
     bool isHomographyLocked() const { return m_homographyLocked; }
     void requestVisionCalibration(Vec3 known_pos);
+    // Manual variant: target_pos is the *requested* pose. holOS shows a
+    // modal asking the operator to push the robot to that exact pose,
+    // then captures (tag_xy, target_xy) as a parallax-calibration pair.
+    // Use this in vision_recalage where OTOS imprecision would otherwise
+    // pollute the parallax fit.
+    void requestVisionCalibrationManual(Vec3 target_pos);
     bool isVisionCalibrated() const { return m_visionCalibrated; }
     bool queryVisionPose(Vec3& out_pose, unsigned long timeout_ms = 300);
     Vec3 syncToVision(unsigned long timeout_ms = 500);

@@ -109,6 +109,9 @@ socket.on('vision_recalage_state', data => {
   } else {
     btn.disabled = false;
     btn.textContent = '📐 Vision calib';
+    // Make sure the per-point modal is closed if the sweep ends for any
+    // reason (server-side success, abort, firmware timeout).
+    _hideVisionRecalageModal();
     if (data && data.error === 'homography_not_locked') {
       // Server-side guard caught what the client missed (rare race).
       showToast('Homography not locked — run classical recalage first');
@@ -120,6 +123,55 @@ socket.on('vision_recalage_state', data => {
       showToast('Vision calibration complete — config saved');
     }
   }
+});
+
+// ── Manual-confirm modal for the per-point capture ───────────────────────
+// Driven by holOS's `vision_recalage_wait_user` event during the firmware
+// vision_recalage() sweep. The firmware drives the robot near each
+// target, disengages the steppers, and waits up to 125 s for holOS's
+// reply. holOS in turn waits up to 120 s for the operator to push the
+// robot to the precise target and click Confirm.
+function _showVisionRecalageModal(target) {
+  const modal = document.getElementById('vision-recalage-modal');
+  const body  = document.getElementById('vision-recalage-target');
+  if (!modal || !body) return;
+  const tx = (typeof target.target_x === 'number') ? target.target_x : null;
+  const ty = (typeof target.target_y === 'number') ? target.target_y : null;
+  const tt = (typeof target.target_t_deg === 'number') ? target.target_t_deg : null;
+  const xyLine = `Target:&nbsp;&nbsp;X = <strong>${tx === null ? '?' : Math.round(tx) + ' mm'}</strong>` +
+                 `&nbsp;&nbsp;Y = <strong>${ty === null ? '?' : Math.round(ty) + ' mm'}</strong>`;
+  const thetaLine = (tt !== null)
+    ? `<br>θ ≈ ${tt >= 0 ? '+' : ''}${tt.toFixed(1)}° <span style="color:var(--muted,#6b7a8d);">(approximate — align by eye)</span>`
+    : '';
+  body.innerHTML = xyLine + thetaLine;
+  modal.classList.remove('hidden');
+}
+
+function _hideVisionRecalageModal() {
+  const modal = document.getElementById('vision-recalage-modal');
+  if (modal) modal.classList.add('hidden');
+}
+
+socket.on('vision_recalage_wait_user', target => {
+  _showVisionRecalageModal(target || {});
+});
+
+socket.on('vision_recalage_wait_done', () => {
+  _hideVisionRecalageModal();
+});
+
+document.addEventListener('DOMContentLoaded', () => {
+  const okBtn     = document.getElementById('vision-recalage-confirm');
+  const cancelBtn = document.getElementById('vision-recalage-cancel');
+  if (okBtn) okBtn.addEventListener('click', () => {
+    _hideVisionRecalageModal();
+    socket.emit('vision_recalage_user_ok');
+  });
+  if (cancelBtn) cancelBtn.addEventListener('click', () => {
+    _hideVisionRecalageModal();
+    socket.emit('vision_recalage_user_cancel');
+    showToast('Vision calibration sweep cancelled');
+  });
 });
 
 socket.on('match_state', data => {

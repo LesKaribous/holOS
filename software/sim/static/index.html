@@ -1792,6 +1792,49 @@
 <!-- ── Toast ─────────────────────────────────────────────────────────────── -->
 <div id="reload-toast" class="hidden"></div>
 
+<!-- ── Vision recalage manual-confirm modal ─────────────────────────────── -->
+<!-- Surfaced by software/run.py during the firmware vision_recalage()
+     sweep. Each waypoint disengages the steppers and asks the operator
+     to push the robot to the exact target. The operator presses OK once
+     positioned; holOS captures the tag pose and replies vis_cal_done. -->
+<div id="vision-recalage-modal" class="hidden"
+     style="position:fixed; inset:0; background:rgba(0,0,0,0.55);
+            z-index:300; display:flex; align-items:center;
+            justify-content:center;">
+  <div style="background:var(--surface,#fff); color:var(--text,#1a2332);
+              min-width:340px; max-width:480px; border-radius:8px;
+              box-shadow:0 8px 32px rgba(0,0,0,.35); padding:18px 22px;
+              border:1px solid var(--surface2,#e2e8ef);">
+    <div style="font-weight:700; font-size:15px; color:var(--brand,#1a5276);
+                margin-bottom:6px;">📐 Vision calibration — manual point</div>
+    <div style="font-size:13px; color:var(--muted,#6b7a8d); margin-bottom:14px;">
+      Robot wheels are disengaged. Push it precisely to the target below,
+      then press <strong>Confirm</strong>.
+    </div>
+    <div id="vision-recalage-target"
+         style="font:14px/1.5 ui-monospace,SFMono-Regular,monospace;
+                background:var(--accent-bg,#eaf4fd);
+                border:1px solid var(--surface2,#e2e8ef);
+                color:var(--brand,#1a5276); padding:10px 14px;
+                border-radius:6px; margin-bottom:14px;">—</div>
+    <div style="display:flex; gap:8px; justify-content:flex-end;">
+      <button id="vision-recalage-cancel" type="button"
+              style="padding:7px 14px; background:var(--surface,#fff);
+                     color:var(--red,#c0392b);
+                     border:1px solid var(--surface3,#ccd5de);
+                     border-radius:5px; cursor:pointer; font-size:13px;">
+        ✕ Cancel sweep
+      </button>
+      <button id="vision-recalage-confirm" type="button"
+              style="padding:7px 18px; background:var(--brand,#1a5276);
+                     color:#fff; border:none; border-radius:5px;
+                     cursor:pointer; font-size:13px; font-weight:600;">
+        ✓ Confirm position
+      </button>
+    </div>
+  </div>
+</div>
+
 <script src="/static/vendor/socket.io.min.js"></script>
 <script src="static/app.js"></script>
 <script src="static/js/map.js"></script>

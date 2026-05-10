@@ -241,7 +241,9 @@ namespace Settings {
         // (mode par défaut = cruise closed-loop).
         inline const CalibrationProfile& DEFAULTS = Cruise;
 
-        constexpr float OTOS_LINEAR_DEFAULT  = 0.966655f;
+        //0.966655f; Jules Table
+        //1.040243 (valeur bracq table)
+        constexpr float OTOS_LINEAR_DEFAULT  = 0.966655f; 
         constexpr float OTOS_ANGULAR_DEFAULT = 1.0f;
     }
 

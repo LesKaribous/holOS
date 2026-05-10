@@ -186,6 +186,17 @@ _vision_calibration_pairs: list = []
 import collections as _collections
 _vision_log_buffer: '_collections.deque' = _collections.deque(maxlen=100)
 
+# Synchronization primitives for the `cal_request_manual` flow used by
+# vision_recalage — the firmware disengages the steppers and asks the
+# operator to push the robot to a precise target. The cal_request_manual
+# handler emits a `vision_recalage_wait_user` SocketIO event with the
+# target coordinates, then blocks on `_vision_recalage_user_evt` until
+# the webapp emits back `vision_recalage_user_ok` (or `_cancel`, or the
+# 120 s timeout fires). Globals are protected by the GIL — single
+# in-flight handler is enforced by the firmware sequencer.
+_vision_recalage_user_evt: 'threading.Event' = threading.Event()
+_vision_recalage_user_state: 'Optional[str]' = None   # 'ok' | 'cancel' | None
+
 
 def _vlog(msg: str, level: str = 'info') -> None:
     """Mirror an event to (a) the holOS console and (b) the rolling
@@ -3855,6 +3866,85 @@ def _do_connect(port: str):
                         _send('vis_h_locked(ok=0,reason=released)')
                     threading.Thread(target=_do_unlock, daemon=True,
                                      name='vis-hunlock').start()
+                elif line.startswith('cal_request_manual'):
+                    # Manual / human-in-the-loop variant: firmware has
+                    # disengaged the steppers and is waiting for the
+                    # operator to push the robot to the target pose.
+                    # We surface a modal on the webapp, block on
+                    # `vision_recalage_user_ok`, then capture using
+                    # the TARGET (not OTOS) as ground truth.
+                    kx = _kv(line, 'x', float, 0.0)
+                    ky = _kv(line, 'y', float, 0.0)
+                    kt_mrad = _kv(line, 't', float, None)
+                    kt = (kt_mrad / 1000.0) if kt_mrad is not None else None
+                    kt_deg = (math.degrees(kt) if kt is not None else 0.0)
+                    _vlog(f'rx ← T:vis cal_request_manual x={kx:.0f} '
+                          f'y={ky:.0f} t={kt_deg:+.1f}° — awaiting operator')
+                    def _do_cal_manual():
+                        global _vision_recalage_user_state
+                        _vision_recalage_user_state = None
+                        _vision_recalage_user_evt.clear()
+                        # Notify every connected webapp client. The
+                        # modal listens on this event and renders the
+                        # target coords + waiting state.
+                        socketio.emit('vision_recalage_wait_user', {
+                            'target_x': kx,
+                            'target_y': ky,
+                            'target_t_deg': kt_deg,
+                        })
+                        # 120 s ceiling — matches the firmware-side wait
+                        # (~125 s with padding). Operator has plenty of
+                        # time to walk to the table, push, walk back.
+                        signaled = _vision_recalage_user_evt.wait(120.0)
+                        # Always close the modal, regardless of how we
+                        # exited (ok / cancel / timeout).
+                        socketio.emit('vision_recalage_wait_done', {})
+                        if not signaled:
+                            _vlog('cal_request_manual: TIMEOUT (no operator '
+                                  'OK in 120 s) — sending vis_cal_failed', 'err')
+                            _send('vis_cal_failed(reason=user_timeout)')
+                            return
+                        if _vision_recalage_user_state == 'cancel':
+                            _vlog('cal_request_manual: user cancelled '
+                                  '— sending vis_cal_failed', 'warn')
+                            _send('vis_cal_failed(reason=user_cancel)')
+                            return
+                        # User OK'd. Vision should see the tag now —
+                        # but a single tick can still miss it (motion
+                        # blur from the push, glare). Same retry shape
+                        # as the OTOS path, just shorter spacing since
+                        # the operator already waited.
+                        max_attempts = 3
+                        retry_delay_s = 0.3
+                        result = None
+                        for attempt in range(1, max_attempts + 1):
+                            if attempt > 1:
+                                _vlog(f'cal_request_manual: retry '
+                                      f'{attempt}/{max_attempts} after '
+                                      f'{int(retry_delay_s*1000)}ms', 'warn')
+                                time.sleep(retry_delay_s)
+                            result = _recalage_pick_own_tag(
+                                kx, ky, known_theta_rad=kt)
+                            if result is not None:
+                                break
+                        if result is None:
+                            _vlog('cal_request_manual: tag not detected '
+                                  'after 3 attempts — sending vis_cal_failed',
+                                  'err')
+                            _send('vis_cal_failed(reason=no_candidate)')
+                            return
+                        vp = result['vision_pose']
+                        _vlog(f"cal_request_manual: OK — own tag #"
+                              f"{result['tag_id']} at target ({kx:.0f}, "
+                              f"{ky:.0f})")
+                        _send(
+                            f"vis_cal_done(own={result['tag_id']},"
+                            f"team={result['team']},"
+                            f"x={vp['x_mm']:.1f},y={vp['y_mm']:.1f},"
+                            f"t={vp['theta_rad']:.3f})"
+                        )
+                    threading.Thread(target=_do_cal_manual, daemon=True,
+                                     name='vis-cal-manual').start()
                 elif line.startswith('cal_request'):
                     # Firmware sends INTEGERS only — newlib-nano on the
                     # Teensy 4.1 silently breaks snprintf %f, so the
@@ -4508,10 +4598,11 @@ def on_vision_recalage():
     def _do():
         _vlog('vision_recalage: command sent to firmware (HW)')
         socketio.emit('vision_recalage_state', {'running': True})
-        # 120 s ceiling: 3-pose sweep at 5 s per waypoint + transit ≈
-        # 30-40 s typical. Leaving plenty of headroom for extended
-        # waypoint lists.
-        ok, res = t.execute('vision_recalage()', timeout_ms=120000)
+        # 600 s ceiling: manual-confirm flow blocks ~125 s per waypoint
+        # while the operator pushes the robot. With 4 waypoints + transit
+        # that's ~520 s worst case; 600 s leaves margin for the operator
+        # to take their time on a tricky alignment.
+        ok, res = t.execute('vision_recalage()', timeout_ms=600000)
         if ok:
             _vlog(f'vision_recalage: firmware reply OK ({res})')
         else:
@@ -4520,6 +4611,25 @@ def on_vision_recalage():
                       {'running': False, 'ok': bool(ok), 'res': res})
 
     threading.Thread(target=_do, daemon=True, name='vision-recalage-cmd').start()
+
+
+@socketio.on('vision_recalage_user_ok')
+def on_vision_recalage_user_ok():
+    """Operator confirmed the robot is at the requested target — wakes
+    the cal_request_manual handler so it captures the tag pose."""
+    global _vision_recalage_user_state
+    _vision_recalage_user_state = 'ok'
+    _vision_recalage_user_evt.set()
+
+
+@socketio.on('vision_recalage_user_cancel')
+def on_vision_recalage_user_cancel():
+    """Operator aborted the manual sweep. The cal_request_manual handler
+    will reply vis_cal_failed(reason=user_cancel) to the firmware, which
+    breaks out of the firmware-side wait loop and stops the sweep."""
+    global _vision_recalage_user_state
+    _vision_recalage_user_state = 'cancel'
+    _vision_recalage_user_evt.set()
 
 
 @socketio.on('recalage')
