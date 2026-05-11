@@ -880,6 +880,7 @@ html, body { height: 100%; overflow: hidden; margin: 0;
 .uart-data { color: #e6edf3; word-break: break-all; }
 .uart-data.tx { color: #79c0ff; }
 .uart-data.sys { color: #f78166; font-style: italic; }
+.uart-data.dbg { color: #d2a8ff; }
 
 /* ══════════════════════════════════════════════════════════════════════════
    SHARED / UTILITIES

@@ -57,9 +57,9 @@ function appendUartLine(dir, text) {
   const now = new Date();
   const ts = now.toTimeString().slice(0, 8) + '.' + String(now.getMilliseconds()).padStart(3, '0');
   const d = document.createElement('div'); d.className = 'uart-line';
-  const arrow = dir === 'rx' ? '←' : dir === 'tx' ? '→' : '·';
+  const arrow = dir === 'rx' ? '←' : dir === 'tx' ? '→' : dir === 'dbg' ? '#' : '·';
   const dirCls = 'uart-dir-' + dir;
-  const dataCls = 'uart-data' + (dir === 'tx' ? ' tx' : dir === 'sys' ? ' sys' : '');
+  const dataCls = 'uart-data' + (dir === 'tx' ? ' tx' : dir === 'sys' ? ' sys' : dir === 'dbg' ? ' dbg' : '');
   d.innerHTML = `<span class="${dirCls}">${arrow}</span>` +
                 `<span class="uart-ts">${escHtml(ts)}</span>` +
                 `<span class="${dataCls}">${escHtml(text)}</span>`;

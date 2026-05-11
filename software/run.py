@@ -3812,8 +3812,11 @@ def _do_connect(port: str):
             socketio.emit('uart_raw', {'dir': 'rx', 'line': line})
         def _on_raw_tx(line):
             socketio.emit('uart_raw', {'dir': 'tx', 'line': line})
+        def _on_debug(line):
+            socketio.emit('uart_raw', {'dir': 'dbg', 'line': line})
         t.subscribe_telemetry('_raw',    _on_raw_rx)
         t.subscribe_telemetry('_raw_tx', _on_raw_tx)
+        t.subscribe_telemetry('_debug',  _on_debug)
         socketio.emit('uart_raw', {'dir': 'sys', 'line': f'[connect] {port} @ {BRIDGE_BAUDRATE} bps'})
 
         ok = t.connect()

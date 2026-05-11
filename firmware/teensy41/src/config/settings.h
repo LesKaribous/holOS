@@ -29,9 +29,13 @@ extern Stream* g_bridgeSerial;           // Defined in jetson_bridge.cpp
 #define BRIDGE_XBEE      Serial2         // XBee 868 MHz radio module
 #define BRIDGE_BAUDRATE  57600
 
-// Console debug — toujours sur USB (lignes sans |crc ignorées par le parser Python)
-#define CONSOLE_SERIAL   Serial
+// Console debug — sur XBee, lignes préfixées avec `# ` (filtrées côté holOS).
+// Pour rebasculer sur USB en dev : changer en `Serial`.
+#define CONSOLE_SERIAL   Serial2
 #define CONSOLE_BAUDRATE 57600
+// Préfixe imprimé en tête de chaque ligne de log : holOS le voit et drop
+// la ligne avant parse_frame, le terminal UI le récupère via `_debug`.
+#define CONSOLE_DEBUG_PREFIX "# "
 
 #define TW_STRAT1 CHERRY
 #define TW_STRAT2 CAKE

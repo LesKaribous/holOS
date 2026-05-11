@@ -71,7 +71,7 @@ public:
     /// both IDs (cfg.team default).
     bool queryEmbedDetect(EmbedDetect& out,
                           const char* team = nullptr,
-                          uint32_t timeoutMs = 2500);
+                          uint32_t timeoutMs = 6000);
 
     /// Called from JetsonBridge when an embed_detect_reply lands.
     /// Not for user code.

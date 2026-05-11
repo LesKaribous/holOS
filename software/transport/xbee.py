@@ -371,6 +371,15 @@ class XBeeTransport(Transport):
                 self._on_disconnect()
 
     def _process_line(self, line: str) -> None:
+        # Debug-only lines from the firmware Console — prefixed with `#`
+        # so they share the XBee link without being parsed as telemetry.
+        # Forward them to a `_debug` channel so the UI terminal can show
+        # them, then bail out before parse_frame() chokes on the prefix.
+        if line.startswith('#'):
+            for cb in self._tel_subs.get('_debug', []):
+                try: cb(line)
+                except Exception: pass
+            return
         kind, id_or_type, data = parse_frame(line)
 
         if kind == 'ping':

@@ -5,6 +5,22 @@ const String Console::endl = "\n";
 ConsoleLevel Console::m_level      = ConsoleLevel::INFO;
 uint32_t     Console::m_sourceMask = 0xFFFFFFFFu;  // all enabled until init() applies settings
 
+// Tracks whether the next write starts a new line — if so we inject
+// CONSOLE_DEBUG_PREFIX so holOS's transport filter drops the line.
+static bool s_atLineStart = true;
+
+static inline void _writeDebugPrefixIfNeeded() {
+    if (s_atLineStart) {
+        CONSOLE_SERIAL.write(CONSOLE_DEBUG_PREFIX);
+        s_atLineStart = false;
+    }
+}
+
+static inline void _trackLineEnd(const char* s, size_t n) {
+    if (n == 0 || s == nullptr) return;
+    s_atLineStart = (s[n - 1] == '\n');
+}
+
 // ── ServiceID stream factories — check source mask, use readable name ─────────
 // FLASHMEM: logging is never time-critical; keeping these out of ITCM saves RAM1.
 
@@ -71,22 +87,22 @@ FLASHMEM String Console::microTimeStamp(){
 // ── Boot header ───────────────────────────────────────────────────────────────
 
 static FLASHMEM void printHeader(){
-	CONSOLE_SERIAL.println("");
-	CONSOLE_SERIAL.println("  _______       _                     _"                        );
-	CONSOLE_SERIAL.println(" |__   __|     (_)                   | |"                       );
-	CONSOLE_SERIAL.println("    | |_      ___ _ __  ___ _   _ ___| |_ ___ _ __ ___  "       );
-	CONSOLE_SERIAL.println("    | \\ \\ /\\ / / | '_ \\/ __| | | / __| __/ _ \\ '_ ` _ \\"  );
-	CONSOLE_SERIAL.println("    | |\\ V  V /| | | | \\__ \\ |_| \\__ \\ ||  __/ | | | | |"  );
-	CONSOLE_SERIAL.println("    |_| \\_/\\_/ |_|_| |_|___/\\__, |___/\\__\\___|_| |_| |_|"  );
-	CONSOLE_SERIAL.println("                             __/ |"                             );
-	CONSOLE_SERIAL.println("                            |___/"                              );
-	CONSOLE_SERIAL.println();
-	CONSOLE_SERIAL.println("Author  : Nadarbreicq, JulesTopart ");
-	CONSOLE_SERIAL.println();
-	CONSOLE_SERIAL.print("Twinsystem... compiled  ");
-	CONSOLE_SERIAL.print(__DATE__);
-	CONSOLE_SERIAL.print(" at ");
-	CONSOLE_SERIAL.println(__TIME__);
+	Console::println("");
+	Console::println("  _______       _                     _"                        );
+	Console::println(" |__   __|     (_)                   | |"                       );
+	Console::println("    | |_      ___ _ __  ___ _   _ ___| |_ ___ _ __ ___  "       );
+	Console::println("    | \\ \\ /\\ / / | '_ \\/ __| | | / __| __/ _ \\ '_ ` _ \\"  );
+	Console::println("    | |\\ V  V /| | | | \\__ \\ |_| \\__ \\ ||  __/ | | | | |"  );
+	Console::println("    |_| \\_/\\_/ |_|_| |_|___/\\__, |___/\\__\\___|_| |_| |_|"  );
+	Console::println("                             __/ |"                             );
+	Console::println("                            |___/"                              );
+	Console::println();
+	Console::println("Author  : Nadarbreicq, JulesTopart ");
+	Console::println();
+	Console::print("Twinsystem... compiled  ");
+	Console::print(__DATE__);
+	Console::print(" at ");
+	Console::println(__TIME__);
 }
 
 // ── Lifecycle ─────────────────────────────────────────────────────────────────
@@ -117,9 +133,17 @@ FLASHMEM void Console::init(){
 }
 
 // ── Raw output ────────────────────────────────────────────────────────────────
+//
+// Every write goes through these wrappers, which inject CONSOLE_DEBUG_PREFIX
+// at each new line. holOS's transport drops `#`-prefixed lines before
+// parse_frame() runs.
 
 void Console::write(const char* str) {
+	if (!str || !*str) return;
+	_writeDebugPrefixIfNeeded();
 	CONSOLE_SERIAL.write(str);
+	size_t n = strlen(str);
+	_trackLineEnd(str, n);
 }
 
 FLASHMEM void Console::plot(const String& n, String s){
@@ -131,28 +155,31 @@ FLASHMEM void Console::plotXY(const String& n, String x, String y){
 }
 
 void Console::print(const String& s){
+	if (s.length() == 0) return;
+	_writeDebugPrefixIfNeeded();
 	CONSOLE_SERIAL.print(s);
+	_trackLineEnd(s.c_str(), s.length());
 }
 
 void Console::println(const String& s){
+	_writeDebugPrefixIfNeeded();
 	CONSOLE_SERIAL.println(s);
+	s_atLineStart = true;
 }
 
 FLASHMEM void Console::prettyPrint(const String& s){
 	int l = 0;
 	line();
-	CONSOLE_SERIAL.print(l);
-	CONSOLE_SERIAL.print(":\t");
+	print(String(l) + ":\t");
 	for (size_t i = 0; i <= s.length(); i++){
 		if(s[i] == '\n'){
-			CONSOLE_SERIAL.println();
-			CONSOLE_SERIAL.print(++l);
-			CONSOLE_SERIAL.print(":\t");
+			println();
+			print(String(++l) + ":\t");
 		}else{
-			CONSOLE_SERIAL.print(s[i]);
+			print(String(s[i]));
 		}
 	}
-	CONSOLE_SERIAL.println(s[s.length() - 1]);
+	println(String(s[s.length() - 1]));
 	line();
 }
 

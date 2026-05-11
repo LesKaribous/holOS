@@ -74,7 +74,7 @@ static const char* currentTeamStr() {
 static bool getEmbedCamOffset(float& out_offset_mm,
                               int& out_n_tags,
                               const char* team_filter = nullptr,
-                              uint32_t timeout_ms = 2500) {
+                              uint32_t timeout_ms = 6000) {
     EmbedDetect r{};
     bool ok = vision.queryEmbedDetect(r, team_filter, timeout_ms);
     out_offset_mm = r.offset_mm;
