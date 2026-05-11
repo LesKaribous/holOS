@@ -18,8 +18,8 @@ namespace POI{
     const Vec2 thermometer_hot_blue = Vec2(3000-150, 1850);
     const Vec2 thermometer_hot_blue_approach = Vec2(3000-400, 1850);
 
-    const Vec2 thermometer_target_yellow = Vec2(700-110,1850);
-    const Vec2 thermometer_target_blue = Vec2(2300+110,1850);
+    const Vec2 thermometer_target_yellow = Vec2(700-90,1850);
+    const Vec2 thermometer_target_blue = Vec2(2300+90,1850);
 
     const Vec2 wait_yellow = Vec2(1150,850);
     const Vec2 wait_blue = Vec2(1850,850);

@@ -97,7 +97,7 @@ static bool getEmbedCamOffset(float& out_offset_mm,
 
 // Offset commun factored
 static void collectStock(Vec2 target, TableCompass tc, RobotCompass rc) {
-    constexpr float    APPROACH_OFFSET = 250.0f;
+    constexpr float    APPROACH_OFFSET = 260.0f;
     constexpr float    GRAB_OFFSET     = 180.0f;
     constexpr uint32_t GRAB_DELAY_MS   = 1000;
     const float sideOffset = 0;
@@ -315,9 +315,9 @@ static BlockResult blockCollectC() {
     waitMs(800);
 
     if(ihm.isColor(Settings::BLUE)) {
-        async motion.goAlign(POI::stockBlue_04 + Vec2(0, +200), RobotCompass::AB, getCompassOrientation(TableCompass::NORTH));
+        async motion.goAlign(POI::stockBlue_04 + Vec2(0, +350), RobotCompass::AB, getCompassOrientation(TableCompass::NORTH));
     } else {
-        async motion.goAlign(POI::stockYellow_04 + Vec2(0, +200), RobotCompass::AB, getCompassOrientation(TableCompass::NORTH));
+        async motion.goAlign(POI::stockYellow_04 + Vec2(0, +350), RobotCompass::AB, getCompassOrientation(TableCompass::NORTH));
     }
 
     if(ihm.isColor(Settings::BLUE)) {
@@ -347,7 +347,7 @@ static BlockResult thermometer_set() {
     motion.collide(false);
     motion.snap(false);
     motion.yield(true);
-
+    
     waitMs(500); // Attente avant de démarrer (stabilisation éventuelle)
     
     actuators.getActuatorGroup(RobotCompass::CA).moveServoToPose((int)ServoIDs::ELEVATOR, (int) ElevatorPose::UP, 100);
@@ -355,34 +355,41 @@ static BlockResult thermometer_set() {
     if(ihm.isColor(Settings::BLUE)) {
         async motion.goAlign(POI::thermometer_hot_blue_approach - Vec2(0,200), RobotCompass::C, getCompassOrientation(TableCompass::SOUTH));
         //localisation.syncToVision(1000); // Sync initial localisation to vision (blocking, 2s timeout)
-
+        motion.setFeedrate(0.5f);
         async motion.go(POI::thermometer_hot_blue_approach);
-        probeBorder(TableCompass::SOUTH, RobotCompass::BC, 100, 300);
-        probeBorder(TableCompass::EAST, RobotCompass::CA, 100, 300);
+        probeBorder(TableCompass::SOUTH, RobotCompass::BC, 200, 100);
+        //probeBorder(TableCompass::EAST, RobotCompass::CA, 100, 300);
         
         async motion.go(POI::thermometer_hot_blue_approach);
-        async motion.align(RobotCompass::C, getCompassOrientation(TableCompass::SOUTH));
+        
 
         RuntimeConfig::setInt("motion.timeout_ms", 2000); // 5 secondes
+        async motion.go(POI::thermometer_hot_yellow - Vec2(0,200));
+        probeBorder(TableCompass::EAST, RobotCompass::CA, 200, 100);
+        async motion.align(RobotCompass::C, getCompassOrientation(TableCompass::SOUTH));
         async motion.go(POI::thermometer_hot_blue);
     } else {
         async motion.goAlign(POI::thermometer_hot_yellow_approach - Vec2(0,200), RobotCompass::C, getCompassOrientation(TableCompass::WEST));
         //localisation.syncToVision(1000); // Sync initial localisation to vision (blocking, 2s timeout)
-
+        motion.setFeedrate(0.5f);
         async motion.go(POI::thermometer_hot_yellow_approach);
-        probeBorder(TableCompass::SOUTH, RobotCompass::CA, 100, 300);
-        probeBorder(TableCompass::WEST, RobotCompass::C, 100, 300);
+        probeBorder(TableCompass::SOUTH, RobotCompass::CA, 200, 100);
+        //probeBorder(TableCompass::WEST, RobotCompass::C, 100, 300);
 
         async motion.go(POI::thermometer_hot_yellow_approach);
         async motion.align(RobotCompass::C, getCompassOrientation(TableCompass::WEST));
 
         RuntimeConfig::setInt("motion.timeout_ms", 2000); // 5 secondes
+        async motion.go(POI::thermometer_hot_yellow - Vec2(0,200));
+        probeBorder(TableCompass::WEST, RobotCompass::C, 200, 100);
         async motion.go(POI::thermometer_hot_yellow);
     }
 
     //actuators.moveElevator(RobotCompass::CA, ElevatorPose::STORE);
-    actuators.getActuatorGroup(RobotCompass::CA).moveServoToPose((int)ServoIDs::GRABBER_RIGHT, (int) ManipulatorPose::DROP, 100);
+    
     actuators.getActuatorGroup(RobotCompass::CA).moveServoToPose((int)ServoIDs::ELEVATOR, (int) ElevatorPose::UP, 100);
+    waitMs(500);
+    actuators.getActuatorGroup(RobotCompass::CA).moveServoToPose((int)ServoIDs::GRABBER_RIGHT, (int) ManipulatorPose::DROP, 100);
     actuators.getActuatorGroup(RobotCompass::CA).moveServoToPose((int)ServoIDs::GRABBER_LEFT, (int) ManipulatorPose::DROP, 100);
 
     os.wait(1000);
@@ -411,8 +418,15 @@ static BlockResult thermometer_set() {
     }
 
     actuators.getActuatorGroup(RobotCompass::CA).moveServoToPose((int)ServoIDs::GRABBER_RIGHT, (int) ManipulatorPose::STORE, 100);
-    actuators.getActuatorGroup(RobotCompass::CA).moveServoToPose((int)ServoIDs::ELEVATOR, (int) ElevatorPose::DOWN, 100);
     actuators.getActuatorGroup(RobotCompass::CA).moveServoToPose((int)ServoIDs::GRABBER_LEFT, (int) ManipulatorPose::STORE, 100);
+    actuators.getActuatorGroup(RobotCompass::CA).moveServoToPose((int)ServoIDs::ELEVATOR, (int) ElevatorPose::DOWN, 100);
+
+    motion.setFeedrate(1);
+    if(ihm.isColor(Settings::BLUE)) {
+        async motion.goAlign(POI::thermometer_hot_blue, RobotCompass::BC, getCompassOrientation(TableCompass::EAST));
+    } else {
+        async motion.goAlign(POI::thermometer_hot_yellow, RobotCompass::BC, getCompassOrientation(TableCompass::WEST));
+    }
 
     return BlockResult::SUCCESS;
 }
