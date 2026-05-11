@@ -86,7 +86,13 @@ bool TwinVision::queryEmbedDetect(EmbedDetect& out,
         strncpy(frame, "T:vis embed_detect", sizeof(frame) - 1);
         frame[sizeof(frame) - 1] = 0;
     }
-    jetsonBridge.pushVisionFrame(frame);
+    // Direct write — bypass the bridge ring buffer. Same fix as
+    // Localisation::requestVisionCalibration: small `T:vis` frames
+    // can sit behind motion telemetry for several seconds in the
+    // shared queue, which makes a 1-2 s host detection round-trip
+    // into a 10-15 s wall-clock wait. Direct write spins on the TX
+    // FIFO + flush (~10 ms cost), then we're sending immediately.
+    jetsonBridge.pushVisionFrameDirect(frame);
     unsigned long t0 = millis();
     while (m_pendingEmbedReply && (millis() - t0) < timeoutMs) {
         jetsonBridge.run();

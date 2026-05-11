@@ -153,7 +153,7 @@ static void collectStock(Vec2 target, TableCompass tc, RobotCompass rc) {
             // ...then overwrite localisation: declare we are at the
             // PLANNED approach (no offset). The lateral correction was
             // OTOS drift; we just absorbed it. Heading kept at tc.
-            Vec3 ref(approach_planned.a, approach_planned.b, compass_rad);
+            Vec3 ref(approach_planned.a, approach_planned.b, localisation.getPosition().z);
             motion.setAbsPosition(ref);
             Console::info("Strategy")
                 << "[vision] reset pose to planned approach ("
@@ -315,9 +315,9 @@ static BlockResult blockCollectC() {
     waitMs(800);
 
     if(ihm.isColor(Settings::BLUE)) {
-        motion.goAlign(POI::stockBlue_04 + Vec2(0, +200), RobotCompass::AB, getCompassOrientation(TableCompass::NORTH));
+        async motion.goAlign(POI::stockBlue_04 + Vec2(0, +200), RobotCompass::AB, getCompassOrientation(TableCompass::NORTH));
     } else {
-        motion.goAlign(POI::stockYellow_04 + Vec2(0, +200), RobotCompass::AB, getCompassOrientation(TableCompass::NORTH));
+        async motion.goAlign(POI::stockYellow_04 + Vec2(0, +200), RobotCompass::AB, getCompassOrientation(TableCompass::NORTH));
     }
 
     if(ihm.isColor(Settings::BLUE)) {

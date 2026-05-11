@@ -347,13 +347,13 @@ FLASHMEM void recalage(){
 
     if(ihm.isColor(Settings::BLUE)){
         motion.setAbsPosition(Vec3( Vec2(3000-140,100), 150 * DEG_TO_RAD));
-        motion.go(Vec2(3000-350, 300));
-        motion.align(RobotCompass::AB, getCompassOrientation(TableCompass::EAST));
+        async motion.go(Vec2(3000-350, 300));
+        async motion.align(RobotCompass::AB, getCompassOrientation(TableCompass::EAST));
         actuators.moveElevator(RobotCompass::CA, ElevatorPose::DOWN);
     }else{
         motion.setAbsPosition(Vec3(140, 125 ,-90 * DEG_TO_RAD));
-        motion.go(Vec2(350, 300));
-        motion.align(RobotCompass::AB, getCompassOrientation(TableCompass::WEST));
+        async motion.go(Vec2(350, 300));
+        async motion.align(RobotCompass::AB, getCompassOrientation(TableCompass::WEST));
     }
     motion.setFeedrate(1.0);
 
