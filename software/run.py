@@ -779,12 +779,12 @@ def api_log_status():
 
 
 @app.route('/api/vision_config', methods=['GET'])
-def api_vision_config_get():
+def api_vision_config_json_get():
     return jsonify({'ok': True, 'config': _load_vision_config()})
 
 
 @app.route('/api/vision_config', methods=['POST'])
-def api_vision_config_set():
+def api_vision_config_json_set():
     """Update vision_config.json values; re-push to pipeline via _apply_team."""
     data = request.get_json(force=True) or {}
     cfg = _load_vision_config()
