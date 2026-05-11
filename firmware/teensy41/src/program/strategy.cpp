@@ -113,26 +113,39 @@ static void collectStock(Vec2 target, TableCompass tc, RobotCompass rc) {
     actuators.grab(rc); //wide open
     async motion.goAlign(approach, rc, getCompassOrientation(tc));
     {
+        constexpr int      MAX_RETRY      = 3;
+        constexpr uint32_t ATTEMPT_TO_MS  = 8000;
+        constexpr uint32_t RETRY_DELAY_MS = 400;
         const float lateral_dir_rad =
             (getCompassOrientation(tc) - 90.0f) * DEG_TO_RAD;
         float lateral_mm = 0.0f;
         int   n_tags     = 0;
-        // team_filter = nullptr → accept both ArUco IDs (36 + 47).
-        // When the colour-sort feature lands, pass currentTeamStr().
-        if (getEmbedCamOffset(lateral_mm, n_tags, nullptr) && n_tags >= 2) {
+        bool  got        = false;
+        for (int attempt = 1; attempt <= MAX_RETRY; ++attempt) {
+            // team_filter = nullptr → both ArUco IDs (36 + 47).
+            if (getEmbedCamOffset(lateral_mm, n_tags, nullptr,
+                                  ATTEMPT_TO_MS) && n_tags >= 2) {
+                got = true;
+                Console::info("Strategy")
+                    << "[vision] try " << attempt << "/" << MAX_RETRY
+                    << " OK n=" << n_tags
+                    << " offset=" << lateral_mm << "mm" << Console::endl;
+                break;
+            }
+            Console::warn("Strategy")
+                << "[vision] try " << attempt << "/" << MAX_RETRY
+                << " FAIL n=" << n_tags << Console::endl;
+            if (attempt < MAX_RETRY) waitMs(RETRY_DELAY_MS);
+        }
+        if (got) {
             Vec2 lateral_vec = PolarVec(lateral_dir_rad, lateral_mm).toVec2();
             approach += lateral_vec;
             grab     += lateral_vec;
-            Console::info("Strategy")
-                << "[vision] re-centre on " << n_tags
-                << " tags, lateral offset = " << lateral_mm
-                << "mm" << Console::endl;
-            // Step 3 — sideways move at safe approach distance.
             async motion.goAlign(approach, rc, getCompassOrientation(tc));
         } else {
             Console::warn("Strategy")
-                << "[vision] no valid detect — using nominal pose"
-                << Console::endl;
+                << "[vision] gave up after " << MAX_RETRY
+                << " tries — using nominal pose" << Console::endl;
         }
     }
 

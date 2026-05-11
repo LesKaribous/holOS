@@ -321,6 +321,8 @@ function switchView(name, btn) {
     onCalibViewActivated();
   } else if (name === 'vision-dashboard') {
     onVisionViewActivated();
+  } else if (name === 'vision-detection') {
+    if (typeof onVisionDetectionActivated === 'function') onVisionDetectionActivated();
   } else if (name === 'vision-editor') {
     onVisionEditorActivated();
   } else if (name === 'vision-objects') {

@@ -279,29 +279,32 @@ setInterval(() => {
 }, 500);
 
 function _renderDetectionTiles() {
-  const STALE_MS = 8000;
+  // Embed-cam feeds are pinned: the operator wants to see the LAST
+  // requested capture even if it landed long ago, so we don't apply
+  // a staleness cutoff here (unlike the dashboard tiles).
   const now = Date.now();
   for (const [fid, slot] of Object.entries(_DETECT_TILE_IDS)) {
     const body = document.getElementById(slot);
     if (!body) continue;
     const meta = document.getElementById(_DETECT_META_IDS[fid]);
     const feed = _visionFeeds[fid];
-    const fresh = feed && (now - feed.t) < STALE_MS;
-    if (!fresh) {
+    if (!feed) {
       if (!body.querySelector('.vd-empty')) {
         body.innerHTML =
-          `<div class="vd-empty">waiting for feed_id <code>${fid}</code></div>`;
+          `<div class="vd-empty">no capture yet — press ▶ Detect or trigger from the robot</div>`;
       }
       if (meta) meta.textContent = '';
       continue;
     }
-    if (meta) meta.textContent = `${Math.floor((now - feed.t))} ms ago`;
+    if (meta) meta.textContent = `${((now - feed.t)/1000).toFixed(1)} s ago`;
 
     if (feed.kind === 'frame' && feed.jpeg) {
       let img = body.querySelector('img');
       if (!img) {
         body.innerHTML = '';
         img = document.createElement('img');
+        img.style.maxWidth = '100%';
+        img.style.maxHeight = '100%';
         body.appendChild(img);
       }
       img.src = `data:image/jpeg;base64,${feed.jpeg}`;
@@ -312,6 +315,17 @@ function _renderDetectionTiles() {
     }
   }
 }
+
+// Called by app.js switchView when the Detection tab activates.
+// Asks the host to re-emit the cached feeds so the preview tile
+// repaints with the most recent processed frame.
+function onVisionDetectionActivated() {
+  _renderDetectionTiles();    // paint what's already in the cache
+  fetch('/api/embed_cam/replay', {method: 'POST'})
+    .then(r => r.json())
+    .catch(() => {});         // no detection yet → ignore
+}
+window.onVisionDetectionActivated = onVisionDetectionActivated;
 
 function _renderChecksList(container, checks) {
   if (!Array.isArray(checks) || checks.length === 0) {

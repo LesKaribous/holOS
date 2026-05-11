@@ -89,7 +89,7 @@ bool TwinVision::queryEmbedDetect(EmbedDetect& out,
     unsigned long t0 = millis();
     while (m_pendingEmbedReply && (millis() - t0) < timeoutMs) {
         jetsonBridge.run();
-        delay(2);
+        os.wait(2);
     }
     if (m_pendingEmbedReply) {
         m_pendingEmbedReply = false;

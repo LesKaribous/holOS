@@ -1502,6 +1502,16 @@ except Exception as _ec_err:
     _embed_cam = None
     print(f"[EmbedCam] module unavailable: {_ec_err}")
 
+# Soft-memory cache of the most recent embed-cam detection. Filled by
+# every UI button press AND every firmware-triggered request, so the
+# Detection sub-tab can re-render the last frame even when the user
+# wasn't on the tab when it landed.
+_last_embed_result: 'Optional[dict]' = None
+_last_embed_jpeg_b64: 'Optional[str]' = None
+_last_embed_t: float = 0.0
+_last_embed_source: str = ''
+_last_embed_lock = threading.Lock()
+
 
 def _emit_embed_detect_status(stage: str, source: str = 'ui',
                               extra: dict = None) -> None:
@@ -1532,12 +1542,10 @@ def _emit_embed_detect_status(stage: str, source: str = 'ui',
         print(f"[EmbedCam] status emit failed: {e}")
 
 
-def _emit_embed_detect_feeds(result: dict, source: str = 'ui') -> None:
-    """Publish a detection result to the Detection sub-tab. Sends:
-        - a placeholder JPEG (or the annotated preview) on `detect_preview`
-        - a list of check rows on `detect_results`
-        - a status pill on `detect_status`
-    `source` lets the UI tag the row 'from firmware' vs 'from UI'."""
+def _emit_embed_detect_feeds(result: dict, source: str = 'ui',
+                             jpeg_b64: 'Optional[str]' = None) -> None:
+    """Publish a detection result to the Detection sub-tab.
+    Pre-encoded `jpeg_b64` skips re-encoding when replaying from cache."""
     if _embed_cam is None:
         _emit_embed_detect_status('error', source,
                                   {'reason': 'embed_cam-unavailable'})
@@ -1555,13 +1563,16 @@ def _emit_embed_detect_feeds(result: dict, source: str = 'ui') -> None:
         return
     import base64 as _b64
     try:
-        jpeg = _embed_cam.preview_to_jpeg(result)
-        if jpeg:
+        if jpeg_b64 is None:
+            jpeg = _embed_cam.preview_to_jpeg(result)
+            if jpeg:
+                jpeg_b64 = _b64.b64encode(jpeg).decode()
+        if jpeg_b64:
             socketio.emit('vision_feed', {
                 'feed_id':  'detect_preview',
                 'pipeline': 'embed_cam',
                 'kind':     'frame',
-                'jpeg':     _b64.b64encode(jpeg).decode(),
+                'jpeg':     jpeg_b64,
                 'meta':     {'label': f'Embed cam · ESP32 ({source})'},
             })
         checks = _embed_cam.result_to_checks(result)
@@ -1572,8 +1583,6 @@ def _emit_embed_detect_feeds(result: dict, source: str = 'ui') -> None:
             'data':     checks,
             'meta':     {'label': f'Embed cam · checks ({source})'},
         })
-        # Final status pill — gives the UI a single source of truth
-        # for "did the last request succeed and what did it return".
         _emit_embed_detect_status(
             'done' if not result.get('error') else 'error',
             source,
@@ -1589,21 +1598,85 @@ def _emit_embed_detect_feeds(result: dict, source: str = 'ui') -> None:
         _emit_embed_detect_status('error', source, {'reason': str(e)})
 
 
+def _run_embed_detect(source: str, team_override: 'Optional[str]' = None) -> dict:
+    """Single code path for the UI button AND firmware requests.
+    Fetches the frame, runs detection, stores the result in soft
+    memory, emits feeds, and returns the result dict."""
+    global _last_embed_result, _last_embed_jpeg_b64
+    global _last_embed_t, _last_embed_source
+    if _embed_cam is None:
+        _emit_embed_detect_feeds({'error': 'embed_cam-unavailable'},
+                                 source=source)
+        return {'error': 'embed_cam-unavailable', 'n': 0, 'valid': False}
+    _emit_embed_detect_status('request', source, {'team': team_override})
+    _emit_embed_detect_status('fetching', source)
+    t0 = time.monotonic()
+    result = _embed_cam.detect_once(team_override=team_override)
+    dt_ms = int((time.monotonic() - t0) * 1000)
+    result['_fetch_ms'] = dt_ms
+    # Pre-encode the JPEG once so we can both emit and cache cheaply.
+    import base64 as _b64
+    jpeg = _embed_cam.preview_to_jpeg(result)
+    jpeg_b64 = _b64.b64encode(jpeg).decode() if jpeg else None
+    with _last_embed_lock:
+        _last_embed_result   = result
+        _last_embed_jpeg_b64 = jpeg_b64
+        _last_embed_t        = time.time()
+        _last_embed_source   = source
+    _vlog(
+        f"embed_detect done in {dt_ms}ms: "
+        f"n={result.get('n', 0)}/{result.get('expected', 4)} "
+        f"offset={result.get('offset_mm', 0.0):+.1f}mm "
+        f"valid={int(bool(result.get('valid', False)))} "
+        f"reason={result.get('error') or '-'} "
+        f"src={source}")
+    _emit_embed_detect_feeds(result, source=source, jpeg_b64=jpeg_b64)
+    return result
+
+
 @app.route('/api/embed_cam/detect', methods=['POST'])
 def api_embed_cam_detect():
-    """One-shot detection trigger — invoked by the Detection sub-tab.
-    Optional body `{config: {...}}` patches the runtime tuning knobs
-    (blur, thresholds, expected count, scale fallback…)."""
+    """Mimics the firmware request flow: runs `_run_embed_detect`
+    which caches the result in soft memory + emits feeds. Optional
+    body `{config: {...}}` patches tuning knobs first."""
     if _embed_cam is None:
         return jsonify({'ok': False, 'error': 'embed_cam unavailable'}), 503
     body = request.get_json(silent=True) or {}
     if isinstance(body.get('config'), dict):
         _embed_cam.set_config(body['config'])
-    _emit_embed_detect_status('request', 'ui')
-    _emit_embed_detect_status('fetching', 'ui')
-    result = _embed_cam.detect_once()
-    _emit_embed_detect_feeds(result, source='ui')
+    result = _run_embed_detect(source='ui')
     return jsonify({'ok': True, 'result': _embed_cam.result_to_json(result)})
+
+
+@app.route('/api/embed_cam/last', methods=['GET'])
+def api_embed_cam_last():
+    """Return the cached result + JPEG of the most recent detection.
+    The Detection sub-tab calls this on activation so the preview tile
+    shows the last frame the robot processed, even after a reload."""
+    with _last_embed_lock:
+        if _last_embed_result is None:
+            return jsonify({'ok': False, 'error': 'no detection yet'})
+        return jsonify({
+            'ok':       True,
+            'result':   _embed_cam.result_to_json(_last_embed_result)
+                        if _embed_cam else _last_embed_result,
+            'jpeg_b64': _last_embed_jpeg_b64,
+            't':        _last_embed_t,
+            'source':   _last_embed_source,
+        })
+
+
+@app.route('/api/embed_cam/replay', methods=['POST'])
+def api_embed_cam_replay():
+    """Re-emits the cached detection feeds without re-fetching. Used
+    by the UI when entering the Detection tab so the preview repaints."""
+    with _last_embed_lock:
+        if _last_embed_result is None:
+            return jsonify({'ok': False, 'error': 'no detection yet'})
+        _emit_embed_detect_feeds(_last_embed_result,
+                                 source=f"replay/{_last_embed_source}",
+                                 jpeg_b64=_last_embed_jpeg_b64)
+    return jsonify({'ok': True})
 
 
 @app.route('/api/embed_cam/config', methods=['GET', 'POST'])
@@ -4201,44 +4274,16 @@ def _do_connect(port: str):
                     threading.Thread(target=_do_pose, daemon=True,
                                      name='vis-pose').start()
                 elif line.startswith('embed_detect'):
-                    # Robot-mounted ESP32-CAM detection (see
-                    # services/embed_cam.py). Pulled by the strategy
-                    # before closing the gripper on the 4 stock objects.
-                    # Optional `team=<blue|yellow>` arg restricts the
-                    # accepted ArUco IDs so an opposite-colour stock in
-                    # the FOV doesn't poison the result with a `mixed`
-                    # readout. Reply with `embed_detect_reply(...)` —
-                    # run in a daemon thread so the camera fetch
-                    # (~200-800 ms) doesn't stall the telemetry pipe.
+                    # Robot-mounted ESP32-CAM detection.  Same code path
+                    # as the UI button (_run_embed_detect) → identical
+                    # caching + feeds.
                     team_arg = _kv(line, 'team', str, None)
                     if isinstance(team_arg, str):
                         team_arg = team_arg.strip().lower()
                     _vlog(f'rx ← T:vis embed_detect team={team_arg}')
-                    # Immediate status emit so the Detection sub-tab
-                    # lights up the moment the request lands, even if
-                    # the camera fetch ends up timing out further down.
-                    _emit_embed_detect_status(
-                        'request', 'firmware', {'team': team_arg})
                     def _do_embed(_team=team_arg):
-                        if _embed_cam is None:
-                            _emit_embed_detect_feeds(
-                                {'error': 'embed_cam-unavailable'},
-                                source='firmware')
-                            _send('embed_detect_reply(n=0,valid=0,'
-                                  'reason=no_module)')
-                            return
-                        _emit_embed_detect_status('fetching', 'firmware')
-                        t0 = time.monotonic()
-                        result = _embed_cam.detect_once(team_override=_team)
-                        dt_ms = int((time.monotonic() - t0) * 1000)
-                        result['_fetch_ms'] = dt_ms
-                        _vlog(
-                            f"embed_detect done in {dt_ms}ms: "
-                            f"n={result.get('n', 0)}/{result.get('expected', 4)} "
-                            f"offset={result.get('offset_mm', 0.0):+.1f}mm "
-                            f"valid={int(bool(result.get('valid', False)))} "
-                            f"reason={result.get('error') or '-'}")
-                        _emit_embed_detect_feeds(result, source='firmware')
+                        result = _run_embed_detect(source='firmware',
+                                                   team_override=_team)
                         n      = int(result.get('n', 0))
                         off_mm = float(result.get('offset_mm', 0.0))
                         bias   = int(result.get('bias', 0))

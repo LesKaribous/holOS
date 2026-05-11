@@ -29,7 +29,7 @@ FLASHMEM void Safety::enable(){
 FLASHMEM void Safety::disable(){
     Service::disable();
     m_obstacleDetected = false;
-    Console::println("obstable forced to false");
+    //Console::println("obstable forced to false");
 }
 
 
@@ -60,16 +60,16 @@ FLASHMEM void Safety::run(){
          if(millis() - m_lastSeen > 1500){
             if(m_obstacleDetected){
                 m_obstacleDetected = false;
-                Console::print("obstable gone (last seen ");
-                Console::print(millis() - m_lastSeen);
-                Console::println("ms ago");
+                //Console::print("obstable gone (last seen ");
+                //Console::print(millis() - m_lastSeen);
+                //Console::println("ms ago");
             }
 
          }
          
          if(motion.isPaused() && !m_obstacleDetected/*m_currentDistance > 350 */&& millis() - m_lastSeen > 1000){
             motion.resume();
-            Console::println("resume");
+            //Console::println("resume");
          }
     , 100)
 }
@@ -81,10 +81,10 @@ FLASHMEM void Safety::setSafeDistance(int d){
 FLASHMEM void Safety::setObstacleDetected(bool state){
     
     if(m_obstacleDetected && state){
-        Console::println("obstable detected");
-        Console::print("obstable detected (seen at");
-        Console::print(millis());
-        Console::println("ms");
+        //Console::println("obstable detected");
+        //Console::print("obstable detected (seen at");
+        //Console::print(millis());
+        //Console::println("ms");
     }
     else if(m_obstacleDetected && !state) Console::println("obstable gone");
     m_obstacleDetected = state;
