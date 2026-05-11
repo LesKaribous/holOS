@@ -232,6 +232,52 @@ const _DETECT_META_IDS = {
   detect_results: 'vd-meta-detresults',
 };
 
+// Embed-cam status pill — gets updated from `detect_status` payloads
+// whenever the firmware or the UI fires a detection.  Lets the
+// operator see "request received" the instant the host gets the
+// T:vis embed_detect frame, even if the camera fetch later times
+// out so no JPEG comes back.
+let _embedCamLastStatusT = 0;
+socket.on('vision_feed', (data) => {
+  if (!data || data.feed_id !== 'detect_status') return;
+  const p = data.data || {};
+  _embedCamLastStatusT = Date.now();
+  const pill = document.getElementById('vd-det-status');
+  if (!pill) return;
+  const stage = String(p.stage || '?');
+  const src   = String(p.source || '?');
+  const txt = (() => {
+    if (stage === 'request')  return `▶ request from ${src}`;
+    if (stage === 'fetching') return `… fetching (${src})`;
+    if (stage === 'done')     return `✓ ${src} n=${p.n ?? '?'}/${p.expected ?? 4} off=${(p.offset_mm ?? 0).toFixed(1)}mm`;
+    if (stage === 'error')    return `✗ ${src} ${p.reason || 'error'}`;
+    return `${stage} (${src})`;
+  })();
+  pill.textContent = txt;
+  pill.classList.remove('vd-pill-ok', 'vd-pill-err', 'vd-pill-busy');
+  if (stage === 'done')                              pill.classList.add('vd-pill-ok');
+  else if (stage === 'error')                        pill.classList.add('vd-pill-err');
+  else if (stage === 'request' || stage === 'fetching') pill.classList.add('vd-pill-busy');
+  // Brief flash so the operator notices the transition.
+  pill.style.transition = 'background-color 200ms';
+  pill.style.backgroundColor = (stage === 'error') ? '#5c1a1a'
+                              : (stage === 'done')  ? '#1a4d2e'
+                              : '#3a3a1a';
+  setTimeout(() => { pill.style.backgroundColor = ''; }, 1500);
+});
+
+// Tick the frames-since counter so the operator can spot a stalled
+// stream at a glance.
+setInterval(() => {
+  if (typeof activeView === 'string' && activeView === 'vision-detection') {
+    const lbl = document.getElementById('vd-det-frames');
+    if (lbl && _embedCamLastStatusT) {
+      const dt = ((Date.now() - _embedCamLastStatusT) / 1000).toFixed(1);
+      lbl.textContent = `last: ${dt}s ago`;
+    }
+  }
+}, 500);
+
 function _renderDetectionTiles() {
   const STALE_MS = 8000;
   const now = Date.now();

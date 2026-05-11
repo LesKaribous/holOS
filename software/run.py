@@ -1599,8 +1599,10 @@ def api_embed_cam_detect():
     body = request.get_json(silent=True) or {}
     if isinstance(body.get('config'), dict):
         _embed_cam.set_config(body['config'])
+    _emit_embed_detect_status('request', 'ui')
+    _emit_embed_detect_status('fetching', 'ui')
     result = _embed_cam.detect_once()
-    _emit_embed_detect_feeds(result)
+    _emit_embed_detect_feeds(result, source='ui')
     return jsonify({'ok': True, 'result': _embed_cam.result_to_json(result)})
 
 
