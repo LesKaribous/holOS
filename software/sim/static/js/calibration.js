@@ -571,4 +571,70 @@ function motionProtectionToggle() {
 // ── View activation ────────────────────────────────────────────────────────────
 function onCalibViewActivated() {
   calibInit();
+  visionConfigLoad();
+}
+
+// ── Vision config (camera + tag heights) ────────────────────────────────────
+function _vcStatusMsg(msg, color) {
+  const el = document.getElementById('vc-status');
+  if (!el) return;
+  el.textContent = msg;
+  el.style.color = color || 'var(--text-dim)';
+  if (msg) setTimeout(() => { if (el.textContent === msg) el.textContent = ''; }, 3000);
+}
+
+function _vcFillInputs(cfg) {
+  const cy = cfg.cam_yellow_xyz_mm || [0, 0, 0];
+  const cb = cfg.cam_blue_xyz_mm   || [0, 0, 0];
+  const setVal = (id, v) => {
+    const el = document.getElementById(id);
+    if (el) el.value = (v == null ? '' : String(v));
+  };
+  setVal('vc-cam-y-x', cy[0]); setVal('vc-cam-y-y', cy[1]); setVal('vc-cam-y-z', cy[2]);
+  setVal('vc-cam-b-x', cb[0]); setVal('vc-cam-b-y', cb[1]); setVal('vc-cam-b-z', cb[2]);
+  setVal('vc-z-own', cfg.own_object_z_mm);
+  setVal('vc-z-opp', cfg.opp_object_z_mm);
+}
+
+function visionConfigLoad() {
+  fetch('/api/vision_config').then(r => r.json()).then(d => {
+    if (d.ok && d.config) {
+      _vcFillInputs(d.config);
+      _vcStatusMsg('📂 Chargé', 'var(--text-dim)');
+    } else {
+      _vcStatusMsg('✗ ' + (d.error || 'load failed'), '#c0392b');
+    }
+  }).catch(e => _vcStatusMsg('✗ ' + e, '#c0392b'));
+}
+
+function visionConfigSave() {
+  const num = (id) => {
+    const v = parseFloat(document.getElementById(id).value);
+    return isNaN(v) ? null : v;
+  };
+  const body = {
+    cam_yellow_xyz_mm: [num('vc-cam-y-x'), num('vc-cam-y-y'), num('vc-cam-y-z')],
+    cam_blue_xyz_mm:   [num('vc-cam-b-x'), num('vc-cam-b-y'), num('vc-cam-b-z')],
+    own_object_z_mm:   num('vc-z-own'),
+    opp_object_z_mm:   num('vc-z-opp'),
+  };
+  if (body.cam_yellow_xyz_mm.some(v => v == null) ||
+      body.cam_blue_xyz_mm.some(v => v == null) ||
+      body.own_object_z_mm == null || body.opp_object_z_mm == null) {
+    _vcStatusMsg('✗ Valeurs manquantes', '#c0392b');
+    return;
+  }
+  fetch('/api/vision_config', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  }).then(r => r.json()).then(d => {
+    if (d.ok) {
+      _vcStatusMsg('💾 ' + (d.warning ? '⚠ ' + d.warning : 'Sauvegardé + push'),
+                   d.warning ? '#c0392b' : '#22c55e');
+      if (d.config) _vcFillInputs(d.config);
+    } else {
+      _vcStatusMsg('✗ ' + (d.error || 'save failed'), '#c0392b');
+    }
+  }).catch(e => _vcStatusMsg('✗ ' + e, '#c0392b'));
 }

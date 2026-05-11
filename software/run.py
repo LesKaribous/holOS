@@ -145,6 +145,30 @@ except Exception as _pe:
 
 VISION_PIPELINES_PATH = os.path.join(_HERE, 'data', 'vision_pipelines.json')
 PARALLAX_CALIB_PATH   = os.path.join(_HERE, 'data', 'parallax_calibration.json')
+VISION_CONFIG_PATH    = os.path.join(_HERE, 'data', 'vision_config.json')
+
+_VISION_CONFIG_DEFAULTS = {
+    'cam_yellow_xyz_mm': [1275.0, -100.0, 1100.0],
+    'cam_blue_xyz_mm':   [1725.0, -100.0, 1100.0],
+    'own_object_z_mm':   550.0,
+    'opp_object_z_mm':   550.0,
+}
+
+def _load_vision_config() -> dict:
+    cfg = {k: (list(v) if isinstance(v, list) else v)
+           for k, v in _VISION_CONFIG_DEFAULTS.items()}
+    try:
+        if os.path.exists(VISION_CONFIG_PATH):
+            with open(VISION_CONFIG_PATH) as f:
+                cfg.update(json.load(f))
+    except Exception as e:
+        print(f'[Vision] vision_config.json load error: {e}')
+    return cfg
+
+def _save_vision_config(cfg: dict) -> None:
+    os.makedirs(os.path.dirname(VISION_CONFIG_PATH), exist_ok=True)
+    with open(VISION_CONFIG_PATH, 'w') as f:
+        json.dump(cfg, f, indent=2)
 
 # Auto-sync heading state — set when match_start fires; the heading-sync
 # routine then waits for the recalage routine to settle.
@@ -186,17 +210,6 @@ _vision_calibration_pairs: list = []
 import collections as _collections
 _vision_log_buffer: '_collections.deque' = _collections.deque(maxlen=100)
 
-# Synchronization primitives for the `cal_request_manual` flow used by
-# vision_recalage — the firmware disengages the steppers and asks the
-# operator to push the robot to a precise target. The cal_request_manual
-# handler emits a `vision_recalage_wait_user` SocketIO event with the
-# target coordinates, then blocks on `_vision_recalage_user_evt` until
-# the webapp emits back `vision_recalage_user_ok` (or `_cancel`, or the
-# 120 s timeout fires). Globals are protected by the GIL — single
-# in-flight handler is enforced by the firmware sequencer.
-_vision_recalage_user_evt: 'threading.Event' = threading.Event()
-_vision_recalage_user_state: 'Optional[str]' = None   # 'ok' | 'cancel' | None
-
 # pose_request invalid-streak tracking — fires a rate-limited warning into
 # the vision-debug log when the pipeline keeps returning no own-team pose
 # while the firmware is actively asking. Reset to 0 on the next valid reply.
@@ -215,6 +228,11 @@ def _vlog(msg: str, level: str = 'info') -> None:
             'level':  level,
             'msg':    msg,
         })
+    except Exception:
+        pass
+    try:
+        from services.match_logger import MATCH_LOGGER
+        MATCH_LOGGER.log('vision', f'[{level}] {msg}')
     except Exception:
         pass
     try:
@@ -733,6 +751,62 @@ def api_settings_pull():
         return jsonify({'ok': False, 'error': 'not connected'}), 503
     ok = settings_store.pull_from_firmware(_hw_transport)
     return jsonify({'ok': ok, 'settings': settings_store.all()})
+
+
+@app.route('/api/log/start', methods=['POST'])
+def api_log_start():
+    from services.match_logger import MATCH_LOGGER
+    meta = {
+        'team':              sim_state.get('team'),
+        'connection_mode':   _connection_mode,
+        'serial_port':       _hw_serial_port,
+    }
+    sid = MATCH_LOGGER.start(meta=meta)
+    return jsonify({'ok': True, **MATCH_LOGGER.status()})
+
+
+@app.route('/api/log/stop', methods=['POST'])
+def api_log_stop():
+    from services.match_logger import MATCH_LOGGER
+    summary = MATCH_LOGGER.stop()
+    return jsonify({'ok': True, 'summary': summary})
+
+
+@app.route('/api/log/status', methods=['GET'])
+def api_log_status():
+    from services.match_logger import MATCH_LOGGER
+    return jsonify(MATCH_LOGGER.status())
+
+
+@app.route('/api/vision_config', methods=['GET'])
+def api_vision_config_get():
+    return jsonify({'ok': True, 'config': _load_vision_config()})
+
+
+@app.route('/api/vision_config', methods=['POST'])
+def api_vision_config_set():
+    """Update vision_config.json values; re-push to pipeline via _apply_team."""
+    data = request.get_json(force=True) or {}
+    cfg = _load_vision_config()
+    for k in ('cam_yellow_xyz_mm', 'cam_blue_xyz_mm'):
+        if k in data:
+            v = data[k]
+            if isinstance(v, list) and len(v) == 3:
+                cfg[k] = [float(v[0]), float(v[1]), float(v[2])]
+    for k in ('own_object_z_mm', 'opp_object_z_mm'):
+        if k in data:
+            try: cfg[k] = float(data[k])
+            except (TypeError, ValueError): pass
+    try:
+        _save_vision_config(cfg)
+    except Exception as e:
+        return jsonify({'ok': False, 'error': f'save failed: {e}'}), 500
+    try:
+        _apply_team(sim_state.get('team', 'blue'), source='vision_config', force=True)
+    except Exception as e:
+        return jsonify({'ok': True, 'config': cfg,
+                        'warning': f'saved but re-push failed: {e}'})
+    return jsonify({'ok': True, 'config': cfg})
 
 
 @app.route('/api/settings/push', methods=['POST'])
@@ -1630,6 +1704,15 @@ def _run_embed_detect(source: str, team_override: 'Optional[str]' = None) -> dic
         f"valid={int(bool(result.get('valid', False)))} "
         f"reason={result.get('error') or '-'} "
         f"src={source}")
+    try:
+        from services.match_logger import MATCH_LOGGER
+        MATCH_LOGGER.log('espcam',
+            f"src={source} dt={dt_ms}ms n={result.get('n',0)}/"
+            f"{result.get('expected',4)} off={result.get('offset_mm',0.0):+.1f}"
+            f" valid={int(bool(result.get('valid', False)))} "
+            f"reason={result.get('error') or '-'}")
+    except Exception:
+        pass
     _emit_embed_detect_feeds(result, source=source, jpeg_b64=jpeg_b64)
     return result
 
@@ -2311,10 +2394,7 @@ def _recalage_pick_own_tag(known_x_mm, known_y_mm,
         except Exception:
             pass
 
-    # Append to the calibration pair history — ANY successful recalage
-    # contributes a sample. The auto-tune below pools every pair
-    # captured under the current camera position; clear them via the
-    # /vision_debug button when the camera moves or the team flips.
+    # Diagnostic-only: record this naive/true pair for the debug page.
     _vision_calibration_pairs.append({
         't_mono':  time.monotonic(),
         'tag_id':  tag_id,
@@ -2324,108 +2404,13 @@ def _recalage_pick_own_tag(known_x_mm, known_y_mm,
         'true_y':  float(known_y_mm),
     })
 
-    # ── Auto-tune object_z_mm on the parallax node ────────────────
-    # Closes the loop on the recalage handshake: each successful pair
-    # immediately re-solves factor (LSQ over all pairs) and pushes the
-    # implied object_z_mm to the running parallax node, then persists
-    # to disk. Without this, the solver result is just a number on the
-    # debug page that the operator has to copy into
-    # vision_pipelines_def.py by hand.
+    # Auto-tune block removed — object_z_mm now comes from vision_config.json
+    # via _apply_team. The solver code below remains dormant for now.
+    # Parallax auto-tune disabled — object_z_mm now comes from vision_config.json
+    # via _apply_team.
     auto_tuned_z_mm: 'Optional[float]' = None
-    auto_tune_status: str = 'skipped'
+    auto_tune_status: str = 'disabled (use vision_config.json)'
     auto_tune_rms_mm: 'Optional[float]' = None
-
-    # Unconditional breadcrumb so the operator can confirm the auto-tune
-    # block was reached at all. If they don't see this in the vision log
-    # then `_recalage_pick_own_tag` returned earlier (no localization
-    # node, no poses, no OWN tag, etc.) — every early-return logs its
-    # own reason.
-    _vlog(f'auto-tune entry: src_kind={src_kind}, '
-          f'pairs={len(_vision_calibration_pairs)}')
-
-    # Resolve which cam_xyz to feed the solver. Prefer the actually-used
-    # value (parallax node populates it on every successful tick); fall
-    # back to the param value when the node hasn't ticked yet (boot edge
-    # case, shouldn't happen post-homography-lock but cheap to be safe).
-    # Reject [0,0,0] explicitly — that's the parallax node's pre-tick
-    # default and would drive the solver into a degenerate cz=0 → z_obj=0
-    # rejection path with a confusing error.
-    solver_cam = None
-    if src_kind == 'parallax':
-        try:
-            par_state2 = src_rec.instance.get_state() or {}
-        except Exception as e:
-            par_state2 = {}
-            _vlog(f'parallax auto-tune: get_state() raised {e}', 'err')
-        used = par_state2.get('cam_xyz_used') or []
-        if (len(used) >= 3
-                and any(abs(float(c)) > 0.1 for c in used[:3])):
-            solver_cam = used
-        else:
-            param_cam = par_state2.get('cam_xyz_param') or []
-            if (len(param_cam) >= 3
-                    and any(abs(float(c)) > 0.1 for c in param_cam[:3])):
-                solver_cam = param_cam
-                _vlog('parallax auto-tune: cam_xyz_used unset (node not '
-                      'ticked yet?), falling back to cam_xyz_param', 'warn')
-
-    if src_kind != 'parallax':
-        auto_tune_status = f'no parallax node (src={src_kind})'
-        _vlog(f'parallax auto-tune skipped: no parallax node in pipeline '
-              f'(active source = {src_kind!r})', 'warn')
-    elif solver_cam is None:
-        auto_tune_status = 'cam_xyz unavailable'
-        _vlog('parallax auto-tune skipped: cam_xyz unavailable on parallax '
-              'node — restart holOS if you just changed parallax.py?',
-              'warn')
-    else:
-        try:
-            cx_par = float(solver_cam[0])
-            cy_par = float(solver_cam[1])
-            cz_par = float(solver_cam[2])
-            res = _solve_parallax_from_pairs(
-                list(_vision_calibration_pairs), cx_par, cy_par, cz_par)
-            if res.get('ok'):
-                new_z = float(res['implied_z_obj_mm'])
-                auto_tune_rms_mm = float(res.get('rms_mm') or 0.0)
-                # Sanity bounds — accept anything from a flat sticker
-                # (10 mm) up to a tall mast (1.5 m). Outside that the
-                # fit is degenerate (cam_xyz wrong, or the pair is
-                # noise) and we keep the previous value.
-                if 10.0 < new_z < 1500.0:
-                    try:
-                        src_rec.instance.set_params({'object_z_mm': new_z})
-                        auto_tuned_z_mm = new_z
-                        auto_tune_status = 'applied'
-                        # Reflect the new value in the snapshot below.
-                        parallax_object_z_mm = new_z
-                        _vlog(
-                            f'parallax auto-tuned: object_z_mm '
-                            f'→ {new_z:.0f} mm  (rms={auto_tune_rms_mm:.1f}mm '
-                            f'over {res["pair_count"]} pair'
-                            f'{"s" if res["pair_count"]>1 else ""}, '
-                            f'cam=({cx_par:.0f},{cy_par:.0f},{cz_par:.0f}))')
-                        # Persist immediately so a power loss / restart
-                        # doesn't lose the calibration.
-                        _save_parallax_calibration()
-                    except Exception as e:
-                        auto_tune_status = f'set_params failed: {e}'
-                        _vlog(f'parallax auto-tune set_params failed: {e}', 'err')
-                else:
-                    auto_tune_status = (f'rejected (implied_z={new_z:.0f}mm '
-                                        f'out of 10..1500 mm)')
-                    _vlog(f'parallax auto-tune REJECTED: implied_z='
-                          f'{new_z:.0f}mm out of [10, 1500] sanity range '
-                          f'(cam=({cx_par:.0f},{cy_par:.0f},{cz_par:.0f}), '
-                          f'{res["pair_count"]} pair'
-                          f'{"s" if res["pair_count"]>1 else ""})', 'warn')
-            else:
-                auto_tune_status = f"solver: {res.get('error', 'unknown')}"
-                _vlog(f'parallax auto-tune skipped: solver said '
-                      f'"{res.get("error")}"', 'warn')
-        except Exception as e:
-            auto_tune_status = f'exception: {e}'
-            _vlog(f'parallax auto-tune error: {e}', 'err')
 
     _vision_calibration_snapshot = {
         'captured_at_t':     time.monotonic(),
@@ -3709,46 +3694,44 @@ def _apply_team(team: str, source: str = 'ui',
     # Also mirror the camera X for parallax: the rig is the same
     # physical mount but the operator stands on the OWN side, so the
     # camera always views the team's own half — its X mirrors with team.
-    cam_x_for_team = None
-    try:
-        from vision_pipelines_def import CAMERA_X_MM_BY_TEAM
-        cam_x_for_team = CAMERA_X_MM_BY_TEAM.get(team)
-    except (ImportError, AttributeError, KeyError):
-        cam_x_for_team = None
+    vcfg = _load_vision_config()
+    cam_xyz = vcfg.get(f'cam_{team}_xyz_mm') or [None, None, None]
+    cam_x_for_team = cam_xyz[0] if len(cam_xyz) >= 1 else None
+    cam_y_for_team = cam_xyz[1] if len(cam_xyz) >= 2 else None
+    cam_z_for_team = cam_xyz[2] if len(cam_xyz) >= 3 else None
+    own_z = vcfg.get('own_object_z_mm')
+    opp_z = vcfg.get('opp_object_z_mm')
     if _pipeline_registry is not None:
         for p in _pipeline_registry.all():
             try:
                 with p._lock:
                     for nid, rec in p._nodes.items():
                         schema = getattr(rec.instance.__class__, 'params_schema', {}) or {}
+                        params_to_set = {}
                         if 'team' in schema:
-                            try: rec.instance.set_params({'team': team})
+                            params_to_set['team'] = team
+                        if rec.kind in ('camera.manual', 'parallax'):
+                            if cam_x_for_team is not None and 'cam_x_mm' in schema:
+                                params_to_set['cam_x_mm'] = float(cam_x_for_team)
+                            if cam_y_for_team is not None and 'cam_y_mm' in schema:
+                                params_to_set['cam_y_mm'] = float(cam_y_for_team)
+                            if cam_z_for_team is not None and 'cam_z_mm' in schema:
+                                params_to_set['cam_z_mm'] = float(cam_z_for_team)
+                        if rec.kind == 'parallax':
+                            if own_z is not None and 'own_object_z_mm' in schema:
+                                params_to_set['own_object_z_mm'] = float(own_z)
+                            if opp_z is not None and 'opp_object_z_mm' in schema:
+                                params_to_set['opp_object_z_mm'] = float(opp_z)
+                        if params_to_set:
+                            try: rec.instance.set_params(params_to_set)
                             except Exception: pass
-                        # Camera-mirror per team: only camera.manual + the
-                        # parallax fallback param reflect cam_x. Both have
-                        # cam_x_mm in their schema.
-                        if (cam_x_for_team is not None
-                                and rec.kind in ('camera.manual', 'parallax')
-                                and 'cam_x_mm' in schema):
-                            try:
-                                rec.instance.set_params({'cam_x_mm': cam_x_for_team})
-                            except Exception:
-                                pass
             except Exception as e:
                 brain.log(f'[VISION] team-sync failed for {p.name}: {e}')
     if cam_x_for_team is not None:
-        _vlog(f'team={team} → camera X mirrored to {cam_x_for_team:.0f} mm')
-
-    # Restore the saved parallax calibration for this team (if any).
-    # Runs both at boot (force=True) and on every team flip — the cam_xy
-    # mirror that just got pushed is paired with this team's tuned
-    # object_z_mm + pair history, so subsequent force-recalages refine
-    # on top of the stored data instead of starting from defaults.
-    try:
-        _load_parallax_calibration_for_team(team)
-    except Exception as e:
-        brain.log(f'[VISION] parallax restore failed: {e}')
-
+        _vlog(f'team={team} → cam=({cam_x_for_team:.0f},'
+              f'{cam_y_for_team if cam_y_for_team is not None else "?"},'
+              f'{cam_z_for_team if cam_z_for_team is not None else "?"}) '
+              f'z_own={own_z} z_opp={opp_z}')
 
 def _start_hw_team_poller():
     """In HW mode, the team color is set by a physical switch on the
@@ -4069,107 +4052,18 @@ def _do_connect(port: str):
                             rect_node.release_capture()
                         _vision_heading_offset_rad = None
                         _vision_calibration_snapshot = None
+                        # Unlock track_ids so the next cal_request can pick
+                        # any tag in the OWN range, not just the last one.
+                        loc_inst, _ = _get_localization_node()
+                        if loc_inst is not None:
+                            try:
+                                loc_inst.set_params({'track_ids': list(range(1, 11))})
+                            except Exception as e:
+                                _vlog(f'track_ids reset failed: {e}', 'warn')
                         _vlog('homography released')
                         _send('vis_h_locked(ok=0,reason=released)')
                     threading.Thread(target=_do_unlock, daemon=True,
                                      name='vis-hunlock').start()
-                elif line.startswith('cal_request_manual'):
-                    # Manual / human-in-the-loop variant: firmware has
-                    # disengaged the steppers and is waiting for the
-                    # operator to push the robot to the target pose.
-                    # We surface a modal on the webapp, block on
-                    # `vision_recalage_user_ok`, then capture using
-                    # the TARGET (not OTOS) as ground truth.
-                    kx = _kv(line, 'x', float, 0.0)
-                    ky = _kv(line, 'y', float, 0.0)
-                    kt_mrad = _kv(line, 't', float, None)
-                    kt = (kt_mrad / 1000.0) if kt_mrad is not None else None
-                    kt_deg = (math.degrees(kt) if kt is not None else 0.0)
-                    _vlog(f'rx ← T:vis cal_request_manual x={kx:.0f} '
-                          f'y={ky:.0f} t={kt_deg:+.1f}° — awaiting operator')
-                    def _do_cal_manual():
-                        global _vision_recalage_user_state
-                        _vision_recalage_user_state = None
-                        _vision_recalage_user_evt.clear()
-                        # Helper: surface a failure on the modal AND
-                        # tell the firmware. The modal flips into an
-                        # error state and stays open so the operator
-                        # actually reads what happened — they dismiss
-                        # it with the Close button. Every reason ends
-                        # the sweep (firmware aborts on first failure).
-                        def _fail(reason: str, human: str):
-                            socketio.emit('vision_recalage_wait_done', {
-                                'ok': False,
-                                'reason': reason,
-                                'message': human,
-                            })
-                            _send(f'vis_cal_failed(reason={reason})')
-                        # Notify every connected webapp client. The
-                        # modal listens on this event and renders the
-                        # target coords + waiting state.
-                        socketio.emit('vision_recalage_wait_user', {
-                            'target_x': kx,
-                            'target_y': ky,
-                            'target_t_deg': kt_deg,
-                        })
-                        # 120 s ceiling — matches the firmware-side wait
-                        # (~125 s with padding). Operator has plenty of
-                        # time to walk to the table, push, walk back.
-                        signaled = _vision_recalage_user_evt.wait(120.0)
-                        if not signaled:
-                            _vlog('cal_request_manual: TIMEOUT (no operator '
-                                  'OK in 120 s) — sending vis_cal_failed', 'err')
-                            _fail('user_timeout',
-                                  'Timed out waiting for the operator to '
-                                  'confirm the position (120 s).')
-                            return
-                        if _vision_recalage_user_state == 'cancel':
-                            _vlog('cal_request_manual: user cancelled '
-                                  '— sending vis_cal_failed', 'warn')
-                            _fail('user_cancel',
-                                  'Sweep cancelled by the operator.')
-                            return
-                        # User OK'd. Vision should see the tag now —
-                        # but a single tick can still miss it (motion
-                        # blur from the push, glare). Same retry shape
-                        # as the OTOS path, just shorter spacing since
-                        # the operator already waited.
-                        max_attempts = 3
-                        retry_delay_s = 0.3
-                        result = None
-                        for attempt in range(1, max_attempts + 1):
-                            if attempt > 1:
-                                _vlog(f'cal_request_manual: retry '
-                                      f'{attempt}/{max_attempts} after '
-                                      f'{int(retry_delay_s*1000)}ms', 'warn')
-                                time.sleep(retry_delay_s)
-                            result = _recalage_pick_own_tag(
-                                kx, ky, known_theta_rad=kt)
-                            if result is not None:
-                                break
-                        if result is None:
-                            _vlog('cal_request_manual: tag not detected '
-                                  'after 3 attempts — sending vis_cal_failed',
-                                  'err')
-                            _fail('no_candidate',
-                                  f'No own-team tag detected near '
-                                  f'({kx:.0f}, {ky:.0f}) mm. Check that the '
-                                  f'robot is actually at the target and that '
-                                  f'the tag is visible to the camera.')
-                            return
-                        vp = result['vision_pose']
-                        _vlog(f"cal_request_manual: OK — own tag #"
-                              f"{result['tag_id']} at target ({kx:.0f}, "
-                              f"{ky:.0f})")
-                        socketio.emit('vision_recalage_wait_done', {'ok': True})
-                        _send(
-                            f"vis_cal_done(own={result['tag_id']},"
-                            f"team={result['team']},"
-                            f"x={vp['x_mm']:.1f},y={vp['y_mm']:.1f},"
-                            f"t={vp['theta_rad']:.3f})"
-                        )
-                    threading.Thread(target=_do_cal_manual, daemon=True,
-                                     name='vis-cal-manual').start()
                 elif line.startswith('cal_request'):
                     # Firmware sends INTEGERS only — newlib-nano on the
                     # Teensy 4.1 silently breaks snprintf %f, so the
@@ -4840,59 +4734,6 @@ def on_hw_fire(data):
 
 # ── Match control (remote start/stop via bridge) ─────────────────────────────
 
-@socketio.on('vision_recalage')
-def on_vision_recalage():
-    """Fire the firmware `vision_recalage()` routine — the multi-pose
-    parallax calibration sweep. Requires the homography to be locked
-    first (= classical `recalage()` must have run), otherwise emits an
-    error event without sending the command to the firmware.
-
-    Server-side, every cal_request the firmware fires during the sweep
-    auto-tunes the parallax and persists to disk. After the sweep the
-    saved config sticks across reboots — no need to rerun every match.
-    """
-    t = _active_transport()
-    if t is None or not t.is_connected:
-        _vlog('vision_recalage: no HW transport connected', 'err')
-        socketio.emit('vision_recalage_state',
-                      {'running': False, 'ok': False, 'error': 'not_connected'})
-        return
-
-    # Guard: homography must be locked. The firmware would log its own
-    # error and bail, but we'd rather catch it here so the user sees a
-    # clear toast instead of a silent firmware "ok" reply.
-    rect_node, _ = _get_rectify_node()
-    if rect_node is not None:
-        try:
-            rect_state = rect_node.get_state() or {}
-            if not rect_state.get('homography_locked'):
-                _vlog('vision_recalage: homography NOT locked — run '
-                      'classical recalage first', 'err')
-                socketio.emit('vision_recalage_state',
-                              {'running': False, 'ok': False,
-                               'error': 'homography_not_locked'})
-                return
-        except Exception as e:
-            _vlog(f'vision_recalage: rect_node state read failed: {e}', 'warn')
-
-    def _do():
-        _vlog('vision_recalage: command sent to firmware (HW)')
-        socketio.emit('vision_recalage_state', {'running': True})
-        # 600 s ceiling: manual-confirm flow blocks ~125 s per waypoint
-        # while the operator pushes the robot. With 4 waypoints + transit
-        # that's ~520 s worst case; 600 s leaves margin for the operator
-        # to take their time on a tricky alignment.
-        ok, res = t.execute('vision_recalage()', timeout_ms=600000)
-        if ok:
-            _vlog(f'vision_recalage: firmware reply OK ({res})')
-        else:
-            _vlog(f'vision_recalage: firmware reply FAIL ({res})', 'err')
-        socketio.emit('vision_recalage_state',
-                      {'running': False, 'ok': bool(ok), 'res': res})
-
-    threading.Thread(target=_do, daemon=True, name='vision-recalage-cmd').start()
-
-
 @socketio.on('test_sync_vision')
 def on_test_sync_vision():
     """Fire the firmware `test_sync_vision()` diagnostic. Drives to
@@ -4924,25 +4765,6 @@ def on_test_sync_vision():
                       {'running': False, 'ok': bool(ok), 'res': res})
 
     threading.Thread(target=_do, daemon=True, name='test-sync-vision').start()
-
-
-@socketio.on('vision_recalage_user_ok')
-def on_vision_recalage_user_ok():
-    """Operator confirmed the robot is at the requested target — wakes
-    the cal_request_manual handler so it captures the tag pose."""
-    global _vision_recalage_user_state
-    _vision_recalage_user_state = 'ok'
-    _vision_recalage_user_evt.set()
-
-
-@socketio.on('vision_recalage_user_cancel')
-def on_vision_recalage_user_cancel():
-    """Operator aborted the manual sweep. The cal_request_manual handler
-    will reply vis_cal_failed(reason=user_cancel) to the firmware, which
-    breaks out of the firmware-side wait loop and stops the sweep."""
-    global _vision_recalage_user_state
-    _vision_recalage_user_state = 'cancel'
-    _vision_recalage_user_evt.set()
 
 
 @socketio.on('recalage')

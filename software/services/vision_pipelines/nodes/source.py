@@ -28,6 +28,13 @@ except Exception as _e:
     _CV2_OK = False
     print(f'[vision.nodes.source] cv2 unavailable: {_e}')
 
+def _log_video_frame(f):
+    try:
+        from services.match_logger import MATCH_LOGGER
+        MATCH_LOGGER.log_video(f)
+    except Exception:
+        pass
+
 from ..pipeline import NodeIO, Port, PortKind
 from .base import Node, register_node
 
@@ -137,6 +144,7 @@ class CameraSourceNode(Node):
         self._last_frame = f
         if mode == 'step':
             self._params['playback'] = 'pause'
+        _log_video_frame(f)
         # Sources don't add overlays themselves — frame and preview are
         # the same ndarray. Sharing the reference is fine because the
         # downstream OutputNode does its own .copy() before imencode.
@@ -423,6 +431,7 @@ class VideoSourceNode(Node):
         self._last_frame = f
         if mode == 'step':
             self._params['playback'] = 'pause'
+        _log_video_frame(f)
         # Sources don't add overlays themselves — frame and preview are
         # the same ndarray. Sharing the reference is fine because the
         # downstream OutputNode does its own .copy() before imencode.

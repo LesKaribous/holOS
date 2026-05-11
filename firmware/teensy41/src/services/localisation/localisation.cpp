@@ -195,6 +195,16 @@ FLASHMEM void Localisation::requestHomographyCapture() {
         << "Homography capture requested" << Console::endl;
 }
 
+FLASHMEM void Localisation::invalidateVisionState() {
+    m_homographyLocked              = false;
+    m_visionCalibrated              = false;
+    m_visionCalibrationReplyReceived= false;
+    m_pendingPoseReply              = false;
+    m_lastPoseValid                 = false;
+    jetsonBridge.pushVisionFrameDirect("T:vis homography_release");
+    Console::info("Localisation") << "Vision state invalidated" << Console::endl;
+}
+
 // Push a "calibrate me at this known position" frame to holOS. Async —
 // the response comes back asynchronously via onVisionCalibrationReply().
 //
@@ -235,22 +245,6 @@ FLASHMEM void Localisation::requestVisionCalibration(Vec3 known_pos) {
         << "Vision recalage requested at (" << known_pos.x << ", "
         << known_pos.y << ", " << known_pos.z << ")" << Console::endl;
     m_visionCalibrated = false;   // set true by reply handler
-    m_visionCalibrationReplyReceived = false;
-}
-
-// Manual / human-in-the-loop variant of cal_request. Same wire format
-// as requestVisionCalibration, only the verb differs so holOS routes
-// it to the modal-confirm handler. Caller must disengage steppers
-// before calling and re-engage after isVisionCalibrated() flips true.
-FLASHMEM void Localisation::requestVisionCalibrationManual(Vec3 target_pos) {
-    char frame[80];
-    snprintf(frame, sizeof(frame),
-             "T:vis cal_request_manual x=%d y=%d t=%d",
-             (int)target_pos.x,
-             (int)target_pos.y,
-             (int)(target_pos.z * 1000.0f));
-    jetsonBridge.pushVisionFrameDirect(frame);
-    m_visionCalibrated = false;
     m_visionCalibrationReplyReceived = false;
 }
 

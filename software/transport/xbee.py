@@ -23,6 +23,10 @@ from typing import Callable, Dict, List, Optional, Tuple
 from .base import Transport
 from shared.protocol import encode_request, encode_reply, parse_frame, encode_telemetry
 from shared.config import HEARTBEAT_INTERVAL_S, JETSON_TIMEOUT_S, BRIDGE_BAUDRATE
+try:
+    from services.match_logger import MATCH_LOGGER as _MATCH_LOG
+except Exception:
+    _MATCH_LOG = None
 
 
 class XBeeTransport(Transport):
@@ -331,6 +335,8 @@ class XBeeTransport(Transport):
             with self._write_lock:
                 try:
                     self._serial.write(data.encode('ascii'))
+                    if _MATCH_LOG is not None:
+                        _MATCH_LOG.log('uart', '> ' + data.rstrip('\n'))
                     # Raw TX feed — strip trailing newline for display
                     for cb in self._tel_subs.get('_raw_tx', []):
                         try: cb(data.rstrip('\n'))
@@ -351,6 +357,8 @@ class XBeeTransport(Transport):
                 while b'\n' in buf:
                     line, buf = buf.split(b'\n', 1)
                     decoded = line.decode('ascii', errors='ignore')
+                    if _MATCH_LOG is not None:
+                        _MATCH_LOG.log('uart', '< ' + decoded)
                     # Raw RX feed — fire before any parsing so subscribers see every byte
                     for cb in self._tel_subs.get('_raw', []):
                         try: cb(decoded)

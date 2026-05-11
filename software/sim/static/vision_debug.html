@@ -171,6 +171,35 @@
          style="align-items:stretch; justify-content:flex-start;"></div>
   </section>
   <section class="tile" style="grid-column: 1 / -1;">
+    <header class="tile-head">
+      Drift heatmap (vision − OTOS)
+      <span style="display:flex; gap:6px; align-items:center;">
+        <span class="tile-meta" id="m-drift"></span>
+        <button id="btn-drift-reset" onclick="driftReset()"
+                style="padding:3px 10px; background:var(--surface); color:var(--red);
+                       border:1px solid var(--surface3); border-radius:4px;
+                       cursor:pointer; font:11px ui-monospace,monospace;">
+          ✕ Reset
+        </button>
+      </span>
+    </header>
+    <div class="tile-body" id="t-drift"
+         style="flex-direction:column; align-items:stretch; justify-content:flex-start;
+                padding:8px 12px; gap:8px;">
+      <div id="drift-readout"
+           style="font:12px ui-monospace,monospace; color:var(--text);">
+        no live pose yet
+      </div>
+      <canvas id="drift-canvas" width="600" height="400"
+              style="width:100%; height:auto; background:#fafbfc;
+                     border:1px solid var(--surface2); border-radius:4px;
+                     image-rendering:pixelated;"></canvas>
+      <div style="font:11px ui-monospace,monospace; color:var(--muted);">
+        cellule = 100&nbsp;mm · couleur = ‖drift‖ (vert 0&nbsp;mm → rouge ≥200&nbsp;mm) · opacité = densité de samples
+      </div>
+    </div>
+  </section>
+  <section class="tile" style="grid-column: 1 / -1;">
     <header class="tile-head">Vision log
       <span class="tile-meta" id="m-log"></span></header>
     <div class="tile-body" id="t-log"
@@ -588,6 +617,131 @@ function updatePhaseBadge() {
   b.className = 'badge phase-' + (phase || 'idle');
   b.textContent = 'homography: ' + (phase || 'idle');
 }
+
+/* ── Drift heatmap (vision − OTOS) ─────────────────────────────────────── */
+const DRIFT_CELL_MM   = 100;
+const DRIFT_FIELD_W   = 3000;
+const DRIFT_FIELD_H   = 2000;
+const DRIFT_GX        = Math.ceil(DRIFT_FIELD_W / DRIFT_CELL_MM);
+const DRIFT_GY        = Math.ceil(DRIFT_FIELD_H / DRIFT_CELL_MM);
+const DRIFT_MAX_MM    = 200;
+const DRIFT_MIN_DT_S  = 0.1;
+
+let _driftGrid = _driftMakeGrid();
+let _driftLastSampleT = 0;
+let _driftSampleCount = 0;
+let _driftMaxObservedMm = 0;
+
+function _driftMakeGrid() {
+  const g = new Array(DRIFT_GX);
+  for (let i = 0; i < DRIFT_GX; i++) {
+    g[i] = new Array(DRIFT_GY);
+    for (let j = 0; j < DRIFT_GY; j++) g[i][j] = {sx:0, sy:0, sm:0, n:0};
+  }
+  return g;
+}
+
+function driftReset() {
+  _driftGrid = _driftMakeGrid();
+  _driftSampleCount = 0;
+  _driftMaxObservedMm = 0;
+  driftRender();
+}
+
+function _driftMaybeSample() {
+  if (!_visionPose || !_robotPose) return;
+  const vx = _visionPose.x_mm, vy = _visionPose.y_mm;
+  const ox = _robotPose.x_mm,  oy = _robotPose.y_mm;
+  if (vx == null || vy == null || ox == null || oy == null) return;
+  const now = performance.now() / 1000;
+  if (now - _driftLastSampleT < DRIFT_MIN_DT_S) return;
+  _driftLastSampleT = now;
+  const dx = vx - ox, dy = vy - oy;
+  const mag = Math.hypot(dx, dy);
+  if (mag > _driftMaxObservedMm) _driftMaxObservedMm = mag;
+  const gx = Math.max(0, Math.min(DRIFT_GX - 1, Math.floor(vx / DRIFT_CELL_MM)));
+  const gy = Math.max(0, Math.min(DRIFT_GY - 1, Math.floor(vy / DRIFT_CELL_MM)));
+  const c = _driftGrid[gx][gy];
+  c.sx += dx; c.sy += dy; c.sm += mag; c.n += 1;
+  _driftSampleCount += 1;
+}
+
+function _driftColor(magMm, n, maxN) {
+  const t = Math.min(1, magMm / DRIFT_MAX_MM);
+  let r, g, b;
+  if (t < 0.5) { r = Math.round(2 * 255 * t); g = 200; b = 60; }
+  else         { r = 220; g = Math.round(200 * (1 - 2*(t-0.5))); b = 40; }
+  const alpha = Math.min(1.0, 0.25 + 0.75 * (n / Math.max(1, maxN)));
+  return `rgba(${r},${g},${b},${alpha.toFixed(2)})`;
+}
+
+function driftRender() {
+  const cvs = document.getElementById('drift-canvas');
+  const ro  = document.getElementById('drift-readout');
+  if (!cvs) return;
+  const ctx = cvs.getContext('2d');
+  const W = cvs.width, H = cvs.height;
+  ctx.clearRect(0, 0, W, H);
+  const cellW = W / DRIFT_GX, cellH = H / DRIFT_GY;
+  let maxN = 1;
+  for (let i = 0; i < DRIFT_GX; i++)
+    for (let j = 0; j < DRIFT_GY; j++)
+      if (_driftGrid[i][j].n > maxN) maxN = _driftGrid[i][j].n;
+  for (let i = 0; i < DRIFT_GX; i++) {
+    for (let j = 0; j < DRIFT_GY; j++) {
+      const c = _driftGrid[i][j];
+      if (c.n === 0) continue;
+      const meanMag = c.sm / c.n;
+      ctx.fillStyle = _driftColor(meanMag, c.n, maxN);
+      ctx.fillRect(i * cellW, j * cellH, cellW, cellH);
+    }
+  }
+  ctx.strokeStyle = 'rgba(0,0,0,0.05)';
+  ctx.lineWidth = 1;
+  for (let i = 0; i <= DRIFT_GX; i++) {
+    ctx.beginPath(); ctx.moveTo(i * cellW, 0); ctx.lineTo(i * cellW, H); ctx.stroke();
+  }
+  for (let j = 0; j <= DRIFT_GY; j++) {
+    ctx.beginPath(); ctx.moveTo(0, j * cellH); ctx.lineTo(W, j * cellH); ctx.stroke();
+  }
+  if (_visionPose && _visionPose.x_mm != null) {
+    const px = _visionPose.x_mm / DRIFT_FIELD_W * W;
+    const py = _visionPose.y_mm / DRIFT_FIELD_H * H;
+    ctx.fillStyle = '#1a5276';
+    ctx.beginPath(); ctx.arc(px, py, 5, 0, Math.PI * 2); ctx.fill();
+  }
+  if (_robotPose && _robotPose.x_mm != null) {
+    const px = _robotPose.x_mm / DRIFT_FIELD_W * W;
+    const py = _robotPose.y_mm / DRIFT_FIELD_H * H;
+    ctx.strokeStyle = '#c0392b';
+    ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.arc(px, py, 6, 0, Math.PI * 2); ctx.stroke();
+  }
+  if (ro) {
+    const fmt = (v, d=1) => (v == null ? '—' : (+v).toFixed(d));
+    let dx = '—', dy = '—', dmag = '—';
+    if (_visionPose && _robotPose
+        && _visionPose.x_mm != null && _robotPose.x_mm != null) {
+      const _dx = _visionPose.x_mm - _robotPose.x_mm;
+      const _dy = _visionPose.y_mm - _robotPose.y_mm;
+      dx = fmt(_dx); dy = fmt(_dy);
+      dmag = fmt(Math.hypot(_dx, _dy));
+    }
+    const vx = _visionPose ? fmt(_visionPose.x_mm) : '—';
+    const vy = _visionPose ? fmt(_visionPose.y_mm) : '—';
+    const ox = _robotPose  ? fmt(_robotPose.x_mm)  : '—';
+    const oy = _robotPose  ? fmt(_robotPose.y_mm)  : '—';
+    ro.innerHTML =
+      `<strong>vision</strong> (${vx}, ${vy}) mm &nbsp;|&nbsp;` +
+      `<strong>otos</strong> (${ox}, ${oy}) mm &nbsp;|&nbsp;` +
+      `<strong>Δ</strong> (${dx}, ${dy}) ‖${dmag}‖ mm &nbsp;|&nbsp;` +
+      `samples=${_driftSampleCount} max=${_driftMaxObservedMm.toFixed(0)}mm`;
+  }
+  const m = document.getElementById('m-drift');
+  if (m) m.textContent = `${_driftSampleCount} samples · max ${_driftMaxObservedMm.toFixed(0)} mm`;
+}
+
+setInterval(() => { _driftMaybeSample(); driftRender(); }, 100);
 </script>
 </body>
 </html>

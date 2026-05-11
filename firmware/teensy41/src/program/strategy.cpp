@@ -642,7 +642,7 @@ FLASHMEM void nearEnd(){
     motion.snap(false);
     motion.yield(true);
 
-    localisation.syncToVision(1000); // Sync initial localisation to vision (blocking, 2s timeout)
+    //localisation.syncToVision(1000); // disabled — drift measurement run
 
     actuators.getActuatorGroup(RobotCompass::CA).moveServoToPose((int)ServoIDs::GRABBER_RIGHT, (int) ManipulatorPose::STORE, 100);
     actuators.getActuatorGroup(RobotCompass::CA).moveServoToPose((int)ServoIDs::ELEVATOR, (int) ElevatorPose::DOWN, 100);

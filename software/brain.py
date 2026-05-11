@@ -226,6 +226,11 @@ class Brain:
             if len(self._log_buffer) > 200:
                 self._log_buffer.pop(0)
         print(entry)
+        try:
+            from services.match_logger import MATCH_LOGGER
+            MATCH_LOGGER.log('holos', entry)
+        except Exception:
+            pass
 
     def get_log(self, n: int = 30) -> list[str]:
         with self._log_lock:

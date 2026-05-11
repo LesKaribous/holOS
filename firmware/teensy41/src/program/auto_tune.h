@@ -2,7 +2,6 @@
 #include "utils/geometry.h"
 
 void recalage();          // Classical: homography lock + prise d'origine
-void visionRecalage();    // Multi-pose parallax sweep (requires recalage() first)
 void testSyncToVision();  // Diag: go (1000, 1000) -> syncToVision -> go (1000, 1000)
 
 

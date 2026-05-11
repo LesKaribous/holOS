@@ -27,8 +27,8 @@
     <button class="btn green" id="btn-start" onclick="unifiedStart()" title="Start match (HW: firmware start, Sim: run strategy)">▶ Start</button>
     <button class="btn red"   id="btn-stop"  onclick="unifiedStop()"  title="Stop/Pause match">⏸ Stop</button>
     <button class="btn"       id="btn-recalage" onclick="runRecalage()" title="Classical recalage: homography lock + prise d'origine. Hardware only.">⌖ Recalage</button>
-    <button class="btn"       id="btn-vision-recalage" onclick="runVisionRecalage()" title="Vision parallax calibration sweep — drives the robot through several known points to refine the parallax fit. Requires classical recalage first.">📐 Vision calib</button>
     <button class="btn"       id="btn-test-sync-vision" onclick="runTestSyncVision()" title="Diag: drive to (1000,1000), sync OTOS to vision, drive to (1000,1000) again. Second move should land on target even with a detuned OTOS scale. Requires recalage first.">🎯 Test sync</button>
+    <button class="btn"       id="btn-rec" onclick="toggleRec()" title="Record session — captures UART, video frames, holOS events, ESPCam exchanges into logs/SESSION/"><span id="rec-dot" style="display:inline-block;width:8px;height:8px;border-radius:50%;background:#666;margin-right:5px;vertical-align:middle;"></span><span id="rec-label">REC</span></button>
     <button class="btn"       onclick="resetSim()"    title="Reset simulation">↺</button>
     <button class="btn"       onclick="reloadStrategy()" title="Hot-reload strategy">⟳</button>
   </div>
@@ -1538,6 +1538,46 @@
             </details>
           </div>
 
+          <!-- ── Vision config — camera position + tag height ────────────── -->
+          <div class="calib-card">
+            <div class="calib-card-title">Vision Config
+              <span class="calib-card-hint">Caméra top-down + hauteurs de tag (parallax)</span>
+            </div>
+            <div style="font-size:11px;color:var(--text-dim);margin-bottom:6px">
+              Cam XYZ mirroré sur X selon la team active. Object Z = hauteur du tag au-dessus du sol.
+            </div>
+
+            <div class="calib-row">
+              <label class="calib-lbl">Cam Yellow (X,Y,Z)</label>
+              <input type="number" id="vc-cam-y-x" class="calib-input" step="1" style="width:55px" placeholder="X">
+              <input type="number" id="vc-cam-y-y" class="calib-input" step="1" style="width:55px" placeholder="Y">
+              <input type="number" id="vc-cam-y-z" class="calib-input" step="1" style="width:55px" placeholder="Z">
+            </div>
+            <div class="calib-row">
+              <label class="calib-lbl">Cam Blue   (X,Y,Z)</label>
+              <input type="number" id="vc-cam-b-x" class="calib-input" step="1" style="width:55px" placeholder="X">
+              <input type="number" id="vc-cam-b-y" class="calib-input" step="1" style="width:55px" placeholder="Y">
+              <input type="number" id="vc-cam-b-z" class="calib-input" step="1" style="width:55px" placeholder="Z">
+            </div>
+
+            <div class="calib-row">
+              <label class="calib-lbl">Object Z own (mm)</label>
+              <input type="number" id="vc-z-own" class="calib-input" step="1" min="0" max="2000">
+              <span class="calib-card-hint">notre robot</span>
+            </div>
+            <div class="calib-row">
+              <label class="calib-lbl">Object Z opp (mm)</label>
+              <input type="number" id="vc-z-opp" class="calib-input" step="1" min="0" max="2000">
+              <span class="calib-card-hint">robot adverse</span>
+            </div>
+
+            <div class="calib-row" style="justify-content:flex-end">
+              <button class="btn btn-sm" onclick="visionConfigLoad()" title="Recharger depuis le serveur">📂 Charger</button>
+              <button class="btn btn-sm green" onclick="visionConfigSave()" title="Sauvegarder + push pipeline">💾 Sauver</button>
+              <span id="vc-status" style="font-size:11px;color:var(--text-dim);align-self:center"></span>
+            </div>
+          </div>
+
         </div><!-- /calib-grid -->
       </div><!-- /calib-page -->
     </div><!-- /view-calibration -->
@@ -1841,61 +1881,6 @@
 
 <!-- ── Toast ─────────────────────────────────────────────────────────────── -->
 <div id="reload-toast" class="hidden"></div>
-
-<!-- ── Vision recalage manual-confirm modal ─────────────────────────────── -->
-<!-- Surfaced by software/run.py during the firmware vision_recalage()
-     sweep. Each waypoint disengages the steppers and asks the operator
-     to push the robot to the exact target. The operator presses OK once
-     positioned; holOS captures the tag pose and replies vis_cal_done. -->
-<div id="vision-recalage-modal" class="hidden"
-     style="position:fixed; inset:0; background:rgba(0,0,0,0.55);
-            z-index:300; display:flex; align-items:center;
-            justify-content:center;">
-  <div style="background:var(--surface,#fff); color:var(--text,#1a2332);
-              min-width:340px; max-width:480px; border-radius:8px;
-              box-shadow:0 8px 32px rgba(0,0,0,.35); padding:18px 22px;
-              border:1px solid var(--surface2,#e2e8ef);">
-    <div id="vision-recalage-title"
-         style="font-weight:700; font-size:15px; color:var(--brand,#1a5276);
-                margin-bottom:6px;">📐 Vision calibration — manual point</div>
-    <div id="vision-recalage-instructions"
-         style="font-size:13px; color:var(--muted,#6b7a8d); margin-bottom:14px;">
-      Robot wheels are disengaged. Push it precisely to the target below,
-      then press <strong>Confirm</strong>.
-    </div>
-    <div id="vision-recalage-target"
-         style="font:14px/1.5 ui-monospace,SFMono-Regular,monospace;
-                background:var(--accent-bg,#eaf4fd);
-                border:1px solid var(--surface2,#e2e8ef);
-                color:var(--brand,#1a5276); padding:10px 14px;
-                border-radius:6px; margin-bottom:14px;">—</div>
-    <!-- Inline error banner — shown when holOS reports a per-point
-         failure (no_candidate / user_timeout / firmware abort). The
-         sweep is dead by the time we render this; the only action
-         left is dismissing the modal. -->
-    <div id="vision-recalage-error" class="hidden"
-         style="font:13px/1.4 -apple-system,BlinkMacSystemFont,sans-serif;
-                background:#fde8e8; color:#9b1c1c;
-                border:1px solid #f5b4b4; padding:10px 12px;
-                border-radius:5px; margin-bottom:14px;
-                white-space:pre-wrap;"></div>
-    <div style="display:flex; gap:8px; justify-content:flex-end;">
-      <button id="vision-recalage-cancel" type="button"
-              style="padding:7px 14px; background:var(--surface,#fff);
-                     color:var(--red,#c0392b);
-                     border:1px solid var(--surface3,#ccd5de);
-                     border-radius:5px; cursor:pointer; font-size:13px;">
-        ✕ Cancel sweep
-      </button>
-      <button id="vision-recalage-confirm" type="button"
-              style="padding:7px 18px; background:var(--brand,#1a5276);
-                     color:#fff; border:none; border-radius:5px;
-                     cursor:pointer; font-size:13px; font-weight:600;">
-        ✓ Confirm position
-      </button>
-    </div>
-  </div>
-</div>
 
 <script src="/static/vendor/socket.io.min.js"></script>
 <script src="static/app.js"></script>

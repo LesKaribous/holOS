@@ -320,10 +320,10 @@ FLASHMEM StallCalibResult calibrateStall(RobotCompass face, int maxIter) {
 // ============================================================
 
 FLASHMEM void recalage(){
-    // Ask holOS to freeze the table↔camera homography NOW, while the
-    // robot is still outside the field of view (or far from the
-    // anchor tags). The request is async — the lock is acknowledged
-    // within 1-2 frames, well before the start-zone goAlign finishes.
+    // Make recalage idempotent — drop any state from a previous attempt
+    // before re-establishing.
+    localisation.invalidateVisionState();
+
     localisation.requestHomographyCapture();
 
     // Lock the chassis in place BEFORE calibrating the IMU. Steppers
@@ -345,126 +345,49 @@ FLASHMEM void recalage(){
     motion.setFeedrate(0.3);
     waitMs(600);
 
-    if(ihm.isColor(Settings::BLUE)){
+    const bool isBlue = ihm.isColor(Settings::BLUE);
+    const Vec2  knownXY     = isBlue ? Vec2(3000-350, 300) : Vec2(350, 300);
+    const float compassTgt  = getCompassOrientation(
+                                  isBlue ? TableCompass::EAST : TableCompass::WEST);
+    const float knownThetaRad =
+        (compassTgt - getCompassOrientation(RobotCompass::AB)) * DEG_TO_RAD;
+
+    if(isBlue){
         motion.setAbsPosition(Vec3( Vec2(3000-140,100), 150 * DEG_TO_RAD));
-        async motion.go(Vec2(3000-350, 300));
-        async motion.align(RobotCompass::AB, getCompassOrientation(TableCompass::EAST));
+        async motion.go(knownXY);
+        async motion.align(RobotCompass::AB, compassTgt);
         actuators.moveElevator(RobotCompass::CA, ElevatorPose::DOWN);
     }else{
         motion.setAbsPosition(Vec3(140, 125 ,-90 * DEG_TO_RAD));
-        async motion.go(Vec2(350, 300));
-        async motion.align(RobotCompass::AB, getCompassOrientation(TableCompass::WEST));
+        async motion.go(knownXY);
+        async motion.align(RobotCompass::AB, compassTgt);
     }
     motion.setFeedrate(1.0);
+
+    {
+        const unsigned long moveDeadline = millis() + 5000UL;
+        while (millis() < moveDeadline && !motion.hasFinished()) os.wait(50);
+    }
+
+    localisation.requestVisionCalibration(Vec3(knownXY.x, knownXY.y, knownThetaRad));
+    {
+        const unsigned long calDeadline = millis() + 3000UL;
+        while (millis() < calDeadline
+               && !localisation.visionCalibrationReplyReceived()) {
+            os.wait(50);
+        }
+    }
+    if (localisation.isVisionCalibrated()) {
+        Console::success("Strategy") << "[recalage] vision OK" << Console::endl;
+    } else if (localisation.visionCalibrationReplyReceived()) {
+        Console::error("Strategy") << "[recalage] vision FAILED" << Console::endl;
+    } else {
+        Console::error("Strategy") << "[recalage] vision TIMEOUT (3s)" << Console::endl;
+    }
 
     initPump(); //TODO : Integrate into Actuators
 }
 
-
-// ============================================================
-//  visionRecalage() — multi-pose vision parallax calibration.
-//
-//  REQUIRES the homography to be locked first (= classical recalage
-//  must have run). Bails with an error log if not.
-//
-//  Drives the robot through N known waypoints across its half of
-//  the table. At each waypoint the robot stops, settles, and fires
-//  a cal_request to holOS. Server-side, every pair refits the
-//  parallax solver and the resulting object_z_mm is pushed to the
-//  live parallax node + persisted to disk.
-//
-//  Run this once per camera (re)mount. The persisted config is
-//  reloaded at every holOS boot so match-day recalage doesn't
-//  re-run the sweep.
-//
-//  To improve reliability: add more entries to WAYPOINTS below.
-//  Spread them across the team's half of the table to give the
-//  solver coverage in both X and Y.
-// ============================================================
-
-FLASHMEM void visionRecalage(){
-    if (!localisation.isHomographyLocked()) {
-        Console::error("Strategy")
-            << "[visionRecalage] homography NOT locked — run classical "
-            << "recalage() first" << Console::endl;
-        return;
-    }
-
-    Console::info("Strategy")
-        << "[visionRecalage] start (multi-pose parallax sweep)" << Console::endl;
-
-    const bool isBlue = ihm.isColor(Settings::BLUE);
-    // Mirror X for the BLUE team. Yellow frame is canonical.
-    auto X = [isBlue](float x) -> float {
-        return isBlue ? (3000.0f - x) : x;
-    };
-    // Target heading the operator will hold throughout the sweep --
-    // same orientation classical recalage exits with (AB axis pointing
-    // toward EAST on yellow, WEST on blue). Robot's world theta is the
-    // compass orientation minus the AB axis offset. Encoded in radians
-    // for the wire format (milliradians on send).
-    const float startCompass = isBlue
-        ? getCompassOrientation(TableCompass::WEST)
-        : getCompassOrientation(TableCompass::EAST);
-    const float targetThetaRad =
-        (startCompass - getCompassOrientation(RobotCompass::AB)) * DEG_TO_RAD;
-
-    // Manual-confirm capture: drive close, free the wheels, hand the
-    // robot over to the operator who pushes it to the exact target,
-    // then resume once holOS replies (after the user clicks OK on the
-    // webapp modal). The TARGET is sent as ground truth -- OTOS is not
-    // used here because its drift is exactly what we're calibrating
-    // around. Returns true on success, false on failure / timeout so
-    // the outer sweep can abort cleanly instead of soldiering on with
-    // half the points.
-    auto captureAt = [targetThetaRad](Vec2 target) -> bool {
-        async motion.go(target);
-        os.wait(1000);                         // brief settle after motion
-        motion.disengage();                    // free wheels for manual push
-        Vec3 targetPose(target.x, target.y, targetThetaRad);
-        localisation.requestVisionCalibrationManual(targetPose);
-        // Poll until holOS replies (success or failure) or we hit the
-        // 125 s ceiling that matches holOS's 120 s user-confirmation
-        // timeout with a small padding. The reply-received flag lets
-        // us break the moment vis_cal_failed lands instead of burning
-        // the full window on a failure.
-        const unsigned long deadline = millis() + 125000UL;
-        while (millis() < deadline
-               && !localisation.visionCalibrationReplyReceived()) {
-            os.wait(100);
-        }
-        motion.engage();                       // re-engage no matter what
-        return localisation.isVisionCalibrated();
-    };
-
-    motion.engage();
-    motion.setFeedrate(0.6);
-
-    // ── Calibration waypoints ───────────────────────────────────────
-    // Coordinates in YELLOW frame, auto-mirrored to (3000 - x) for BLUE.
-    // Spread across the half-table — different X and Y to constrain
-    // the parallax factor in both axes. Sweep aborts on the first
-    // failed point so the operator sees the reason in the webapp modal
-    // instead of grinding through the rest of the points blindly.
-    if (!captureAt(Vec2(X(350),  650))) return;
-    if (!captureAt(Vec2(X(500),  1000))) return;
-    if (!captureAt(Vec2(X(1000), 850))) return;
-    if (!captureAt(Vec2(X(600),  600))) return;
-    // Examples to add later (uncomment + adjust to your table layout):
-    // captureAt(Vec2(X(800),  500));
-    // captureAt(Vec2(X(1300), 1500));
-    // captureAt(Vec2(X(200),  1800));
-
-    // Return to start zone with the same orientation we asked the
-    // operator to maintain throughout the sweep.
-    async motion.goAlign(Vec2(X(350), 650), RobotCompass::AB, startCompass);
-    async motion.goAlign(Vec2(X(350), 300), RobotCompass::AB, startCompass);
-    motion.setFeedrate(1.0);
-
-    Console::info("Strategy")
-        << "[visionRecalage] done — calibration saved by holOS"
-        << Console::endl;
-}
 
 // ─────────────────────────────────────────────────────────────────────────
 //  testSyncToVision -- diagnostic for the OTOS<-vision sync round-trip.

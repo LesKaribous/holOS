@@ -101,7 +101,18 @@ class ParallaxCorrectionNode(Node):
         'cam_z_mm':     {'type': 'float', 'default': 1600.0,
                          'help': 'camera height above the table (mm)'},
         'object_z_mm':  {'type': 'float', 'default': 490.0,
-                         'help': 'tag height above the table (mm)'},
+                         'help': 'fallback tag height (mm) — used if '
+                                 'own/opp_object_z_mm are unset or tag_id '
+                                 'is unknown'},
+        'own_object_z_mm': {'type': 'float', 'default': 0.0,
+                            'help': 'tag height for OWN robot (mm). '
+                                    '0 = fall back to object_z_mm'},
+        'opp_object_z_mm': {'type': 'float', 'default': 0.0,
+                            'help': 'tag height for OPP robot (mm). '
+                                    '0 = fall back to object_z_mm'},
+        'team':         {'type': 'str',   'default': 'blue',
+                         'enum': ['blue', 'yellow'],
+                         'help': 'OWN team — yellow=ids 6-10, blue=ids 1-5'},
         'use_naive_xy': {'type': 'bool',  'default': True,
                          'label': 'use naive xy if available',
                          'description': 'when input pose_list has '
@@ -192,30 +203,42 @@ class ParallaxCorrectionNode(Node):
             if cs is not None and (cs.get('flip_x') or cs.get('flip_y')):
                 from ._coords_helpers import flip_mm
                 cx, cy = flip_mm(cx, cy, cs)
-        oz = float(self._params.get('object_z_mm', 490.0))
-        use_naive  = bool(self._params.get('use_naive_xy', False))
-        write_back = str(self._params.get('write_back', 'overwrite'))
+        oz_fallback = float(self._params.get('object_z_mm', 490.0))
+        oz_own      = float(self._params.get('own_object_z_mm', 0.0)) or oz_fallback
+        oz_opp      = float(self._params.get('opp_object_z_mm', 0.0)) or oz_fallback
+        team        = str(self._params.get('team', 'blue')).lower()
+        own_range   = set(range(6, 11)) if team == 'yellow' else set(range(1, 6))
+        use_naive   = bool(self._params.get('use_naive_xy', False))
+        write_back  = str(self._params.get('write_back', 'overwrite'))
 
-        # Snapshot the values we actually used this tick — recalage
-        # snapshot reads these so the debug page can compute an implied
-        # object_z_mm from the (naive, known, cam) triple.
         self._last_cam_xyz = (cx, cy, cz)
-        self._last_object_z_mm = oz
+        self._last_object_z_mm = oz_own
 
-        # factor = (Zc - z_object) / Zc — degenerates as Zc → z_object.
-        # If the config is broken (cam below tag) we still want the BEV
-        # debug feed alive, just without the parallax correction. Skip
-        # the per-pose correction loop and fall through to preview.
-        broken_geom = (cz <= oz + 1e-3)
+        max_oz = max(oz_own, oz_opp, oz_fallback)
+        broken_geom = (cz <= max_oz + 1e-3)
         if broken_geom:
             self._last_error = (
-                f'cam_z_mm ({cz:.0f}) must be > object_z_mm ({oz:.0f})'
+                f'cam_z_mm ({cz:.0f}) must be > max object_z_mm ({max_oz:.0f})'
             )
-            factor = 1.0
             iter_poses = []
         else:
-            factor = (cz - oz) / cz
             iter_poses = poses or []
+
+        def _factor_for(tag_id) -> float:
+            try:
+                tid = int(tag_id) if tag_id is not None else -1
+            except (TypeError, ValueError):
+                tid = -1
+            if tid in own_range:
+                oz = oz_own
+            elif tid > 0:
+                oz = oz_opp
+            else:
+                oz = oz_fallback
+            return (cz - oz) / cz
+
+        factor_own = (cz - oz_own) / cz if not broken_geom else 1.0
+        factor_opp = (cz - oz_opp) / cz if not broken_geom else 1.0
 
         out = []
         for q in iter_poses:
@@ -237,6 +260,7 @@ class ParallaxCorrectionNode(Node):
                 out.append(dict(q))
                 continue
 
+            factor = _factor_for(q.get('tag_id'))
             corr_x = cx + factor * (nxf - cx)
             corr_y = cy + factor * (nyf - cy)
 
@@ -329,7 +353,7 @@ class ParallaxCorrectionNode(Node):
                 cam_src = ('input' if cam is not None else 'params')
                 badge = (f'cam=({int(cx)},{int(cy)},{int(cz)})  '
                          f'src={cam_src}  '
-                         f'factor={factor:.3f}')
+                         f'f_own={factor_own:.3f} f_opp={factor_opp:.3f}')
                 cv2.rectangle(vis, (0, 0), (260, 22), (0, 0, 0), -1)
                 cv2.putText(vis, badge, (4, 16),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.4,

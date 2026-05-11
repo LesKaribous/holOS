@@ -16,6 +16,8 @@ Thumbs.db
 
 # ── Logs / runtime artefacts ──────────────────────────────────────────────
 log/
+logs/
+software/logs/
 software/.holos_lastport
 
 # ── Python: bytecode / build / cache ──────────────────────────────────────
