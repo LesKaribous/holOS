@@ -2,6 +2,7 @@
 #include "os/console.h"
 #include "services/jetson/jetson_bridge.h"
 #include <Arduino.h>   // millis()
+#include "program/strategy.h"      // os.wait()
 
 SINGLETON_INSTANTIATE(TwinVision, vision)
 
@@ -89,7 +90,7 @@ bool TwinVision::queryEmbedDetect(EmbedDetect& out,
     unsigned long t0 = millis();
     while (m_pendingEmbedReply && (millis() - t0) < timeoutMs) {
         jetsonBridge.run();
-        os.wait(2);
+        waitMs(2);
     }
     if (m_pendingEmbedReply) {
         m_pendingEmbedReply = false;

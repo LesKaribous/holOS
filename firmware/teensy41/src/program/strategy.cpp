@@ -102,13 +102,21 @@ static void collectStock(Vec2 target, TableCompass tc, RobotCompass rc) {
     constexpr uint32_t GRAB_DELAY_MS   = 1000;
     const float sideOffset = 0;
 
-    Vec2 approach = target - PolarVec(getCompassOrientation(tc) * DEG_TO_RAD, APPROACH_OFFSET).toVec2();
-    Vec2 grab     = target - PolarVec(getCompassOrientation(tc) * DEG_TO_RAD, GRAB_OFFSET).toVec2();
+    const float compass_rad = getCompassOrientation(tc) * DEG_TO_RAD;
+    Vec2 approach = target - PolarVec(compass_rad, APPROACH_OFFSET).toVec2();
+    Vec2 grab     = target - PolarVec(compass_rad, GRAB_OFFSET).toVec2();
 
     float sidewiseoffset_dir = getCompassOrientation(TableCompass::SOUTH);
 
     approach += PolarVec(sidewiseoffset_dir * DEG_TO_RAD, sideOffset).toVec2(); // Offset latéral pour compenser la largeur du préhenseur
     grab += PolarVec(sidewiseoffset_dir * DEG_TO_RAD, sideOffset).toVec2(); // Offset latéral pour compenser la largeur du préhenseur
+
+    // Keep the planned (pre-correction) approach. After the embed cam
+    // re-centres us laterally, we declare *this* pose as our absolute
+    // position — the lateral offset we just travelled WAS our OTOS
+    // drift, so the corrected physical pose matches `approach_planned`
+    // in the world frame. Subsequent moves then reference clean coords.
+    const Vec2 approach_planned = approach;
 
     actuators.grab(rc); //wide open
     async motion.goAlign(approach, rc, getCompassOrientation(tc));
@@ -139,9 +147,22 @@ static void collectStock(Vec2 target, TableCompass tc, RobotCompass rc) {
         }
         if (got) {
             Vec2 lateral_vec = PolarVec(lateral_dir_rad, lateral_mm).toVec2();
-            approach += lateral_vec;
-            grab     += lateral_vec;
-            async motion.goAlign(approach, rc, getCompassOrientation(tc));
+            // Move physically to the corrected pose...
+            Vec2 corrected = approach + lateral_vec;
+            async motion.goAlign(corrected, rc, getCompassOrientation(tc));
+            // ...then overwrite localisation: declare we are at the
+            // PLANNED approach (no offset). The lateral correction was
+            // OTOS drift; we just absorbed it. Heading kept at tc.
+            Vec3 ref(approach_planned.a, approach_planned.b, compass_rad);
+            motion.setAbsPosition(ref);
+            Console::info("Strategy")
+                << "[vision] reset pose to planned approach ("
+                << approach_planned.a << "," << approach_planned.b
+                << ") — offset " << lateral_mm
+                << "mm absorbed" << Console::endl;
+            // `grab` is referenced to `target` (world frame), so it
+            // stays correct — no offset needed now that the ref is
+            // back in sync.
         } else {
             Console::warn("Strategy")
                 << "[vision] gave up after " << MAX_RETRY
