@@ -65,41 +65,12 @@ static uint32_t freeStack() {
     return sp;  // raw SP; compare across calls to see consumption
 }
 
-// ─── Vision refinement (embed cam) ─────────────────────────────────
-//
-// Ask holOS to run ArUco detection on a single ESP32-CAM JPEG (see
-// services/embed_cam.py) and return the lateral offset the gripper
-// needs to centre itself on the 4 stock objects.
-//
-// Side direction convention: image-frame +X (right of the camera)
-// maps to the direction `getCompassOrientation(tc) - 90°` in the
-// table frame.  Positive offset_mm → tags lean right → robot moves
-// +X to compensate.  Caller adds `offset_mm × lateral_dir` to the
-// grab pose.
-//
-// `team_filter` lets the strategy restrict accepted ArUco IDs (36 =
-// blue, 47 = yellow). For now we always pass nullptr — the contest
-// stock contains both colours and we need all 4 tags to estimate the
-// midpoint. When the "sort opposite-colour objects aside" feature
-// lands the caller will pass currentTeamStr() here to harvest only
-// own-team tags on a second pass.
+
 static const char* currentTeamStr() {
     return ihm.isColor(Settings::BLUE) ? "blue" : "yellow";
 }
 
-// Single-shot offset query — pure read, no motion side effects.
-// Returns true iff the host returned a valid detection.  Caller
-// decides what to do with `out_offset_mm` (apply to grab, log only,
-// abort the block, …).
-//
-//   out_offset_mm : lateral offset in mm to add along
-//                   `getCompassOrientation(tc) - 90°` direction.
-//   out_n_tags    : number of stock tags actually seen (0..4).
-//                   Useful for the caller to decide whether to trust
-//                   the offset or fall back to the nominal pose.
-//   team_filter   : nullptr = accept BOTH colours (default for now);
-//                   "blue" or "yellow" once the colour-sort feature
-//                   is ready.
+
 static bool getEmbedCamOffset(float& out_offset_mm,
                               int& out_n_tags,
                               const char* team_filter = nullptr,
@@ -141,7 +112,7 @@ static void collectStock(Vec2 target, TableCompass tc, RobotCompass rc) {
 
     actuators.grab(rc); //wide open
     async motion.goAlign(approach, rc, getCompassOrientation(tc));
-    
+    {
         const float lateral_dir_rad =
             (getCompassOrientation(tc) - 90.0f) * DEG_TO_RAD;
         float lateral_mm = 0.0f;
@@ -208,8 +179,6 @@ static void storeStock(Vec2 target, TableCompass tc, RobotCompass rc) {
     grabrecal += PolarVec(sidewiseoffset_dir * DEG_TO_RAD, sideOffset).toVec2(); // Offset latéral pour compenser la largeur du préhenseur
 
     RuntimeConfig::setInt("motion.timeout_ms", 6000); // 5 secondes
-    async motion.goAlign(approach, rc, getCompassOrientation(tc));
-    localisation.syncToVision(1000);
     async motion.goAlign(approach, rc, getCompassOrientation(tc));
 
     safety.disable();
@@ -312,6 +281,12 @@ static BlockResult blockCollectC() {
     waitMs(800);
 
     if(ihm.isColor(Settings::BLUE)) {
+        motion.goAlign(POI::stockBlue_04 + Vec2(0, +200), RobotCompass::AB, getCompassOrientation(TableCompass::NORTH));
+    } else {
+        motion.goAlign(POI::stockYellow_04 + Vec2(0, +200), RobotCompass::AB, getCompassOrientation(TableCompass::NORTH));
+    }
+
+    if(ihm.isColor(Settings::BLUE)) {
         collectStock(POI::stockBlue_04+ Vec2(20,-30), TableCompass::NORTH, RobotCompass::AB);
     } else {
         collectStock(POI::stockYellow_04+ Vec2(20,-30), TableCompass::NORTH, RobotCompass::AB);
@@ -345,7 +320,7 @@ static BlockResult thermometer_set() {
 
     if(ihm.isColor(Settings::BLUE)) {
         async motion.goAlign(POI::thermometer_hot_blue_approach - Vec2(0,200), RobotCompass::C, getCompassOrientation(TableCompass::SOUTH));
-        localisation.syncToVision(1000); // Sync initial localisation to vision (blocking, 2s timeout)
+        //localisation.syncToVision(1000); // Sync initial localisation to vision (blocking, 2s timeout)
 
         async motion.go(POI::thermometer_hot_blue_approach);
         probeBorder(TableCompass::SOUTH, RobotCompass::BC, 100, 300);
@@ -358,7 +333,7 @@ static BlockResult thermometer_set() {
         async motion.go(POI::thermometer_hot_blue);
     } else {
         async motion.goAlign(POI::thermometer_hot_yellow_approach - Vec2(0,200), RobotCompass::C, getCompassOrientation(TableCompass::WEST));
-        localisation.syncToVision(1000); // Sync initial localisation to vision (blocking, 2s timeout)
+        //localisation.syncToVision(1000); // Sync initial localisation to vision (blocking, 2s timeout)
 
         async motion.go(POI::thermometer_hot_yellow_approach);
         probeBorder(TableCompass::SOUTH, RobotCompass::CA, 100, 300);
@@ -582,7 +557,7 @@ FLASHMEM void match() {
     RuntimeConfig::setInt("motion.timeout_ms", 20000); // 5 secondes
 
     waitMs(500); // Attente avant de démarrer (stabilisation éventuelle)
-    localisation.syncToVision(1000); // Sync initial localisation to vision (blocking, 2s timeout)
+    //localisation.syncToVision(1000); // Sync initial localisation to vision (blocking, 2s timeout)
 
     bool success = false;
     for(int i = 0; i < 5; i++){

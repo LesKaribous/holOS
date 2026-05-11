@@ -1503,11 +1503,55 @@ except Exception as _ec_err:
     print(f"[EmbedCam] module unavailable: {_ec_err}")
 
 
-def _emit_embed_detect_feeds(result: dict) -> None:
-    """Publish a detection result to the Detection sub-tab. Sends two
-    `vision_feed` SocketIO frames: an annotated preview (image) and a
-    list of check rows (json)."""
+def _emit_embed_detect_status(stage: str, source: str = 'ui',
+                              extra: dict = None) -> None:
+    """Push a lightweight 'request fired / fetching / done / error'
+    pill to the Detection sub-tab status feed. Lets the operator see
+    a firmware-triggered detection LANDING on the host even when the
+    camera fetch is still in flight (~1-2 s) — without this we only
+    update once the JPEG is decoded, which masks 'host received the
+    request but no reply could be sent in time'.
+
+      stage   : 'request' | 'fetched' | 'analyzed' | 'done' | 'error'
+      source  : 'firmware' (T:vis embed_detect) | 'ui' (button)
+      extra   : appended to the status payload (n, offset, reason…)
+    """
+    payload = {'stage': stage, 'source': source,
+               't_ms': int(time.time() * 1000)}
+    if extra:
+        payload.update(extra)
+    try:
+        socketio.emit('vision_feed', {
+            'feed_id':  'detect_status',
+            'pipeline': 'embed_cam',
+            'kind':     'json',
+            'data':     payload,
+            'meta':     {'label': 'Embed cam · status'},
+        })
+    except Exception as e:
+        print(f"[EmbedCam] status emit failed: {e}")
+
+
+def _emit_embed_detect_feeds(result: dict, source: str = 'ui') -> None:
+    """Publish a detection result to the Detection sub-tab. Sends:
+        - a placeholder JPEG (or the annotated preview) on `detect_preview`
+        - a list of check rows on `detect_results`
+        - a status pill on `detect_status`
+    `source` lets the UI tag the row 'from firmware' vs 'from UI'."""
     if _embed_cam is None:
+        _emit_embed_detect_status('error', source,
+                                  {'reason': 'embed_cam-unavailable'})
+        try:
+            socketio.emit('vision_feed', {
+                'feed_id':  'detect_results',
+                'pipeline': 'embed_cam',
+                'kind':     'json',
+                'data':     [{'name': 'error', 'status': 'fail',
+                              'value': 'embed_cam module unavailable'}],
+                'meta':     {'label': 'Embed cam · checks'},
+            })
+        except Exception:
+            pass
         return
     import base64 as _b64
     try:
@@ -1518,7 +1562,7 @@ def _emit_embed_detect_feeds(result: dict) -> None:
                 'pipeline': 'embed_cam',
                 'kind':     'frame',
                 'jpeg':     _b64.b64encode(jpeg).decode(),
-                'meta':     {'label': 'Embed cam · ESP32'},
+                'meta':     {'label': f'Embed cam · ESP32 ({source})'},
             })
         checks = _embed_cam.result_to_checks(result)
         socketio.emit('vision_feed', {
@@ -1526,10 +1570,23 @@ def _emit_embed_detect_feeds(result: dict) -> None:
             'pipeline': 'embed_cam',
             'kind':     'json',
             'data':     checks,
-            'meta':     {'label': 'Embed cam · checks'},
+            'meta':     {'label': f'Embed cam · checks ({source})'},
         })
+        # Final status pill — gives the UI a single source of truth
+        # for "did the last request succeed and what did it return".
+        _emit_embed_detect_status(
+            'done' if not result.get('error') else 'error',
+            source,
+            {
+                'n':         int(result.get('n', 0)),
+                'expected':  int(result.get('expected', 4)),
+                'offset_mm': float(result.get('offset_mm', 0.0)),
+                'team':      str(result.get('team', 'unknown')),
+                'reason':    result.get('error'),
+            })
     except Exception as e:
         print(f"[EmbedCam] feed emit failed: {e}")
+        _emit_embed_detect_status('error', source, {'reason': str(e)})
 
 
 @app.route('/api/embed_cam/detect', methods=['POST'])
@@ -4152,13 +4209,31 @@ def _do_connect(port: str):
                     if isinstance(team_arg, str):
                         team_arg = team_arg.strip().lower()
                     _vlog(f'rx ← T:vis embed_detect team={team_arg}')
+                    # Immediate status emit so the Detection sub-tab
+                    # lights up the moment the request lands, even if
+                    # the camera fetch ends up timing out further down.
+                    _emit_embed_detect_status(
+                        'request', 'firmware', {'team': team_arg})
                     def _do_embed(_team=team_arg):
                         if _embed_cam is None:
+                            _emit_embed_detect_feeds(
+                                {'error': 'embed_cam-unavailable'},
+                                source='firmware')
                             _send('embed_detect_reply(n=0,valid=0,'
                                   'reason=no_module)')
                             return
+                        _emit_embed_detect_status('fetching', 'firmware')
+                        t0 = time.monotonic()
                         result = _embed_cam.detect_once(team_override=_team)
-                        _emit_embed_detect_feeds(result)
+                        dt_ms = int((time.monotonic() - t0) * 1000)
+                        result['_fetch_ms'] = dt_ms
+                        _vlog(
+                            f"embed_detect done in {dt_ms}ms: "
+                            f"n={result.get('n', 0)}/{result.get('expected', 4)} "
+                            f"offset={result.get('offset_mm', 0.0):+.1f}mm "
+                            f"valid={int(bool(result.get('valid', False)))} "
+                            f"reason={result.get('error') or '-'}")
+                        _emit_embed_detect_feeds(result, source='firmware')
                         n      = int(result.get('n', 0))
                         off_mm = float(result.get('offset_mm', 0.0))
                         bias   = int(result.get('bias', 0))
