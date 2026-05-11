@@ -97,7 +97,7 @@ static bool getEmbedCamOffset(float& out_offset_mm,
 
 // Offset commun factored
 static void collectStock(Vec2 target, TableCompass tc, RobotCompass rc) {
-    constexpr float    APPROACH_OFFSET = 350.0f;
+    constexpr float    APPROACH_OFFSET = 250.0f;
     constexpr float    GRAB_OFFSET     = 180.0f;
     constexpr uint32_t GRAB_DELAY_MS   = 1000;
     const float sideOffset = 0;
@@ -198,7 +198,7 @@ static void collectStock(Vec2 target, TableCompass tc, RobotCompass rc) {
 
 // Offset commun factored
 static void storeStock(Vec2 target, TableCompass tc, RobotCompass rc) {
-    constexpr float    APPROACH_OFFSET = 450.0f;
+    constexpr float    APPROACH_OFFSET = 380.0f;
     constexpr float    GRAB_OFFSET     = 50.0f;
     constexpr uint32_t GRAB_DELAY_MS   = 1000;
     constexpr float  sideOffset   = 0;
