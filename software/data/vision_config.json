@@ -3,15 +3,12 @@
   "record_fps":   16,
   "pipeline_fps": 8,
 
-  "source_kind": "jetson",
+  "source_kind": "camera",
   "source_path": "/dev/video0",
-  "host":        "0.0.0.0",
-  "port":        5174,
-  "quality":     80,
   "gst_width":   1920,
   "gst_height":  1080,
   "gst_fps":     30,
-  "auto_start":  true,
+  "loop":        true,
 
   "world_origin_corner": "bottom_right",
   "world_flip_theta":    true,

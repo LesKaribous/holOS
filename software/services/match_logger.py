@@ -1,10 +1,10 @@
 """Match logger — captures UART, holOS events, ESPCam text logs during a
 manually-started REC session for later replay.
 
-The VIDEO part of the recording is owned by the vision_camera supervisor
-process: it has the raw BGR frames before they're JPEG-encoded for MJPEG
-and can dump them straight to AVI without any decode/re-encode chain.
-MatchLogger.start()/stop() just tell the supervisor when to roll.
+The VIDEO part of the recording is owned by the in-process Recorder
+(vision_recorder.py): it samples the shared FrameSource's latest-BGR slot
+at `record_fps` and writes an AVI directly from BGR. MatchLogger.start()/
+stop() just kick the recorder.
 
 Single source of truth for text logs: every line carries `t_ms` (monotonic
 ms since session start) + `wall` (ISO timestamp). The video AVI's frame
@@ -78,15 +78,16 @@ class MatchLogger:
             self._stop_evt.clear()
             self._video_summary = None
             fps = _read_record_fps()
-            # Kick the vision_camera supervisor; it writes video.avi
-            # directly from its BGR feed.
+            # Kick the in-process recorder; it samples the FrameSource's
+            # latest-BGR slot and writes video.avi directly.
             try:
-                from vision_camera.supervisor import start_recording
-                r = start_recording(str(self._session_dir / 'video.avi'), fps)
+                import vision_recorder
+                r = vision_recorder.start_recording(
+                    str(self._session_dir / 'video.avi'), fps)
                 if not r.get('ok'):
-                    print(f'[match-logger] supervisor record start failed: {r}')
+                    print(f'[match-logger] recorder start failed: {r}')
             except Exception as e:
-                print(f'[match-logger] supervisor unreachable: {e}')
+                print(f'[match-logger] vision_recorder unavailable: {e}')
             meta_doc = {
                 'session_id':   self._session_id,
                 'started_wall': now.isoformat(timespec='seconds'),
@@ -116,8 +117,8 @@ class MatchLogger:
             self._queues.clear()
             self._writers.clear()
             try:
-                from vision_camera.supervisor import stop_recording
-                self._video_summary = stop_recording()
+                import vision_recorder
+                self._video_summary = vision_recorder.stop_recording()
             except Exception as e:
                 self._video_summary = {'ok': False, 'error': f'{e}'}
             video_frames = int(self._video_summary.get('frames_written', 0)) \

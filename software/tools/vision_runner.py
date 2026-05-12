@@ -2,15 +2,14 @@
 """
 Vision pipeline DEBUG runner launcher (vision.bat / vision.sh).
 
-Defaults to reading from the vision_camera virtual-camera server
-(http://127.0.0.1:5174/stream.mjpg) — launch vision_camera FIRST in
-another terminal, then this one.
+Standalone debug tool — opens its own source (file or V4L2 camera) and
+runs the full pipeline against it. Independent of holOS; useful for
+offline pipeline tuning.
 
 Modes:
-  - No arguments      → read from the virtual camera (no prompt). Whatever
-                        vision_camera is serving is what the runner sees.
-  - --pick            → force the interactive source picker (browse local
-                        videos/images/USB cams, bypass virtual camera).
+  - No arguments      → interactive source picker (browse local
+                        videos/images/USB cams).
+  - --pick            → same as no arguments.
   - One argument      → treat it as a source path. Kind auto-detected by
                         extension.
                             python tools/vision_runner.py vision/homography/data/video.3.mp4
@@ -124,11 +123,10 @@ def _interactive_pick() -> tuple[str, str]:
     return kind, path
 
 
-# Default source: the vision_camera virtual-camera server. Skipping this
-# means the user must launch vision_camera FIRST (or pass an explicit path
-# / --pick to read a file directly).
-DEFAULT_SOURCE_KIND = 'video'
-DEFAULT_SOURCE_PATH = 'http://127.0.0.1:5174/stream.mjpg'
+# Default source: none — fall back to the interactive picker if the user
+# doesn't pass anything. The old default (http://127.0.0.1:5174/stream.mjpg
+# = vision_camera virtual-camera server) was retired when the camera moved
+# in-process into holOS.
 
 
 def main() -> None:
@@ -152,15 +150,8 @@ def main() -> None:
             positional.append(a)
         i += 1
 
-    if force_pick:
+    if force_pick or len(positional) == 0:
         kind, path = _interactive_pick()
-    elif len(positional) == 0:
-        # No args → silently default to the virtual camera. The runner's
-        # source.video node will retry-connect if vision_camera isn't up
-        # yet, so launch order doesn't have to be strict.
-        kind, path = DEFAULT_SOURCE_KIND, DEFAULT_SOURCE_PATH
-        print(f'  → reading from virtual camera: {path}')
-        print(f'    (pass --pick to choose a local file/camera instead)\n')
     elif len(positional) == 1:
         path = positional[0]
         kind = _kind_from_path(path) if not path.startswith(('http://', 'https://', 'rtsp://')) else 'video'

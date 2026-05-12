@@ -388,36 +388,24 @@ function togglePanel(id) {
   }
 }
 
-// ── Vision-camera subprocess status poll ───────────────────────────────────
-// Calls /api/vision_camera/status every 2 s and reflects the state on the
-// "Cam" pill in the topbar + the click-through details panel. The dot
-// colours mirror the cg-dot CSS used by the WS / Robot pills:
-//   running / external → connected (green)
-//   starting           → connecting (amber)
-//   failed / unreachable / exited → red
-//   disabled / idle    → grey
+// ── FrameSource status poll ────────────────────────────────────────────────
+// Calls /api/vision_camera/status every 2 s and reflects the in-process
+// FrameSource state on the "Cam" pill in the topbar + the click-through
+// details panel. URL kept for back-compat — backend now serves the
+// FrameSource's status() dict (no PID/port, has frame_age_s + has_frame).
 function _camDotClass(state) {
   switch (state) {
-    case 'running':
-    case 'external':     return 'cg-dot connected';
-    case 'starting':     return 'cg-dot connecting';
-    case 'failed':
-    case 'unreachable':
-    case 'exited':       return 'cg-dot disconnected';
-    default:             return 'cg-dot';
+    case 'running':   return 'cg-dot connected';
+    case 'failed':    return 'cg-dot disconnected';
+    case 'idle':      return 'cg-dot';
+    default:          return 'cg-dot';
   }
 }
 function _camSubLabel(s) {
-  switch (s.state) {
-    case 'running':      return 'live';
-    case 'external':     return 'ext';
-    case 'starting':     return '…';
-    case 'failed':       return 'crash';
-    case 'unreachable':  return 'down';
-    case 'exited':       return 'off';
-    case 'disabled':     return 'off';
-    default:             return '—';
-  }
+  if (s.state === 'failed') return 'fail';
+  if (s.state === 'idle')   return 'idle';
+  if (!s.has_frame)         return 'wait';
+  return s.playback === 'pause' ? 'paused' : 'live';
 }
 async function pollVisionCamera() {
   try {
@@ -430,10 +418,9 @@ async function pollVisionCamera() {
     if (sub) sub.textContent = _camSubLabel(s);
     const node = document.getElementById('cg-node-cam');
     if (node) {
-      const url = s.port ? `${window.location.hostname}:${s.port}` : '';
-      const tip = (s.last_error
+      const tip = s.last_error
         ? `${s.state} — ${s.last_error}`
-        : `${s.state} ${url}`);
+        : `${s.state} · ${s.source_kind || '?'} → ${s.source_path || '?'}`;
       node.title = tip;
     }
     // Panel content
@@ -441,21 +428,15 @@ async function pollVisionCamera() {
     setText('cam-state-val',  s.state || '—');
     setText('cam-source-val', s.source_kind && s.source_path
                               ? `${s.source_kind} → ${s.source_path}` : '—');
-    // Build a URL the *browser* can hit. The server's bind addr is often
-    // 0.0.0.0 (so LAN clients can connect) — that's not a valid URL host;
-    // also if the user is browsing remotely, "127.0.0.1" would point to
-    // their own machine, not the Jetson. Use the same hostname we used to
-    // reach holOS itself.
-    const urlEl = document.getElementById('cam-url-val');
-    if (urlEl) {
-      if (s.port) {
-        const camUrl = `http://${window.location.hostname}:${s.port}/`;
-        urlEl.innerHTML = `<a href="${camUrl}" target="_blank" rel="noopener">${camUrl}</a>`;
-      } else {
-        urlEl.textContent = '—';
-      }
-    }
-    setText('cam-pid-val',    s.pid != null ? String(s.pid) : '—');
+    setText('cam-frame-val',
+      s.has_frame
+        ? `${s.frame_shape ? s.frame_shape.slice(0, 2).reverse().join('×') : '?'}` +
+          ` · age ${s.frame_age_s != null ? (s.frame_age_s * 1000).toFixed(0) + ' ms' : '—'}`
+        : '— (no frame yet)');
+    setText('cam-idx-val',
+      s.frame_count > 0 ? `${s.frame_idx} / ${s.frame_count}`
+                        : `${s.frame_idx}`);
+    setText('cam-jetson-val', s.on_jetson ? 'yes (GPU decode)' : 'no');
     const errRow = document.getElementById('cam-error-row');
     const errVal = document.getElementById('cam-error-val');
     if (s.last_error) {

@@ -171,27 +171,26 @@ PARALLAX_CALIB_PATH   = os.path.join(_HERE, 'data', 'parallax_calibration.json')
 VISION_CONFIG_PATH    = os.path.join(_HERE, 'data', 'vision_config.json')
 
 _VISION_CONFIG_DEFAULTS = {
-    # FPS knobs — single source of truth. Three independent rates:
-    #   source_fps   — vision_camera capture / MJPEG serving rate.
-    #   record_fps   — rate at which the source-node drainer feeds frames
-    #                  to the match-logger AVI. Subsamples source_fps.
-    #   pipeline_fps — rate at which the analysis pipeline ticks. Further
-    #                  subsamples (drainer keeps latest, tick samples it).
-    # Typical: 30 → 16 → 4. Recording stays smooth, Jetson stays cool.
+    # FPS knobs — single source of truth. Three independent rates that
+    # all sample the same in-process 1-slot BGR buffer (vision_source.py):
+    #   source_fps   — hardware capture rate. Advisory only — the actual
+    #                  rate is determined by the camera/file. Used as the
+    #                  GStreamer framerate hint for V4L2 sources.
+    #   record_fps   — AVI writer rate (vision_recorder.py).
+    #   pipeline_fps — pipeline tick rate (services.vision_pipelines).
+    # Typical: 30 → 16 → 4. All three are independent samplers of the
+    # same latest-frame slot, so there is no queue / backlog anywhere.
     'source_fps':   30,
     'record_fps':   16,
     'pipeline_fps': 4,
 
-    # vision_camera supervisor — subprocess plumbing.
-    'source_kind': 'video',         # video | camera | image | jetson
+    # In-process FrameSource — owns the camera/file, single reader thread.
+    'source_kind': 'video',         # video | camera | image
     'source_path': 'vision/homography/data/video.2.mp4',
-    'host':        '0.0.0.0',       # 0.0.0.0 = reachable from LAN
-    'port':        5174,
-    'quality':     80,
-    'gst_width':   1280,
-    'gst_height':  720,
-    'gst_fps':     30,
-    'auto_start':  True,
+    'gst_width':   1280,            # camera-only: GStreamer/V4L2 width
+    'gst_height':  720,             # camera-only: GStreamer/V4L2 height
+    'gst_fps':     30,              # camera-only: GStreamer/V4L2 fps
+    'loop':        True,            # video-only: restart at EOF
 
     # World coordinate frame — interpretation of every (x_mm, y_mm) below.
     'world_origin_corner': 'bottom_right',
@@ -1856,19 +1855,22 @@ def api_vision_state():
 
 @app.route('/api/vision_camera/status')
 def api_vision_camera_status():
-    """Snapshot of the auto-spawned virtual-camera subprocess. The topbar
-    polls this to show a green/red dot + crash reason."""
+    """Snapshot of the in-process FrameSource. The topbar polls this to
+    show a green/red dot + last error."""
     try:
-        from vision_camera.supervisor import status as _vc_status
-        return jsonify(_vc_status())
+        import vision_source as _vs
+        src = _vs.get()
+        if src is None:
+            return jsonify({'state': 'idle', 'last_error': 'FrameSource not started'})
+        return jsonify(src.status())
     except Exception as e:
         return jsonify({'state': 'unknown', 'last_error': str(e)})
 
 
 def _restart_active_pipeline() -> 'dict':
-    """Tear down the active vision pipeline and restart its worker so the
-    source node re-opens its cv2 capture (forces reconnect to the freshly-
-    restarted vision_camera MJPEG stream).
+    """Restart the active pipeline's worker. Source nodes are stateless
+    now (they read from the shared FrameSource), so this is mostly a
+    courtesy — useful when a node param change wants a clean tick boundary.
 
     `shutdown()` clears the pipeline's SocketIO feed subscribers — re-wire
     them after `enable()` so the UI keeps receiving vision_feed events."""
@@ -1891,35 +1893,38 @@ def _restart_active_pipeline() -> 'dict':
 
 @app.route('/api/vision_camera/source', methods=['POST'])
 def api_vision_camera_source():
-    """Runtime override: change source kind/path WITHOUT persisting to
-    vision_camera_config.json. Cleared on holOS restart. Also restarts
-    the active vision pipeline so its cv2 capture re-opens on the new
-    MJPEG stream."""
+    """Runtime override: change FrameSource kind/path WITHOUT persisting
+    to vision_config.json. Cleared on holOS restart or via .../source/clear.
+    The pipeline keeps running — source nodes just start seeing frames
+    from the new source on the next tick."""
     data = request.get_json(force=True) or {}
     kind = str(data.get('source_kind', '')).strip()
     path = str(data.get('source_path', '')).strip()
-    if kind not in ('video', 'camera', 'image', 'jetson'):
+    if kind not in ('video', 'camera', 'image'):
         return jsonify({'ok': False, 'error': f'bad source_kind: {kind!r}'}), 400
     if not path:
         return jsonify({'ok': False, 'error': 'source_path required'}), 400
     try:
-        from vision_camera.supervisor import set_runtime_source
-        res = set_runtime_source(kind, path)
-        pipe = _restart_active_pipeline()
-        return jsonify({'ok': True, 'result': res, 'pipeline': pipe})
+        import vision_source as _vs
+        src = _vs.get()
+        if src is None:
+            return jsonify({'ok': False, 'error': 'FrameSource not started'}), 503
+        res = src.set_source(kind, path)
+        return jsonify({'ok': True, 'result': res})
     except Exception as e:
         return jsonify({'ok': False, 'error': str(e)}), 500
 
 
 @app.route('/api/vision_camera/source/clear', methods=['POST'])
 def api_vision_camera_source_clear():
-    """Drop the runtime override and restart on the disk config (subprocess
-    + active pipeline)."""
+    """Drop the runtime override and re-open on the disk config."""
     try:
-        from vision_camera.supervisor import clear_runtime_source
-        res = clear_runtime_source()
-        pipe = _restart_active_pipeline()
-        return jsonify({'ok': True, 'result': res, 'pipeline': pipe})
+        import vision_source as _vs
+        src = _vs.get()
+        if src is None:
+            return jsonify({'ok': False, 'error': 'FrameSource not started'}), 503
+        res = src.clear_override()
+        return jsonify({'ok': True, 'result': res})
     except Exception as e:
         return jsonify({'ok': False, 'error': str(e)}), 500
 
@@ -5129,18 +5134,24 @@ def main():
     # Propagate the initial team to the vision tracker
     if _vision is not None:
         _vision.set_team(sim_state.get('team', 'blue'))
-    # Auto-start the virtual-camera server (port 5174) BEFORE the pipelines
-    # try to open `http://127.0.0.1:5174/stream.mjpg`. VideoSource.open()
-    # doesn't retry — if the camera isn't up at that exact moment, the
-    # pipeline's source node fails permanently and no frames flow.
-    # Config lives in software/data/vision_camera_config.json (set
-    # auto_start=false to disable, or change source_kind/source_path).
-    # Lifecycle events (start, crash, exit) are forwarded into the holOS log.
+    # Start the in-process FrameSource BEFORE pipelines try to read frames.
+    # One reader thread captures from V4L2 / file at hardware rate and
+    # overwrites a 1-slot BGR buffer. Pipeline source nodes + recorder
+    # snapshot that slot at their own rates — no queue, no MJPEG-over-HTTP.
+    # Config lives in software/data/vision_config.json.
     try:
-        from vision_camera.supervisor import start as _start_vision_camera
-        _start_vision_camera(on_exit=brain.log)
+        import vision_source as _vs_module
+        _vs_module.start(_load_vision_config())
+        try:
+            brain.log("[vision-source] in-process FrameSource started")
+        except Exception:
+            pass
     except Exception as _vc_err:
-        print(f"[holOS] vision-camera supervisor failed: {_vc_err}")
+        print(f"[holOS] vision-source start failed: {_vc_err}")
+        try:
+            brain.log(f"[vision-source] start failed: {_vc_err}")
+        except Exception:
+            pass
     # Load saved pipelines + activate the default one (if any). Feed
     # callbacks are wired inside _load_pipelines.
     # NB: vision pose updates are PULL-based now — the strategy queries

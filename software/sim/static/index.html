@@ -73,9 +73,9 @@
       <span class="cg-sub" id="cg-sub-robot">idle</span>
     </button>
 
-    <!-- Node: vision_camera subprocess status. Click → details panel. -->
+    <!-- Node: FrameSource status. Click → details panel. -->
     <button class="cg-node cg-node-btn" id="cg-node-cam"
-            onclick="togglePanel('cam-panel')" title="Vision camera subprocess">
+            onclick="togglePanel('cam-panel')" title="Vision source (in-process)">
       <span class="cg-dot" id="cg-dot-cam"></span>
       <span class="cg-lbl">Cam</span>
       <span class="cg-sub" id="cg-sub-cam">…</span>
@@ -84,9 +84,9 @@
   </div>
 </header>
 
-<!-- ── Vision-camera subprocess panel ─────────────────────────────────────── -->
+<!-- ── FrameSource panel ──────────────────────────────────────────────────── -->
 <div id="cam-panel" class="conn-panel hidden">
-  <div class="conn-panel-title">Vision camera</div>
+  <div class="conn-panel-title">Vision source</div>
   <div class="conn-panel-row">
     <span class="conn-panel-lbl">State</span>
     <span id="cam-state-val">—</span>
@@ -96,19 +96,20 @@
     <span id="cam-source-val">—</span>
   </div>
   <div class="conn-panel-row">
-    <span class="conn-panel-lbl">URL</span>
-    <span id="cam-url-val">—</span>
+    <span class="conn-panel-lbl">Frame</span>
+    <span id="cam-frame-val">—</span>
   </div>
   <div class="conn-panel-row">
-    <span class="conn-panel-lbl">PID</span>
-    <span id="cam-pid-val">—</span>
+    <span class="conn-panel-lbl">Index</span>
+    <span id="cam-idx-val">—</span>
+  </div>
+  <div class="conn-panel-row">
+    <span class="conn-panel-lbl">Jetson</span>
+    <span id="cam-jetson-val">—</span>
   </div>
   <div class="conn-panel-row" id="cam-error-row" style="display:none">
     <span class="conn-panel-lbl">Last error</span>
     <span id="cam-error-val" style="font:11px ui-monospace,monospace; color:var(--err); white-space:pre-wrap; word-break:break-word;">—</span>
-  </div>
-  <div class="conn-panel-row" style="font:11px ui-monospace,monospace; color:var(--text-dim);">
-    <span id="cam-log-hint">log: software/data/vision_camera.log</span>
   </div>
 
   <!-- Runtime source override — in-memory, restored on holOS reload. -->
@@ -118,9 +119,8 @@
       <option value="video">video</option>
       <option value="camera">camera</option>
       <option value="image">image</option>
-      <option value="jetson">jetson</option>
     </select>
-    <input  id="cam-src-path" class="input-sm" placeholder="path / index / url" style="flex:1;min-width:140px">
+    <input  id="cam-src-path" class="input-sm" placeholder="file path / /dev/videoN" style="flex:1;min-width:140px">
   </div>
   <div class="conn-panel-row" style="gap:6px">
     <button class="btn-tiny green" onclick="camSetRuntimeSource()" title="Apply now — NOT saved to disk">Apply</button>

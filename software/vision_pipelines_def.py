@@ -13,14 +13,10 @@ Layout:
   4. build_xxx       — one builder per pipeline
   5. PIPELINES       — registry mapping name → builder
 
-To run a video file as a virtual camera, launch the runner alongside
-holOS — the pipelines below default the source.video URL to the runner's
-MJPEG endpoint:
-
-    cd software
-    vision.bat path\to\clip.mp4
-    # then start holOS in another terminal — its localization pipeline
-    # will read frames from http://127.0.0.1:5174/stream.mjpg
+Source kind + path live in data/vision_config.json and are loaded by the
+in-process FrameSource (software/vision_source.py). The pipeline source
+nodes here are thin wrappers that snapshot FrameSource's latest-BGR
+slot — no per-node cv2 capture, no buffer.
 """
 
 from __future__ import annotations
@@ -92,11 +88,14 @@ ROBOT_Z_MM           = float(_CFG['robot_z_mm'])
 # 3. NODE TUNING
 # ═══════════════════════════════════════════════════════════════════════════
 
-# Source — by default holOS reads frames from the standalone runner's
-# MJPEG stream. Replace with a USB camera index ('0') or a file path to
-# go direct.
-SOURCE_KIND = 'video'
-SOURCE_PATH = 'http://127.0.0.1:5174/stream.mjpg'
+# Source — pipeline source nodes are now thin wrappers around the
+# in-process FrameSource singleton (software/vision_source.py). The
+# actual source kind + path live in vision_config.json and the
+# FrameSource owns the device/file; SOURCE_KIND here only picks which
+# pipeline-node class to instantiate (their params are informational —
+# the source.* nodes ignore them at runtime).
+SOURCE_KIND = str(_CFG.get('source_kind', 'camera'))
+SOURCE_PATH = str(_CFG.get('source_path', ''))
 
 # ArUco detection
 ARUCO_DICT   = '4x4_50'
@@ -110,7 +109,7 @@ ARUCO_REFINE = 'none'   # 'subpix' is ~2× slower on 1080p; with our tag
 # pure 4-anchor findHomography (lens curvature stays in the warp). Default
 # loads software/vision/calibrations/camera_intrinsics.json, which MUST be
 # calibrated at the same resolution your camera is serving (currently
-# 1920×1080 per data/vision_camera_config.json). None = use node default.
+# gst_width × gst_height in data/vision_config.json). None = node default.
 INTRINSICS_PATH = None
 
 # Homography mode — 'auto' (default) tries 4-anchor findHomography and

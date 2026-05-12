@@ -31,41 +31,41 @@ These run separately from holOS; not loaded by `run.py`.
 
 | Path | Role | Default port |
 |---|---|---|
-| [`vision_camera/`](vision_camera/) | Virtual-camera server. Reads a video/image/USB-cam and exposes MJPEG over HTTP so any consumer (vision_runner, holOS) can read it as if it were a real camera. | `:5174` |
-| [`vision_runner/`](vision_runner/) | Debug pipeline runner. Reads from vision_camera, runs the full pipeline (rectify → aruco → localization → parallax) and surfaces every intermediate stage in a web UI. | `:5175` |
-| [`tools/vision_camera.py`](tools/vision_camera.py) | CLI launcher for `vision_camera/`. Has an interactive source picker, scans `vision/data/` and `vision/homography/data/`. Wrapped by `scripts/vision_camera.{bat,sh}`. |
-| [`tools/vision_runner.py`](tools/vision_runner.py) | CLI launcher for `vision_runner/`. Same picker idea. |
+| [`vision_runner/`](vision_runner/) | Standalone debug pipeline runner — reads a video/camera directly, runs the full pipeline (rectify → aruco → localization → parallax) and surfaces every intermediate stage in a web UI. Useful for offline tuning without booting holOS. | `:5175` |
+| [`tools/vision_runner.py`](tools/vision_runner.py) | CLI launcher for `vision_runner/`. Interactive source picker, scans `vision/data/` and `vision/homography/data/`. |
 
 ## Other
 
 | Path | Role |
 |---|---|
-| [`data/`](data/) | Runtime configs and persisted state. `parallax_calibration.json` (auto-tune output), `vision_camera_config.json`, `settings.json`, etc. |
-| [`scripts/`](scripts/) | Bash/cmd wrappers around tools (`vision_camera.{bat,sh}` etc.) + the `holos_cli.py` and hardware-test runner. |
+| [`data/`](data/) | Runtime configs and persisted state. `parallax_calibration.json` (auto-tune output), `vision_config.json`, `settings.json`, etc. |
+| [`scripts/`](scripts/) | Bash/cmd wrappers around tools + the `holos_cli.py` and hardware-test runner. |
 | [`actuator_data/`](actuator_data/) | Servo / actuator calibration data. |
 | [`_archive/`](_archive/) | Retired code kept for reference. Not imported anywhere. |
 | [`_archive/vision_twinvision/`](_archive/vision_twinvision/) | Standalone TwinVision desktop GUI (PyQt) and its install/run scripts. Was the original lab-bench tool; superseded by holOS's pipeline system. |
 | [`_archive/vision_pipelines_json/`](_archive/vision_pipelines_json/) | Old pipeline-graph JSON storage. Pipelines are now defined in `vision_pipelines_def.py` (Python). |
 | [`_archive/vision_editor/`](_archive/vision_editor/) | Old in-browser pipeline editor. Superseded by the Python def file. |
 
-## Three vision tools that are easy to confuse
+## Two vision tools
 
 ```
-   ┌───────────────────────────┐
-   │ vision_camera (port 5174) │   ← emulates a camera, no analysis.
-   │   "give me a frame URL"   │     Run from tools/vision_camera.py
-   └────────────┬──────────────┘
-                │ MJPEG http stream
-                ▼
-   ┌───────────────────────────┐    ┌────────────────────────────────┐
-   │ vision_runner (port 5175) │    │ holOS run.py    (port 5000)    │
-   │  full pipeline + debug    │    │  full pipeline + game logic    │
-   │  views, no game logic.    │    │  Reads vision_pipelines_def.py │
-   │  Run from tools/          │    │  for the same node graph.      │
-   └───────────────────────────┘    └────────────────────────────────┘
+   ┌────────────────────────────────────────────────────────────┐
+   │ holOS run.py (port 5000)                                   │
+   │   vision_source.FrameSource — one reader thread, 1-slot    │
+   │     latest-BGR buffer (GStreamer + nvv4l2decoder on Jetson)│
+   │       │                                                     │
+   │       ├──▶ pipeline source nodes (8 FPS)                   │
+   │       └──▶ vision_recorder.Recorder (16 FPS, writes AVI)    │
+   └────────────────────────────────────────────────────────────┘
+
+   ┌────────────────────────────────────────────────────────────┐
+   │ vision_runner (port 5175) — standalone debug tool          │
+   │   Opens its own source (file / V4L2). Runs the full         │
+   │   pipeline + intermediate-view UI. Independent of holOS.    │
+   └────────────────────────────────────────────────────────────┘
 ```
 
-`vision_camera` is the source. `vision_runner` is for offline debug / pipeline tuning without booting the whole robot stack. `holOS` is the production app that talks to the firmware. The three can run side-by-side on the Jetson.
+`vision_runner` is for offline pipeline tuning without booting the whole robot stack. `holOS` is the production app that talks to the firmware; it owns the camera and the recorder in-process so there is no queue between hardware capture and the pipeline tick.
 
 ## Where parameters live
 
@@ -73,7 +73,7 @@ These run separately from holOS; not loaded by `run.py`.
 |---|---|
 | Camera position, anchors, robot tag z, FPS, team mirroring | [`vision_pipelines_def.py`](vision_pipelines_def.py) — top of file |
 | Auto-tuned parallax (per-team, persisted) | `data/parallax_calibration.json` |
-| Vision-camera supervisor defaults (default source, port) | `data/vision_camera_config.json` |
+| FrameSource defaults (source kind/path, GStreamer geom, FPS knobs) | `data/vision_config.json` |
 | holOS UI prefs | `data/settings.json` |
 | Camera intrinsics (charuco-calibrated, K + dist) | [`vision/calibrations/camera_intrinsics.json`](vision/calibrations/camera_intrinsics.json) |
 | Firmware ↔ Python protocol constants | [`shared/config.py`](shared/config.py) |
