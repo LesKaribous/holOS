@@ -4005,17 +4005,26 @@ def _do_connect(port: str):
                 if line.startswith('homography_capture'):
                     _vlog('rx ← T:vis homography_capture')
                     def _do_lock():
-                        global _vision_heading_offset_rad
+                        global _vision_heading_offset_rad, _vision_calibration_snapshot
                         rect_node, _ = _get_rectify_node()
                         if rect_node is None:
                             _vlog('homography lock failed: no rectify node', 'err')
                             _send('vis_h_locked(ok=0,reason=no_rectify_node)')
                             return
+                        # Idempotent reset of every derived vision state from
+                        # any previous lock — recalage is the single entry,
+                        # whatever was cached before is stale by definition.
+                        _vision_heading_offset_rad = None
+                        _vision_calibration_snapshot = None
+                        loc_inst, _ = _get_localization_node()
+                        if loc_inst is not None:
+                            try:
+                                loc_inst.set_params({'track_ids': list(range(1, 11))})
+                            except Exception as e:
+                                _vlog(f'track_ids reset failed: {e}', 'warn')
                         # Arm the node — its worker thread will fit H on
                         # the next available frame and lock + snapshot
-                        # the BEV. We poll the result until it's ready
-                        # (success) or we time out (anchors not visible
-                        # for the whole window).
+                        # the BEV. request_capture() is idempotent (unlock+arm).
                         rect_node.request_capture()
                         deadline = time.monotonic() + 2.0
                         result = None
