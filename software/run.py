@@ -2240,7 +2240,8 @@ def _wire_pipeline_feeds(p):
     """
     p.clear_feed_subscribers()
     OUTPUT_CLASSES = {'OutputNode', 'OutputPoseListNode',
-                      'OutputObjectsNode', 'OutputJsonNode'}
+                      'OutputObjectsNode', 'OutputJsonNode',
+                      'OutputArucoListNode'}
     for rec_id in p.node_ids():
         node = p.get_node(rec_id)
         if node is None:
