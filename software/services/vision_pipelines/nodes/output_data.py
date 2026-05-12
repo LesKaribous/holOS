@@ -13,6 +13,8 @@ from __future__ import annotations
 
 import time
 
+import numpy as np
+
 from ..pipeline import NodeIO, Port, PortKind
 from .base import Node, register_node
 
@@ -212,18 +214,25 @@ class OutputArucoListNode(_OutputDataBase):
         items = []
         try:
             for tid, corners in zip(det.ids or [], det.corners or []):
-                # corners shape (4, 2) — average for the marker center.
-                # Corners may be a numpy array; cast to float for safety.
-                pts = list(corners) if corners is not None else []
-                if not pts:
+                if corners is None:
                     continue
-                cx = sum(float(p[0]) for p in pts) / len(pts)
-                cy = sum(float(p[1]) for p in pts) / len(pts)
+                # cv2.aruco returns each marker's corners as a (1, 4, 2)
+                # ndarray. Reshape to (4, 2) so column-mean gives the
+                # marker center cleanly. -1 in reshape tolerates both
+                # (1, 4, 2) and (4, 1, 2) shapes.
+                try:
+                    pts = np.asarray(corners).reshape(-1, 2)
+                except Exception:
+                    continue
+                if pts.shape[0] == 0:
+                    continue
+                cx = float(pts[:, 0].mean())
+                cy = float(pts[:, 1].mean())
                 items.append({
                     'tag_id':       int(tid),
                     'px':           round(cx, 1),
                     'py':           round(cy, 1),
-                    'num_corners':  len(pts),
+                    'num_corners':  int(pts.shape[0]),
                 })
         except Exception as e:
             self._last_error = f'extract: {type(e).__name__}: {e}'
