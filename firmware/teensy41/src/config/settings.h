@@ -137,7 +137,7 @@ namespace Settings {
         // ---- Limites cinématiques ----
         const float
         MAX_SPEED     = 3000,             // mm/s  (OTOS max tracking speed : 2.5 m/s)
-        MAX_ACCEL     = 3000,             // mm/s²
+        MAX_ACCEL     = 1800,             // mm/s²
         MAX_ROT_SPEED = 10,               // rad/s
         MAX_ROT_ACCEL = 30.0f;            // rad/s²
 
@@ -184,7 +184,7 @@ namespace Settings {
         STEPS_PER_REVOLUTION = 200,
         STOP_DECCEL          = 3000,
         MAX_ACCEL            = 4000,
-        MAX_SPEED            = 18000,
+        MAX_SPEED            = 28000,
         STEPPER_DELAY        = 100,
         MIN_STEP_DELAY       = 20,
         MIN_STEPS            = 5,

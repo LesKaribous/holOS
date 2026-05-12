@@ -799,6 +799,14 @@ def api_vision_config_json_set():
             except (TypeError, ValueError): pass
     try:
         _save_vision_config(cfg)
+    except PermissionError as e:
+        import pwd
+        try: user = pwd.getpwuid(os.getuid()).pw_name
+        except Exception: user = f'uid={os.getuid()}'
+        return jsonify({'ok': False, 'error':
+            f'save failed (permission denied as user {user!r}): {e}. '
+            f'Fix: chown to match the service user, or chmod 666 the file.'
+        }), 500
     except Exception as e:
         return jsonify({'ok': False, 'error': f'save failed: {e}'}), 500
     try:
