@@ -136,7 +136,7 @@ socket.on('vision_feed', data => {
 const _arucoSeen = new Map();             // tag_id → {px, py, num_corners, lastSeen}
 const _poseSeen  = { own: null, opp: null }; // {tag_id, label, naive_x, naive_y, x, y, theta, lastSeen}
 const _ARU_FRESH_MS  = 250;               // 5 FPS pose feed = 200 ms; +50 ms margin
-const _ARU_FADE_MS   = 1000;              // persistence after a tag is lost
+const _ARU_FADE_MS   = 2000;              // persistence after a tag is lost
 const _ARU_REMOVE_MS = _ARU_FRESH_MS + _ARU_FADE_MS;
 const _LOC_FRESH_MS  = 500;
 
@@ -978,9 +978,8 @@ async function _sendPlaybackAction(pipelineName, nodeId, kind, action) {
 }
 
 // Periodic re-render so the dashboard fade animations advance even
-// when no new feed arrives. 333 ms is slow enough that the eye can
-// read the values between updates; the 1 s fade still has 3 steps
-// (1.0 → 0.66 → 0.33 → 0.0), which is visible stepping but readable.
+// when no new feed arrives. 200 ms tick × 2 s fade = 10 opacity steps
+// — smooth enough that the fade reads as continuous.
 setInterval(() => {
   if (activeView === 'vision-dashboard') {
     _renderFeedGrid();
@@ -988,7 +987,7 @@ setInterval(() => {
   } else if (activeView === 'vision-detection') {
     _renderDetectionTiles();
   }
-}, 333);
+}, 200);
 
 function _renderTrackerStatus(data) {
   // Heading offset
