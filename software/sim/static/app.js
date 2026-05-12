@@ -380,7 +380,7 @@ document.addEventListener('click', e => {
 function togglePanel(id) {
   const el = document.getElementById(id); if (!el) return;
   const wasHidden = el.classList.contains('hidden');
-  ['wifi-panel','serial-panel','server-panel','robot-panel','cam-panel','color-popup']
+  ['wifi-panel','serial-panel','server-panel','robot-panel','cam-panel','net-panel','color-popup']
     .forEach(i => document.getElementById(i)?.classList.add('hidden'));
   if (wasHidden) {
     el.classList.remove('hidden');
@@ -492,6 +492,70 @@ async function camClearRuntimeSource() {
   }
   pollVisionCamera();
 }
+
+// ── Network stats: ping every 10 s, derive RTT + throughput ─────────────────
+// The browser sends a SocketIO 'net_ping' with a high-res timestamp. The
+// server echoes back its cumulative SocketIO byte/event counters. RTT is
+// computed locally; throughput + event rate are deltas between successive
+// pongs. Useful when "the link feels slow" — a colleague hogging the
+// LAN shows up here as a 200 ms+ RTT before anything else breaks.
+let _netLastBytes  = null;
+let _netLastEvents = null;
+let _netLastT      = 0;
+let _netRttMs      = null;
+let _netKbps       = null;
+let _netEps        = null;
+
+function _netDotClass(rtt) {
+  if (rtt == null)  return 'cg-dot';
+  if (rtt < 50)     return 'cg-dot connected';
+  if (rtt < 200)    return 'cg-dot connecting';
+  return 'cg-dot disconnected';
+}
+
+function _renderNetStats() {
+  const dot = document.getElementById('cg-dot-net');
+  const sub = document.getElementById('cg-sub-net');
+  if (dot) dot.className = _netDotClass(_netRttMs);
+  if (sub) {
+    sub.textContent = (_netRttMs == null) ? '—' : `${Math.round(_netRttMs)} ms`;
+  }
+  const setText = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
+  setText('net-rtt-val',  _netRttMs  == null ? '—' : `${_netRttMs.toFixed(1)} ms`);
+  setText('net-thp-val',  _netKbps   == null ? '—' :
+    _netKbps > 1024 ? `${(_netKbps/1024).toFixed(2)} MB/s` : `${_netKbps.toFixed(1)} kB/s`);
+  setText('net-eps-val',  _netEps    == null ? '—' : `${_netEps.toFixed(1)} /s`);
+  setText('net-last-val', _netLastT  ? new Date().toLocaleTimeString() : '—');
+}
+
+socket.on('net_pong', (d) => {
+  if (typeof d?.t_client_ms === 'number') {
+    _netRttMs = performance.now() - d.t_client_ms;
+  }
+  const now = performance.now() / 1000;
+  if (_netLastT > 0 && _netLastBytes != null) {
+    const dt = now - _netLastT;
+    if (dt > 0) {
+      _netKbps = (d.bytes_emitted  - _netLastBytes ) / 1024 / dt;
+      _netEps  = (d.events_emitted - _netLastEvents) / dt;
+    }
+  }
+  _netLastBytes  = d.bytes_emitted;
+  _netLastEvents = d.events_emitted;
+  _netLastT      = now;
+  _renderNetStats();
+});
+
+function netPing() {
+  if (!socket || !socket.connected) {
+    _netRttMs = null;
+    _renderNetStats();
+    return;
+  }
+  socket.emit('net_ping', { t_client_ms: performance.now() });
+}
+setInterval(netPing, 10000);
+window.addEventListener('load', () => setTimeout(netPing, 500));
 
 // ── Init ───────────────────────────────────────────────────────────────────────
 window.addEventListener('load', () => {

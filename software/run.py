@@ -2266,12 +2266,15 @@ def _wire_pipeline_feeds(p):
                     }
                     if isinstance(payload, (bytes, bytearray)):
                         msg['kind'] = 'frame'
-                        msg['jpeg'] = _b64.b64encode(bytes(payload)).decode()
+                        b64 = _b64.b64encode(bytes(payload)).decode()
+                        msg['jpeg'] = b64
+                        _net_stats_add(len(b64) + 64)   # +64 ≈ JSON envelope
                     else:
                         # Non-frame payload (pose_list / json). The output
                         # node sets meta['kind'] so the dashboard knows.
                         msg['kind'] = (meta or {}).get('kind', 'json')
                         msg['data'] = payload
+                        _net_stats_add(256)             # JSON payloads are tiny
                     socketio.emit('vision_feed', msg)
                 except Exception as e:
                     print(f'[VISION] feed emit {fid} failed: {e}')
@@ -3688,6 +3691,40 @@ _socketio_clients_lock = threading.Lock()
 def _socketio_clients_count() -> int:
     with _socketio_clients_lock:
         return _socketio_clients
+
+
+# ── Network-stats widget ───────────────────────────────────────────────────
+# Cumulative bytes + event count for SocketIO traffic. The browser pings
+# 'net_ping' every 10 s; we echo back with the running totals so the
+# client can derive RTT + kB/s + events/s deltas over the interval.
+# Bytes are an approximation — the JPEG payload dominates so we only count
+# that path precisely; small JSON events are tallied with a flat estimate.
+_net_stats_bytes  = 0
+_net_stats_events = 0
+_net_stats_lock   = threading.Lock()
+
+
+def _net_stats_add(n_bytes: int) -> None:
+    global _net_stats_bytes, _net_stats_events
+    with _net_stats_lock:
+        _net_stats_bytes  += int(n_bytes)
+        _net_stats_events += 1
+
+
+@socketio.on('net_ping')
+def on_net_ping(data):
+    """Echo back: t_client_ms (for RTT), t_server_ms, and running totals
+    for the SocketIO emit pipe. The client diffs successive totals to
+    derive throughput + event rate."""
+    with _net_stats_lock:
+        b = _net_stats_bytes
+        e = _net_stats_events
+    emit('net_pong', {
+        't_client_ms':    (data or {}).get('t_client_ms'),
+        't_server_ms':    time.monotonic() * 1000.0,
+        'bytes_emitted':  b,
+        'events_emitted': e,
+    })
 
 
 @socketio.on('connect')

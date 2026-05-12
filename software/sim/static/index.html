@@ -81,8 +81,41 @@
       <span class="cg-sub" id="cg-sub-cam">…</span>
     </button>
 
+    <!-- Node: webapp ↔ jetson link health. RTT measured every 10 s. -->
+    <button class="cg-node cg-node-btn" id="cg-node-net"
+            onclick="togglePanel('net-panel')" title="Network exchange (RTT + throughput)">
+      <span class="cg-dot" id="cg-dot-net"></span>
+      <span class="cg-lbl">Net</span>
+      <span class="cg-sub" id="cg-sub-net">—</span>
+    </button>
+
   </div>
 </header>
+
+<!-- ── Network panel ──────────────────────────────────────────────────────── -->
+<div id="net-panel" class="conn-panel hidden">
+  <div class="conn-panel-title">Network</div>
+  <div class="conn-panel-row">
+    <span class="conn-panel-lbl">RTT</span>
+    <span id="net-rtt-val">—</span>
+  </div>
+  <div class="conn-panel-row">
+    <span class="conn-panel-lbl">Throughput</span>
+    <span id="net-thp-val">—</span>
+  </div>
+  <div class="conn-panel-row">
+    <span class="conn-panel-lbl">Events/s</span>
+    <span id="net-eps-val">—</span>
+  </div>
+  <div class="conn-panel-row">
+    <span class="conn-panel-lbl">Last sample</span>
+    <span id="net-last-val">—</span>
+  </div>
+  <div class="conn-panel-row" style="font:11px ui-monospace,monospace; color:var(--text-dim); line-height:1.4">
+    Pinged every 10 s. Throughput counts bytes emitted server-side over
+    SocketIO (vision_feed dominates).
+  </div>
+</div>
 
 <!-- ── FrameSource panel ──────────────────────────────────────────────────── -->
 <div id="cam-panel" class="conn-panel hidden">
