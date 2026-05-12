@@ -1,7 +1,7 @@
 {
   "source_fps":   30,
   "record_fps":   16,
-  "pipeline_fps": 16,
+  "pipeline_fps": 8,
 
   "source_kind": "jetson",
   "source_path": "/dev/video0",
