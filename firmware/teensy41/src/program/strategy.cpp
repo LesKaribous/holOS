@@ -106,7 +106,7 @@ static void collectStock(Vec2 target, TableCompass tc, RobotCompass rc) {
     Vec2 approach = target - PolarVec(compass_rad, APPROACH_OFFSET).toVec2();
     Vec2 grab     = target - PolarVec(compass_rad, GRAB_OFFSET).toVec2();
 
-    float sidewiseoffset_dir = getCompassOrientation(TableCompass::SOUTH);
+    float sidewiseoffset_dir = compass_rad +90.0f; // Direction latérale perpendiculaire à l'approche
 
     approach += PolarVec(sidewiseoffset_dir * DEG_TO_RAD, sideOffset).toVec2(); // Offset latéral pour compenser la largeur du préhenseur
     grab += PolarVec(sidewiseoffset_dir * DEG_TO_RAD, sideOffset).toVec2(); // Offset latéral pour compenser la largeur du préhenseur
@@ -139,6 +139,15 @@ static void collectStock(Vec2 target, TableCompass tc, RobotCompass rc) {
                     << " OK n=" << n_tags
                     << " offset=" << lateral_mm << "mm" << Console::endl;
                 break;
+            }else{
+                if(n_tags == 1){
+                    // Tentative de correction partielle même avec 1 tag (moins fiable, mais mieux que rien)
+                    lateral_mm = std::clamp(lateral_mm, -100.0f, 100.0f); // Clamp pour éviter les valeurs extrêmes
+                    async motion.goPolar(lateral_dir_rad * DEG_TO_RAD, lateral_mm);
+                }
+                else{
+                    async motion.goPolar(sidewiseoffset_dir * DEG_TO_RAD, 20);
+                }
             }
             Console::warn("Strategy")
                 << "[vision] try " << attempt << "/" << MAX_RETRY

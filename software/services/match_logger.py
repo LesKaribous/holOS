@@ -75,7 +75,7 @@ class MatchLogger:
             now = datetime.now()
             self._session_id = now.strftime('%Y-%m-%d_%H-%M-%S')
             self._session_dir = self._root / self._session_id
-            (self._session_dir / 'video').mkdir(parents=True, exist_ok=True)
+            self._session_dir.mkdir(parents=True, exist_ok=True)
             self._t0_mono = time.monotonic()
             self._t0_wall = time.time()
             self._stop_evt.clear()
@@ -203,23 +203,46 @@ class MatchLogger:
         except Exception: pass
 
     def _video_writer_loop(self) -> None:
-        while True:
-            item = self._video_q.get() if self._video_q else None
-            if item is None:
-                break
-            frame, t_mono = item
-            if self._session_dir is None or self._t0_mono is None:
-                continue
-            t_rel = t_mono - self._t0_mono
-            self._video_idx += 1
-            name = f'{self._video_idx:06d}_t={t_rel:.3f}s.jpg'
+        writer = None
+        csv = None
+        target_fps = 4.0
+        try:
+            while True:
+                item = self._video_q.get() if self._video_q else None
+                if item is None:
+                    break
+                frame, t_mono = item
+                if (self._session_dir is None or self._t0_mono is None
+                        or frame is None):
+                    continue
+                t_rel_ms = (t_mono - self._t0_mono) * 1000.0
+                if writer is None:
+                    h, w = frame.shape[:2]
+                    out_path = str(self._session_dir / 'video.avi')
+                    fourcc = cv2.VideoWriter_fourcc(*'MJPG')
+                    writer = cv2.VideoWriter(out_path, fourcc, target_fps,
+                                             (w, h))
+                    if not writer.isOpened():
+                        writer = None
+                        continue
+                    csv = open(self._session_dir / 'video.csv', 'a',
+                               buffering=4096)
+                    csv.write('frame_idx,t_mono_ms,t_iso\n')
+                self._video_idx += 1
+                try:
+                    writer.write(frame)
+                    if csv is not None:
+                        wall = datetime.now().isoformat(timespec='milliseconds')
+                        csv.write(f'{self._video_idx},{t_rel_ms:.1f},{wall}\n')
+                except Exception:
+                    pass
+        finally:
             try:
-                ok, buf = cv2.imencode('.jpg', frame,
-                                       [int(cv2.IMWRITE_JPEG_QUALITY), 80])
-                if ok:
-                    (self._session_dir / 'video' / name).write_bytes(buf.tobytes())
-            except Exception:
-                pass
+                if writer is not None: writer.release()
+            except Exception: pass
+            try:
+                if csv is not None: csv.close()
+            except Exception: pass
 
 
 # Singleton — imported and reused everywhere.
