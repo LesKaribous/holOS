@@ -111,85 +111,152 @@ socket.on('vision_feed', data => {
     _vobjLatestT = Date.now();
     if (activeView === 'vision-objects') _renderObjectsTableFromState();
   }
+  // Dashboard state must accrue even when the view isn't active so the
+  // ArUco persistence and the last-known pose readings survive tab switches.
+  if (data.feed_id === 'aruco_list' && Array.isArray(data.data)) {
+    _ingestArucoList(data.data);
+  } else if (data.feed_id === 'poses_corrected' && Array.isArray(data.data)) {
+    _ingestPosesCorrected(data.data);
+  }
   if (activeView === 'vision-dashboard') {
     if (!_visionPipelinesCache) refreshPipelineBar();
     _renderFeedGrid();        // safe no-op if old DOM is gone
-    _renderDebugTiles();      // simplified debug view
+    _renderDebugTiles();      // persistent ArUco list + Own/Opp cards
   } else if (activeView === 'vision-detection') {
     _renderDetectionTiles();
   }
 });
 
-// ── Minimalist text-only debug view (3 tables, no video) ────────────────
-// Routes specific feed_ids into 3 reserved DOM slots. Anything else is
-// ignored — for video previews + heavier debug, launch vision.bat.
-const _DEBUG_TILE_IDS = {
-  aruco_list:      'vd-tile-arulist',
-  poses_naive:     'vd-tile-pnaive',
-  poses_corrected: 'vd-tile-pcorr',
-};
-const _DEBUG_META_IDS = {
-  aruco_list:      'vd-meta-arulist',
-  poses_naive:     'vd-meta-pnaive',
-  poses_corrected: 'vd-meta-pcorr',
-};
+// ── Vision dashboard state (persistent ArUco list + Own/Opp pose cards) ─
+// ArUco markers fade in place when no longer detected, and drop from the
+// list after _ARU_REMOVE_MS. Pose cards keep their last known reading and
+// gray-out when the corresponding tag is no longer seen.
+const _arucoSeen = new Map();             // tag_id → {px, py, num_corners, lastSeen}
+const _poseSeen  = { own: null, opp: null }; // {tag_id, label, naive_x, naive_y, x, y, theta, lastSeen}
+const _ARU_FRESH_MS  = 350;
+const _ARU_REMOVE_MS = 15000;
+const _LOC_FRESH_MS  = 500;
 
-function _renderDebugTiles() {
-  const STALE_MS = 8000;
+function _ingestArucoList(items) {
+  if (!Array.isArray(items)) return;
   const now = Date.now();
-  for (const [fid, slot] of Object.entries(_DEBUG_TILE_IDS)) {
-    const body = document.getElementById(slot);
-    if (!body) continue;          // not on this view
-    const meta = document.getElementById(_DEBUG_META_IDS[fid]);
-    const feed = _visionFeeds[fid];
-    const fresh = feed && (now - feed.t) < STALE_MS;
-    if (!fresh) {
-      // Show "waiting for…" placeholder if it's not already there.
-      if (!body.querySelector('.vd-empty')) {
-        body.innerHTML =
-          `<div class="vd-empty">waiting for feed_id <code>${fid}</code></div>`;
-      }
-      if (meta) meta.textContent = '';
-      continue;
-    }
-    if (meta) meta.textContent = `${Math.floor((now - feed.t))} ms ago`;
-
-    // Text-only view: ignore frame payloads, only render data feeds.
-    if (Array.isArray(feed.payload)) {
-      // aruco_list has tag_id+px+py columns; pose lists have x_mm+y_mm+...
-      if (fid === 'aruco_list') {
-        _renderArucoList(body, feed.payload);
-      } else {
-        _renderPoseTable(body, feed.payload);
-      }
-    } else if (feed.payload != null) {
-      let pre = body.querySelector('pre');
-      if (!pre) {
-        body.innerHTML = '';
-        pre = document.createElement('pre');
-        pre.style.cssText = 'margin:0;padding:8px;font:11px/1.4 ui-monospace,monospace;color:var(--text);overflow:auto;height:100%;';
-        body.appendChild(pre);
-      }
-      pre.textContent = JSON.stringify(feed.payload, null, 2);
-    }
+  for (const m of items) {
+    if (m == null || m.tag_id == null) continue;
+    _arucoSeen.set(m.tag_id, {
+      px: m.px, py: m.py,
+      num_corners: m.num_corners,
+      lastSeen: now,
+    });
   }
 }
 
-function _renderArucoList(container, items) {
-  if (!Array.isArray(items) || items.length === 0) {
-    container.innerHTML = `<div class="vd-empty">no markers detected this frame</div>`;
+function _ingestPosesCorrected(items) {
+  if (!Array.isArray(items)) return;
+  const now = Date.now();
+  for (const p of items) {
+    if (!p) continue;
+    const cls = p.classification;
+    const slot = cls === 'own' ? 'own' : cls === 'opponent' ? 'opp' : null;
+    if (!slot) continue;
+    _poseSeen[slot] = {
+      tag_id:  p.tag_id, label: p.label,
+      naive_x: p.naive_x_mm, naive_y: p.naive_y_mm,
+      x:       p.x_mm,       y:       p.y_mm,
+      theta:   p.theta_rad,
+      lastSeen: now,
+    };
+  }
+}
+
+function _fmtAge(ms) {
+  if (ms < 1000) return `${Math.round(ms)} ms`;
+  if (ms < 60000) return `${(ms/1000).toFixed(1)} s`;
+  return `${Math.floor(ms/60000)} m ${Math.floor((ms % 60000)/1000)} s`;
+}
+
+function _renderDebugTiles() {
+  const now = Date.now();
+  _renderArucoListPersistent(now);
+  _renderLocCard('own', _poseSeen.own, now);
+  _renderLocCard('opp', _poseSeen.opp, now);
+}
+
+function _renderArucoListPersistent(now) {
+  const body = document.getElementById('vd-tile-arulist');
+  if (!body) return;
+  const meta = document.getElementById('vd-meta-arulist');
+
+  const rows = [];
+  let freshCount = 0;
+  for (const [id, m] of _arucoSeen) {
+    const age = now - m.lastSeen;
+    if (age > _ARU_REMOVE_MS) { _arucoSeen.delete(id); continue; }
+    const fresh = age < _ARU_FRESH_MS;
+    if (fresh) freshCount++;
+    const fadeRange = _ARU_REMOVE_MS - _ARU_FRESH_MS;
+    const opacity = fresh ? 1
+      : Math.max(0.18, 1 - (age - _ARU_FRESH_MS) / fadeRange);
+    rows.push({ id, m, fresh, opacity, age });
+  }
+  rows.sort((a, b) => a.id - b.id);
+
+  if (meta) meta.textContent = `${freshCount}/${rows.length} fresh`;
+
+  if (rows.length === 0) {
+    if (!body.querySelector('.vd-empty')) {
+      body.innerHTML = `<div class="vd-empty">no markers seen yet</div>`;
+    }
     return;
   }
-  const cols = ['tag_id', 'px', 'py', 'num_corners'];
-  const head = cols.map(c => `<th>${c}</th>`).join('');
-  const body = items.map(p => {
-    const tds = cols.map(c => `<td>${p[c] ?? ''}</td>`).join('');
-    return `<tr>${tds}</tr>`;
-  }).join('');
-  container.innerHTML = `<table class="vd-pose-table">
-    <thead><tr>${head}</tr></thead>
-    <tbody>${body}</tbody>
+  body.innerHTML = `<table class="vd-pose-table">
+    <thead><tr><th>tag</th><th>px</th><th>py</th><th>corners</th><th>age</th></tr></thead>
+    <tbody>${rows.map(r => `
+      <tr class="vd-aru-row" data-fresh="${r.fresh ? 1 : 0}" style="opacity:${r.opacity.toFixed(2)}">
+        <td>${r.id}</td>
+        <td>${r.m.px != null ? Math.round(r.m.px) : '—'}</td>
+        <td>${r.m.py != null ? Math.round(r.m.py) : '—'}</td>
+        <td>${r.m.num_corners ?? '—'}</td>
+        <td>${_fmtAge(r.age)}</td>
+      </tr>`).join('')}
+    </tbody>
   </table>`;
+}
+
+function _renderLocCard(slot, p, now) {
+  const card = document.getElementById(`vd-loc-${slot}`);
+  if (!card) return;
+  const tagEl = document.getElementById(`vd-loc-${slot}-tag`);
+  const ageEl = document.getElementById(`vd-loc-${slot}-age`);
+  const naEl  = document.getElementById(`vd-loc-${slot}-naive`);
+  const coEl  = document.getElementById(`vd-loc-${slot}-corr`);
+  const thEl  = document.getElementById(`vd-loc-${slot}-theta`);
+
+  if (!p) {
+    card.classList.remove('vd-loc-fresh', 'vd-loc-stale');
+    card.classList.add('vd-loc-never');
+    card.style.opacity = '';
+    if (tagEl) tagEl.textContent = '—';
+    if (ageEl) ageEl.textContent = 'never';
+    if (naEl)  naEl.textContent  = '—, —';
+    if (coEl)  coEl.textContent  = '—, —';
+    if (thEl)  thEl.textContent  = '—';
+    return;
+  }
+  card.classList.remove('vd-loc-never');
+  const age = now - p.lastSeen;
+  const fresh = age < _LOC_FRESH_MS;
+  card.classList.toggle('vd-loc-fresh', fresh);
+  card.classList.toggle('vd-loc-stale', !fresh);
+  const opacity = fresh ? 1 : Math.max(0.35, 1 - (age - _LOC_FRESH_MS) / 10000);
+  card.style.opacity = opacity.toFixed(2);
+
+  if (tagEl) tagEl.textContent = p.label ? `#${p.tag_id} · ${p.label}` : `#${p.tag_id}`;
+  if (ageEl) ageEl.textContent = _fmtAge(age);
+  const fmt = v => (v == null || isNaN(v)) ? '—' : (+v).toFixed(0);
+  if (naEl)  naEl.textContent  = `${fmt(p.naive_x)}, ${fmt(p.naive_y)}`;
+  if (coEl)  coEl.textContent  = `${fmt(p.x)}, ${fmt(p.y)}`;
+  if (thEl)  thEl.textContent  = (p.theta == null || isNaN(p.theta))
+    ? '—' : (p.theta * 180 / Math.PI).toFixed(1);
 }
 
 // ── Per-view pipeline binding ───────────────────────────────────────────
@@ -529,34 +596,6 @@ function _vdRefreshPlaybackState(registry, pipelineName) {
   if (sp && liveSpeed != null && +sp.value !== +liveSpeed) sp.value = String(liveSpeed);
 }
 
-function _renderPoseTable(container, poses) {
-  if (!Array.isArray(poses) || poses.length === 0) {
-    container.innerHTML = `<div class="vd-empty">no poses this frame</div>`;
-    return;
-  }
-  // Show naive + corrected coords side-by-side when both are present
-  // (the localization node always emits both). Helps eyeball the
-  // parallax delta directly in the table.
-  const has_naive = poses.some(p => p.naive_x_mm != null);
-  const cols = has_naive
-    ? ['tag_id', 'classification', 'x_mm', 'y_mm', 'naive_x_mm', 'naive_y_mm', 'theta_rad']
-    : ['tag_id', 'classification', 'x_mm', 'y_mm', 'theta_rad'];
-  const head = cols.map(c => `<th>${c}</th>`).join('');
-  const body = poses.map(p => {
-    const cls = String(p.classification || 'object');
-    const tds = cols.map(c => {
-      let v = p[c];
-      if (typeof v === 'number') v = v.toFixed(c === 'theta_rad' ? 3 : 1);
-      return `<td>${v == null ? '' : v}</td>`;
-    }).join('');
-    return `<tr class="vd-pose-cls-${cls}">${tds}</tr>`;
-  }).join('');
-  container.innerHTML = `<table class="vd-pose-table">
-    <thead><tr>${head}</tr></thead>
-    <tbody>${body}</tbody>
-  </table>`;
-}
-
 function _renderFeedGrid() {
   const grid = document.getElementById('vision-feeds-grid');
   const emptyEl = document.getElementById('vision-feeds-empty');
@@ -876,7 +915,9 @@ async function _sendPlaybackAction(pipelineName, nodeId, kind, action) {
   refreshPipelineBar();
 }
 
-// Re-render once per second to clear stale tiles even when no new frames arrive.
+// Periodic re-render so the dashboard fade animations advance even when
+// no new feed arrives. 400ms is fast enough that the ArUco fade looks
+// continuous without being expensive.
 setInterval(() => {
   if (activeView === 'vision-dashboard') {
     _renderFeedGrid();
@@ -884,7 +925,7 @@ setInterval(() => {
   } else if (activeView === 'vision-detection') {
     _renderDetectionTiles();
   }
-}, 1000);
+}, 400);
 
 function _renderTrackerStatus(data) {
   // Heading offset

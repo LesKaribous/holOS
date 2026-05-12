@@ -27,7 +27,6 @@
     <button class="btn green" id="btn-start" onclick="unifiedStart()" title="Start match (HW: firmware start, Sim: run strategy)">▶ Start</button>
     <button class="btn red"   id="btn-stop"  onclick="unifiedStop()"  title="Stop/Pause match">⏸ Stop</button>
     <button class="btn"       id="btn-recalage" onclick="runRecalage()" title="Classical recalage: homography lock + prise d'origine. Hardware only.">⌖ Recalage</button>
-    <button class="btn"       id="btn-test-sync-vision" onclick="runTestSyncVision()" title="Diag: drive to (1000,1000), sync OTOS to vision, drive to (1000,1000) again. Second move should land on target even with a detuned OTOS scale. Requires recalage first.">🎯 Test sync</button>
     <button class="btn"       id="btn-rec" onclick="toggleRec()" title="Record session — captures UART, video frames, holOS events, ESPCam exchanges into logs/SESSION/"><span id="rec-dot" style="display:inline-block;width:8px;height:8px;border-radius:50%;background:#666;margin-right:5px;vertical-align:middle;"></span><span id="rec-label">REC</span></button>
     <button class="btn"       onclick="resetSim()"    title="Reset simulation">↺</button>
     <button class="btn"       onclick="reloadStrategy()" title="Hot-reload strategy">⟳</button>
@@ -247,7 +246,7 @@
       </div>
     </div>
 
-    <!-- ── Debug group: Monitor · Terminal · Network ─────────────────────── -->
+    <!-- ── Debug group: Terminal · UART ─────────────────────────────────── -->
     <div class="nav-group" id="nav-group-debug">
       <button class="nav-group-hdr" onclick="toggleNavGroup('debug')">
         <span class="nav-icon">
@@ -259,18 +258,6 @@
         <span class="nav-chevron"></span>
       </button>
       <div class="nav-group-items">
-        <button class="nav-btn nav-child" data-view="monitor" onclick="switchView('monitor',this)">
-          <span class="nav-icon">
-            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
-              <rect x="3.5" y="3.5" width="9" height="9" rx="1.5"/>
-              <line x1="6" y1="1" x2="6" y2="3.5"/><line x1="10" y1="1" x2="10" y2="3.5"/>
-              <line x1="6" y1="12.5" x2="6" y2="15"/><line x1="10" y1="12.5" x2="10" y2="15"/>
-              <line x1="1" y1="6" x2="3.5" y2="6"/><line x1="1" y1="10" x2="3.5" y2="10"/>
-              <line x1="12.5" y1="6" x2="15" y2="6"/><line x1="12.5" y1="10" x2="15" y2="10"/>
-            </svg>
-          </span>
-          <span class="nav-lbl">Monitor</span>
-        </button>
         <button class="nav-btn nav-child" data-view="terminal" onclick="switchView('terminal',this)">
           <span class="nav-icon">
             <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
@@ -280,6 +267,17 @@
             </svg>
           </span>
           <span class="nav-lbl">Terminal</span>
+        </button>
+        <button class="nav-btn nav-child" data-view="uart" onclick="switchView('uart',this)">
+          <span class="nav-icon">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M2 4h12M2 8h12M2 12h12"/>
+              <circle cx="4" cy="4"  r="0.9" fill="currentColor"/>
+              <circle cx="8" cy="8"  r="0.9" fill="currentColor"/>
+              <circle cx="12" cy="12" r="0.9" fill="currentColor"/>
+            </svg>
+          </span>
+          <span class="nav-lbl">UART</span>
         </button>
       </div>
     </div>
@@ -980,111 +978,6 @@
     </div><!-- /view-macros -->
 
 
-    <!-- ── MONITOR VIEW ────────────────────────────────────────────────────── -->
-    <div id="view-monitor" class="view">
-      <div id="monitor-scroll">
-      <div id="monitor-grid">
-
-        <div class="mon-card large">
-          <div class="mon-card-title">Position &amp; Heading</div>
-          <div class="mon-big">
-            <span class="mon-val" id="mon-x">—</span>
-            <span class="mon-unit">mm X</span>
-            <span class="mon-val" id="mon-y">—</span>
-            <span class="mon-unit">mm Y</span>
-          </div>
-          <div class="mon-row">
-            <span class="mon-lbl">θ</span><span class="mon-val" id="mon-theta">—</span>
-            <span class="mon-lbl">Speed</span><span class="mon-val" id="mon-speed">—</span><span class="mon-unit">mm/s</span>
-          </div>
-        </div>
-
-        <div class="mon-card">
-          <div class="mon-card-title">Motion State</div>
-          <div class="mon-big"><span class="mon-val" id="mon-mstate">IDLE</span></div>
-          <div id="mon-chrono-wrap" style="height:6px;background:#e2e8ef;border-radius:3px;margin-top:8px">
-            <div id="mon-chrono-bar" style="height:100%;border-radius:3px;background:#2980b9;transition:width .5s,background .5s"></div>
-          </div>
-          <div class="mon-row" style="margin-top:6px">
-            <span class="mon-lbl">Time left</span><span class="mon-val" id="mon-time">—</span>
-            <span class="mon-lbl">Score</span><span class="mon-val" id="mon-score">—</span>
-          </div>
-        </div>
-
-        <div class="mon-card">
-          <div class="mon-card-title">Safety &amp; Collisions</div>
-          <div class="mon-big"><span class="mon-val" id="mon-safety">OK</span></div>
-          <div class="mon-row">
-            <span class="mon-lbl">Obstacle detected</span>
-            <span class="mon-val" id="mon-obs-detected">No</span>
-          </div>
-          <div class="mon-row">
-            <span class="mon-lbl">Collision</span>
-            <span class="mon-val" id="mon-collision">No</span>
-          </div>
-        </div>
-
-        <div class="mon-card">
-          <div class="mon-card-title">Velocity</div>
-          <div class="mon-row"><span class="mon-lbl">Vx</span><span class="mon-val" id="mon-vx">—</span><span class="mon-unit">mm/s</span></div>
-          <div class="mon-row"><span class="mon-lbl">Vy</span><span class="mon-val" id="mon-vy">—</span><span class="mon-unit">mm/s</span></div>
-          <div class="mon-row"><span class="mon-lbl">ω</span><span class="mon-val" id="mon-omega">—</span><span class="mon-unit">°/s</span></div>
-        </div>
-
-        <div class="mon-card">
-          <div class="mon-card-title">Status LEDs</div>
-          <div style="display:flex;gap:16px;align-items:center;padding:4px 0">
-            <div style="display:flex;align-items:center;gap:6px" title="Heartbeat (green=OK, red=failed, grey=sim)">
-              <span id="led-heartbeat" style="display:inline-block;width:12px;height:12px;border-radius:50%;background:#666;border:1px solid rgba(0,0,0,.2);transition:background .3s"></span>
-              <span class="mon-lbl" style="margin:0">HB</span>
-            </div>
-            <div style="display:flex;align-items:center;gap:6px" title="Safety (green=clear, red=obstacle)">
-              <span id="led-safety" style="display:inline-block;width:12px;height:12px;border-radius:50%;background:#666;border:1px solid rgba(0,0,0,.2);transition:background .3s"></span>
-              <span class="mon-lbl" style="margin:0">Safety</span>
-            </div>
-            <div style="display:flex;align-items:center;gap:6px" title="Motion (green=moving, yellow=paused, grey=idle)">
-              <span id="led-motion" style="display:inline-block;width:12px;height:12px;border-radius:50%;background:#666;border:1px solid rgba(0,0,0,.2);transition:background .3s"></span>
-              <span class="mon-lbl" style="margin:0">Motion</span>
-            </div>
-            <div style="display:flex;align-items:center;gap:6px" title="OTOS tracking (green=OK, red=lost)">
-              <span id="led-otos" style="display:inline-block;width:12px;height:12px;border-radius:50%;background:#666;border:1px solid rgba(0,0,0,.2);transition:background .3s"></span>
-              <span class="mon-lbl" style="margin:0">OTOS</span>
-            </div>
-          </div>
-        </div>
-
-        <div class="mon-card">
-          <div class="mon-card-title">Event Log</div>
-          <div id="mon-event-log" style="font-family:monospace;font-size:11px;max-height:160px;overflow-y:auto;background:#1a1d23;color:#c8ccd4;padding:6px 8px;border-radius:4px;line-height:1.5">
-            <div style="color:#666">Waiting for events...</div>
-          </div>
-        </div>
-
-        <div class="mon-card placeholder-card">
-          <div class="mon-card-title">Camera 1</div>
-          <div class="placeholder-body">Video feed — not connected</div>
-        </div>
-
-        <div class="mon-card placeholder-card">
-          <div class="mon-card-title">📷 Camera 2</div>
-          <div class="placeholder-body">Video feed — not connected</div>
-        </div>
-
-        <div class="mon-card placeholder-card">
-          <div class="mon-card-title">⚡ Lidar</div>
-          <div class="placeholder-body">Point cloud — not connected</div>
-        </div>
-
-        <div class="mon-card">
-          <div class="mon-card-title">Game Objects</div>
-          <div id="mon-game-objs" style="display:flex;flex-wrap:wrap;gap:4px;padding-top:6px"></div>
-        </div>
-
-      </div>
-      </div><!-- /monitor-scroll -->
-    </div><!-- /view-monitor -->
-
-
     <!-- ── TERMINAL VIEW ───────────────────────────────────────────────────── -->
     <div id="view-terminal" class="view terminal-view">
 
@@ -1102,12 +995,6 @@
         </span>
       </div>
 
-      <div id="term-tab-bar">
-        <button class="term-tab active" id="term-tab-cmd"  onclick="switchTermTab('cmd')">Commands</button>
-        <button class="term-tab"        id="term-tab-uart" onclick="switchTermTab('uart')">UART Raw</button>
-      </div>
-
-      <!-- ── Commands pane (existing) ──────────────────────────────── -->
       <div id="term-pane-cmd" class="term-pane">
         <div id="terminal-output"></div>
         <div class="terminal-input-row">
@@ -1121,8 +1008,20 @@
         <div class="terminal-hint">↵ execute &nbsp;|&nbsp; ⚡ fire &nbsp;|&nbsp; ↑↓ history</div>
       </div>
 
-      <!-- ── UART Raw pane (new) ────────────────────────────────────── -->
-      <div id="term-pane-uart" class="term-pane" style="display:none">
+    </div><!-- /view-terminal -->
+
+
+    <!-- ── UART VIEW (raw serial monitor) ──────────────────────────────────── -->
+    <div id="view-uart" class="view terminal-view">
+
+      <div id="uart-conn-bar" style="display:flex;align-items:center;gap:6px;padding:6px 10px;border-bottom:1px solid var(--border)">
+        <span class="mode-label">Raw UART — uses the same serial connection as Terminal</span>
+        <span style="margin-left:auto">
+          <button class="btn-tiny" onclick="clearUart()">✕ Clear</button>
+        </span>
+      </div>
+
+      <div id="term-pane-uart" class="term-pane">
         <div id="uart-output"></div>
         <div class="terminal-input-row">
           <span class="term-prompt" style="color:#58a6ff;font-family:monospace">TX</span>
@@ -1130,12 +1029,11 @@
                  placeholder="raw text — sent as-is + newline" autocomplete="off"
                  onkeydown="onUartKey(event)">
           <button class="btn-tiny" onclick="uartRawSend()" title="Send raw text">Send</button>
-          <button class="btn-tiny" onclick="clearUart()" title="Clear output">✕ Clear</button>
         </div>
         <div class="terminal-hint">Full duplex UART — framed exchanges + raw send</div>
       </div>
 
-    </div><!-- /view-terminal -->
+    </div><!-- /view-uart -->
 
 
     <!-- ── TESTS VIEW ─────────────────────────────────────────────────────── -->
@@ -1625,37 +1523,58 @@
         <span class="vd-pill ghost" id="vp-bar-status">—</span>
       </div>
 
-      <!-- Text-only view. No video previews here — for those launch
-           vision.bat which opens the debug page.
-           Expected feed_ids:
-             aruco_list       → [{tag_id, px, py, num_corners}, ...]
-             poses_naive      → pose_list with naive_x_mm/y_mm
-             poses_corrected  → pose_list after parallax (x_mm/y_mm) -->
+      <!-- Two-column dashboard:
+             • left  — persistent ArUco list (all detected markers, faded when lost)
+             • right — Own / Opponent localization cards (naive + parallax-corrected) -->
       <div class="vd-debug-grid">
         <section class="vd-tile" data-feed="aruco_list">
-          <header class="vd-tile-head">ArUco — raw detections
+          <header class="vd-tile-head">ArUco — detected markers
             <span class="vd-tile-meta" id="vd-meta-arulist"></span>
           </header>
           <div class="vd-tile-body" id="vd-tile-arulist">
-            <div class="vd-empty">waiting for feed_id <code>aruco_list</code></div>
-          </div>
-        </section>
-
-        <section class="vd-tile" data-feed="poses_naive">
-          <header class="vd-tile-head">Poses — pre-parallax (naive)
-            <span class="vd-tile-meta" id="vd-meta-pnaive"></span>
-          </header>
-          <div class="vd-tile-body" id="vd-tile-pnaive">
-            <div class="vd-empty">waiting for feed_id <code>poses_naive</code></div>
+            <div class="vd-empty">no markers seen yet</div>
           </div>
         </section>
 
         <section class="vd-tile" data-feed="poses_corrected">
-          <header class="vd-tile-head">Poses — post-parallax (corrected)
-            <span class="vd-tile-meta" id="vd-meta-pcorr"></span>
+          <header class="vd-tile-head">Localization (post-parallax)
+            <span class="vd-tile-meta" id="vd-meta-loc"></span>
           </header>
-          <div class="vd-tile-body" id="vd-tile-pcorr">
-            <div class="vd-empty">waiting for feed_id <code>poses_corrected</code></div>
+          <div class="vd-tile-body vd-loc-body">
+            <div class="vd-loc-card vd-loc-never" id="vd-loc-own" data-cls="own">
+              <div class="vd-loc-head">
+                <span class="vd-loc-dot"></span>
+                <span class="vd-loc-name">Own</span>
+                <span class="vd-loc-tag" id="vd-loc-own-tag">—</span>
+                <span class="vd-loc-age" id="vd-loc-own-age">never</span>
+              </div>
+              <div class="vd-loc-row"><span class="vd-loc-lbl">Naive</span>
+                <span class="vd-loc-val" id="vd-loc-own-naive">—, —</span>
+                <span class="vd-loc-unit">mm</span></div>
+              <div class="vd-loc-row"><span class="vd-loc-lbl">Parallax</span>
+                <span class="vd-loc-val" id="vd-loc-own-corr">—, —</span>
+                <span class="vd-loc-unit">mm</span></div>
+              <div class="vd-loc-row"><span class="vd-loc-lbl">θ</span>
+                <span class="vd-loc-val" id="vd-loc-own-theta">—</span>
+                <span class="vd-loc-unit">°</span></div>
+            </div>
+            <div class="vd-loc-card vd-loc-never" id="vd-loc-opp" data-cls="opponent">
+              <div class="vd-loc-head">
+                <span class="vd-loc-dot"></span>
+                <span class="vd-loc-name">Opponent</span>
+                <span class="vd-loc-tag" id="vd-loc-opp-tag">—</span>
+                <span class="vd-loc-age" id="vd-loc-opp-age">never</span>
+              </div>
+              <div class="vd-loc-row"><span class="vd-loc-lbl">Naive</span>
+                <span class="vd-loc-val" id="vd-loc-opp-naive">—, —</span>
+                <span class="vd-loc-unit">mm</span></div>
+              <div class="vd-loc-row"><span class="vd-loc-lbl">Parallax</span>
+                <span class="vd-loc-val" id="vd-loc-opp-corr">—, —</span>
+                <span class="vd-loc-unit">mm</span></div>
+              <div class="vd-loc-row"><span class="vd-loc-lbl">θ</span>
+                <span class="vd-loc-val" id="vd-loc-opp-theta">—</span>
+                <span class="vd-loc-unit">°</span></div>
+            </div>
           </div>
         </section>
       </div>

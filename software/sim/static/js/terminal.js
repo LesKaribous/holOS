@@ -6,7 +6,6 @@
 
 // ── Terminal ───────────────────────────────────────────────────────────────
 let _termHistory = [], _termHistIdx = -1;
-let _termTab = 'cmd';
 
 function appendTermLine(cmd, ok, res, fire, mode) {
   const out = document.getElementById('terminal-output'); if (!out) return;
@@ -39,19 +38,7 @@ function clearTerminal() { const o = document.getElementById('terminal-output');
 
 socket.on('terminal_rx', d => appendTermLine(d.cmd, d.ok, d.res, d._fire || false, d.mode));
 
-// ── UART Raw tab ───────────────────────────────────────────────────────────
-function switchTermTab(tab) {
-  _termTab = tab;
-  document.getElementById('term-tab-cmd')?.classList.toggle('active', tab === 'cmd');
-  document.getElementById('term-tab-uart')?.classList.toggle('active', tab === 'uart');
-  document.getElementById('term-pane-cmd').style.display  = tab === 'cmd'  ? '' : 'none';
-  document.getElementById('term-pane-uart').style.display = tab === 'uart' ? '' : 'none';
-  if (tab === 'uart') {
-    const o = document.getElementById('uart-output');
-    if (o) o.scrollTop = o.scrollHeight;
-  }
-}
-
+// ── UART Raw view ─────────────────────────────────────────────────────────
 function appendUartLine(dir, text) {
   const out = document.getElementById('uart-output'); if (!out) return;
   const now = new Date();

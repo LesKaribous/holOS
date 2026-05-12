@@ -1,4 +1,4 @@
-// js/strategy.js — Strategy file editor (CodeMirror) + Monitor view
+// js/strategy.js — Strategy file editor (CodeMirror)
 // Depends on: socket, poiData, macros, showToast, setText, escHtml, poiCategory
 
 'use strict';
@@ -133,73 +133,4 @@ function insertPoiRef(name) {
   const ref = `POI.${name}`;
   if (strategyEditor) { const cur = strategyEditor.getCursor(); strategyEditor.replaceRange(ref, cur); }
   else { const ta = document.getElementById('strategy-code'); if (ta) { const pos = ta.selectionStart; ta.value = ta.value.slice(0, pos) + ref + ta.value.slice(pos); } }
-}
-
-// ── Monitor view ───────────────────────────────────────────────────────────
-function updateMonitor(s) {
-  const r = s.robot;
-  setText('mon-x',     r.x.toFixed(0));
-  setText('mon-y',     r.y.toFixed(0));
-  setText('mon-theta', (r.theta * 180 / Math.PI).toFixed(1) + '°');
-  setText('mon-speed', Math.hypot(r.vx, r.vy).toFixed(0));
-  setText('mon-vx',    r.vx.toFixed(0));
-  setText('mon-vy',    r.vy.toFixed(0));
-  setText('mon-omega', (r.omega ? (r.omega * 180 / Math.PI).toFixed(1) : '—'));
-  const ms = document.getElementById('mon-mstate');
-  if (ms) { ms.textContent = s.motion.state; ms.className = 'mon-val ' + (MOTION_CLASS[s.motion.state] || ''); }
-  const left = s.chrono.left, total = left + s.chrono.elapsed;
-  setText('mon-time',  left.toFixed(1) + ' s');
-  setText('mon-score', s.score + ' pts');
-  const pct = total > 0 ? left / total * 100 : 100;
-  const cb = document.getElementById('mon-chrono-bar');
-  if (cb) { cb.style.width = pct + '%'; cb.style.background = left < 10 ? '#c0392b' : left < 30 ? '#b7770d' : '#2980b9'; }
-  const safe = s.safety.enabled && s.safety.detected;
-  const sf = document.getElementById('mon-safety');
-  if (sf) { sf.textContent = safe ? '⚠ OBSTACLE' : 'OK'; sf.style.color = safe ? '#c0392b' : '#1a8c3c'; }
-  setText('mon-obs-detected', safe ? 'Yes' : 'No');
-  setText('mon-collision',    r.collided ? 'Yes' : 'No');
-
-  const ledHb     = document.getElementById('led-heartbeat');
-  const ledSafety = document.getElementById('led-safety');
-  const ledMotion = document.getElementById('led-motion');
-  const ledOtos   = document.getElementById('led-otos');
-  if (ledHb) {
-    if (s.mode === 'sim')       ledHb.style.background = '#555';
-    else if (s.hw_heartbeat_ok) ledHb.style.background = '#1a8c3c';
-    else                        ledHb.style.background = '#c0392b';
-  }
-  if (ledSafety) {
-    if (!s.safety.enabled)      ledSafety.style.background = '#555';
-    else if (s.safety.detected) ledSafety.style.background = '#c0392b';
-    else                        ledSafety.style.background = '#1a8c3c';
-  }
-  if (ledMotion) {
-    const ms2 = s.motion.state;
-    if (ms2 === 'RUNNING')      ledMotion.style.background = '#1a8c3c';
-    else if (ms2 === 'PAUSED')  ledMotion.style.background = '#b7770d';
-    else                        ledMotion.style.background = '#555';
-  }
-  if (ledOtos) {
-    if (s.mode === 'sim')       ledOtos.style.background = '#1a8c3c';
-    else if (s.hw_mode)         ledOtos.style.background = '#1a8c3c';
-    else                        ledOtos.style.background = '#555';
-  }
-
-  const go = document.getElementById('mon-game-objs');
-  if (go) go.innerHTML = s.game_objs.filter(o => o.color !== 'UNKNOWN' && o.color !== 'NONE').map(o =>
-    `<span style="display:inline-block;width:12px;height:12px;border-radius:50%;background:${COLOR_HEX[o.color] || '#888'};border:1px solid rgba(0,0,0,.2)"></span>`
-  ).join('');
-
-  const logEl = document.getElementById('mon-event-log');
-  if (logEl && s.log && s.log.length) {
-    const colored = s.log.slice(-20).map(line => {
-      let color = '#c8ccd4';
-      if (line.includes('FAILED') || line.includes('error') || line.includes('ERROR')) color = '#e06c75';
-      else if (line.includes('DETECT') || line.includes('OBSTACLE') || line.includes('CLEAR')) color = '#e5c07b';
-      else if (line.includes('OK') || line.includes('loaded') || line.includes('connected')) color = '#98c379';
-      return `<div style="color:${color}">${line.replace(/</g, '&lt;')}</div>`;
-    }).join('');
-    logEl.innerHTML = colored;
-    logEl.scrollTop = logEl.scrollHeight;
-  }
 }

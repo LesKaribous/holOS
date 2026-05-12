@@ -144,7 +144,6 @@ socket.on('state', state => {
   if (activeView === 'map') render(state);
   renderMiniMap(state);
   updateMapSidebar(state);
-  if (activeView === 'monitor') updateMonitor(state);
 
   // Sync pathfinding checkbox from server state
   const pfCb = document.getElementById('feat-pathfinding');
