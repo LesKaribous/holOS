@@ -136,8 +136,12 @@ socket.on('vision_feed', data => {
 const _arucoSeen = new Map();             // tag_id → {px, py, num_corners, lastSeen}
 const _poseSeen  = { own: null, opp: null }; // {tag_id, label, naive_x, naive_y, x, y, theta, lastSeen}
 const _ARU_FRESH_MS  = 250;               // 5 FPS pose feed = 200 ms; +50 ms margin
-const _ARU_FADE_MS   = 2000;              // persistence after a tag is lost
-const _ARU_REMOVE_MS = _ARU_FRESH_MS + _ARU_FADE_MS;
+const _ARU_FADE_MS   = 2000;              // opacity ramp 1 → 0 over this window
+// Total time a tag stays in the list after disappearing. Decoupled from
+// the fade so the SLOT survives long after the row has gone visually
+// invisible — that's what stops the list shrinking and other rows
+// shifting when a flaky tag drops out for a frame or two.
+const _ARU_REMOVE_MS = 5000;
 const _LOC_FRESH_MS  = 500;
 
 // Tag-id → team affiliation. Blue robots wear tags 1-5, yellow 6-10.
