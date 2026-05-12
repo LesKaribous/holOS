@@ -95,3 +95,4 @@ software/vision/Scripts
 # Last-source memory used by software/vision.py launcher
 software/vision_runner/last_source.json
 software/vision/data/parallax_calibration.json
+.venv/
