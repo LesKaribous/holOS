@@ -201,7 +201,6 @@ FLASHMEM void Localisation::invalidateVisionState() {
     m_visionCalibrationReplyReceived= false;
     m_pendingPoseReply              = false;
     m_lastPoseValid                 = false;
-    jetsonBridge.pushVisionFrameDirect("T:vis homography_release");
     Console::info("Localisation") << "Vision state invalidated" << Console::endl;
 }
 
