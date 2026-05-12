@@ -140,7 +140,7 @@ static void collectStock(Vec2 target, TableCompass tc, RobotCompass rc) {
                     << " offset=" << lateral_mm << "mm" << Console::endl;
                 break;
             }else{
-                if(n_tags == 1){
+                if(n_tags >= 1){
                     // Tentative de correction partielle même avec 1 tag (moins fiable, mais mieux que rien)
                     lateral_mm = std::clamp(lateral_mm, -100.0f, 100.0f); // Clamp pour éviter les valeurs extrêmes
                     async motion.goPolar(lateral_dir_rad * DEG_TO_RAD, lateral_mm);
