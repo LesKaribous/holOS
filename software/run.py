@@ -36,7 +36,19 @@ import math
 import platform
 
 # ── Platform detection ────────────────────────────────────────────────────────
-IS_JETSON = (platform.system() == 'Linux')
+# Real Jetson boards expose a device-tree node whose `model` file contains
+# "NVIDIA Jetson …". x86 PCs (including Ubuntu dev laptops) don't have
+# /proc/device-tree at all. The prior `platform.system()=='Linux'` check
+# was wrong — it flagged every Linux box as Jetson, which broke the
+# topbar host indicator and (worse) auto-connect on dev laptops.
+def _detect_jetson() -> bool:
+    try:
+        with open('/proc/device-tree/model', 'rb') as f:
+            return b'Jetson' in f.read()
+    except Exception:
+        return False
+
+IS_JETSON = _detect_jetson()
 print(f"[run.py] Detected platform: {platform.system()} (IS_JETSON={IS_JETSON})")
 
 _DEFAULT_JETSON_PORT  = '/dev/ttyUSB0'

@@ -134,10 +134,12 @@ socket.on('state', state => {
     document.getElementById('btn-blue')  ?.classList.toggle('active', state.team === 'blue');
   }
 
-  // Update "PC" label to "Jetson" when server reports it's running on Jetson
+  // holOS subtitle reflects where the server is running. The check is
+  // server-side (reads /proc/device-tree/model) so the browser doesn't
+  // have to guess from window.location.
   if (state.is_jetson !== undefined) {
-    const lbl = document.getElementById('cg-lbl-client');
-    if (lbl) lbl.textContent = state.is_jetson ? 'Jetson' : 'PC';
+    const sub = document.getElementById('cg-sub-server');
+    if (sub) sub.textContent = state.is_jetson ? 'jetson' : 'local';
     if (typeof _ncSetClientLabel === 'function') _ncSetClientLabel(state.is_jetson);
   }
 
@@ -225,7 +227,6 @@ function cgSetConnectionMode(mode, hwType, hwPort) {
   const sub      = document.getElementById('cg-sub-robot');
   const lbl      = document.getElementById('cg-lbl-robot');
   const modeEl   = document.getElementById('conn-mode-val');
-  const serverSub = document.getElementById('cg-sub-server');
 
   // Right-side node label flips: "Simulator" in sim mode, "Robot" otherwise.
   if (lbl) lbl.textContent = (mode === 'sim') ? 'Simulator' : 'Robot';
@@ -239,19 +240,16 @@ function cgSetConnectionMode(mode, hwType, hwPort) {
     if (link)      link.className = 'cg-link hw';
     if (sub)       { sub.className = 'cg-sub hw'; sub.textContent = label; }
     if (modeEl)    modeEl.textContent = modeStr;
-    if (serverSub) serverSub.textContent = mode === 'xbee' ? 'via Jetson' : 'Local';
   } else if (mode === 'sim') {
     if (dot)       dot.className  = 'cg-dot sim-active';
     if (link)      link.className = 'cg-link sim';
     if (sub)       { sub.className = 'cg-sub sim'; sub.textContent = 'SIM'; }
     if (modeEl)    modeEl.textContent = 'Simulator';
-    if (serverSub) serverSub.textContent = 'Local';
   } else {
     if (dot)       dot.className  = 'cg-dot';
     if (link)      link.className = 'cg-link';
     if (sub)       { sub.className = 'cg-sub'; sub.textContent = 'idle'; }
     if (modeEl)    modeEl.textContent = 'Not connected';
-    if (serverSub) serverSub.textContent = 'Local';
   }
 }
 

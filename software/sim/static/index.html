@@ -41,24 +41,17 @@
     </label>
   </div>
 
-  <!-- Connectivity graph : PC ── holOS ── Robot -->
+  <!-- Connectivity graph : holOS ── Robot -->
   <div class="cg-wrap" id="conn-graph">
 
-    <!-- Node: PC / Jetson -->
-    <div class="cg-node">
-      <span class="cg-dot" id="cg-dot-ws"></span>
-      <span class="cg-lbl" id="cg-lbl-client">PC</span>
-    </div>
-
-    <!-- Link PC → holOS -->
-    <div class="cg-link" id="cg-lnk-ws"></div>
-
-    <!-- Node: holOS server (clickable → server info panel) -->
+    <!-- Node: holOS server (clickable → server info panel). Subtitle
+         shows where the server is running — 'local' (this machine) or
+         'jetson' (NVIDIA Jetson board, detected via /proc/device-tree). -->
     <button class="cg-node cg-node-btn" id="cg-node-server"
             onclick="togglePanel('server-panel')" title="holOS server info">
       <span class="cg-dot connected" id="cg-dot-server"></span>
       <span class="cg-lbl">holOS</span>
-      <span class="cg-sub" id="cg-sub-server">SIM</span>
+      <span class="cg-sub" id="cg-sub-server">local</span>
     </button>
 
     <!-- Link holOS → Robot -->
