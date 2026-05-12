@@ -111,6 +111,23 @@
   <div class="conn-panel-row" style="font:11px ui-monospace,monospace; color:var(--text-dim);">
     <span id="cam-log-hint">log: software/data/vision_camera.log</span>
   </div>
+
+  <!-- Runtime source override — in-memory, restored on holOS reload. -->
+  <div class="conn-panel-title" style="margin-top:8px">Override source (runtime)</div>
+  <div class="conn-panel-row" style="gap:4px">
+    <select id="cam-src-kind" class="input-sm" style="flex:0 0 80px">
+      <option value="video">video</option>
+      <option value="camera">camera</option>
+      <option value="image">image</option>
+      <option value="jetson">jetson</option>
+    </select>
+    <input  id="cam-src-path" class="input-sm" placeholder="path / index / url" style="flex:1;min-width:140px">
+  </div>
+  <div class="conn-panel-row" style="gap:6px">
+    <button class="btn-tiny green" onclick="camSetRuntimeSource()" title="Apply now — NOT saved to disk">Apply</button>
+    <button class="btn-tiny"       onclick="camClearRuntimeSource()" title="Drop override, reload disk config">↺ Restore</button>
+    <span id="cam-override-status" style="font:11px ui-monospace,monospace; color:var(--text-dim)"></span>
+  </div>
 </div>
 
 <!-- ── Server info panel ──────────────────────────────────────────────────── -->

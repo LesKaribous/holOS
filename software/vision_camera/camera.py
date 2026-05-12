@@ -68,8 +68,9 @@ class VirtualCamera:
         self.gst_width = int(gst_width)
         self.gst_height = int(gst_height)
         self.gst_fps = int(gst_fps)
-        # User-driven state
-        self.playback = 'pause' if source_kind == 'video' else 'live'
+        # User-driven state. Live sources (camera / jetson) start in 'live';
+        # everything else starts playing — pause is opt-in via the UI.
+        self.playback = 'live' if source_kind in ('camera', 'jetson') else 'play'
         self.speed = 1.0
         self.seek_target = 0
         # Internal state
@@ -94,6 +95,17 @@ class VirtualCamera:
         self._reader_thread: Optional[threading.Thread] = None
         self._reader_stop = threading.Event()
         self._reader_lock = threading.Lock()
+        # Recording (POST /api/record) — subsamples _latest_bgr at the
+        # caller-supplied fps and writes an AVI directly from BGR, no
+        # MJPEG round-trip. Lives in this process so the recorder always
+        # sees fresh frames at source rate without going through cv2's
+        # FFmpeg-buffered MJPEG socket.
+        self._rec_thread: Optional[threading.Thread] = None
+        self._rec_stop   = threading.Event()
+        self._rec_path: Optional[str] = None
+        self._rec_fps:  float = 16.0
+        self._rec_frames_written: int = 0
+        self._rec_start_t: float = 0.0
 
     # -- lifecycle -------------------------------------------------
 
@@ -108,6 +120,11 @@ class VirtualCamera:
         self._thread.start()
 
     def shutdown(self):
+        # Stop the recorder first so it doesn't try to read _latest_bgr
+        # after the reader thread is gone.
+        if self._rec_thread is not None and self._rec_thread.is_alive():
+            self._rec_stop.set()
+            self._rec_thread.join(timeout=2.0)
         # Stop the reader BEFORE releasing _cap — otherwise it'd race a final
         # read() against release().
         self._reader_stop.set()
@@ -146,6 +163,7 @@ class VirtualCamera:
                 continue
             with self._reader_lock:
                 self._latest_bgr = f
+            self.frame_idx += 1
 
     def _start_reader(self):
         if not self._is_live_source() or self._cap is None:
@@ -186,6 +204,18 @@ class VirtualCamera:
         self._cap = cv2.VideoCapture(arg)
         if not self._cap.isOpened():
             raise RuntimeError(f'cv2.VideoCapture could not open {arg!r}')
+        # For USB cameras: force MJPG fourcc BEFORE setting resolution.
+        # Otherwise cv2 negotiates uncompressed YUYV by default — at 1080p
+        # that exceeds USB 2.0 bandwidth so the driver silently throttles
+        # to a few fps (this looks like "lag" downstream even though every
+        # later stage is fast). Cheese gets this right via GStreamer's
+        # caps negotiation; cv2.VideoCapture does NOT auto-negotiate.
+        if self.source_kind == 'camera':
+            self._cap.set(cv2.CAP_PROP_FOURCC,
+                          cv2.VideoWriter_fourcc(*'MJPG'))
+            self._cap.set(cv2.CAP_PROP_FRAME_WIDTH,  self.gst_width)
+            self._cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.gst_height)
+            self._cap.set(cv2.CAP_PROP_FPS,          self.gst_fps)
         self.frame_count = int(self._cap.get(cv2.CAP_PROP_FRAME_COUNT) or -1)
         # Pre-decode one frame so /stream.mjpg has something to send right away.
         ok, f = self._cap.read()
@@ -244,6 +274,9 @@ class VirtualCamera:
                 pass
             ok, f = self._cap.read()
         if ok:
+            # Keep the BGR for the recorder too — same source of truth.
+            with self._reader_lock:
+                self._latest_bgr = f
             self._encode(f)
             self.frame_idx = int(self._cap.get(cv2.CAP_PROP_POS_FRAMES) or 0)
 
@@ -316,6 +349,70 @@ class VirtualCamera:
                 for _ in range(int(speed - 1)):
                     self._read_one()
 
+    # -- Recording -------------------------------------------------
+    # The recorder taps `_latest_bgr` directly — same BGR ndarray that
+    # feeds the MJPEG encoder. No JPEG round-trip, no cv2.VideoCapture
+    # backend buffer aliasing, no pipeline-side gymnastics.
+
+    def _record_loop(self):
+        writer = None
+        period = 1.0 / self._rec_fps if self._rec_fps > 0 else 0.25
+        next_t = time.monotonic()
+        try:
+            while not self._rec_stop.is_set():
+                now = time.monotonic()
+                wait = next_t - now
+                if wait > 0:
+                    time.sleep(min(wait, 0.05))
+                    continue
+                next_t += period
+                with self._reader_lock:
+                    f = self._latest_bgr
+                if f is None:
+                    continue
+                if writer is None:
+                    h, w = f.shape[:2]
+                    fourcc = cv2.VideoWriter_fourcc(*'MJPG')
+                    writer = cv2.VideoWriter(
+                        self._rec_path, fourcc, self._rec_fps, (w, h))
+                    if not writer.isOpened():
+                        print(f'[vc-record] open failed: {self._rec_path}')
+                        return
+                    print(f'[vc-record] {self._rec_path} '
+                          f'({w}x{h} MJPG @ {self._rec_fps}fps)')
+                # Copy — the reader thread is about to overwrite this
+                # buffer on its next cv2.read(); also makes the encode
+                # safe even though the reader lock is already released.
+                writer.write(f.copy())
+                self._rec_frames_written += 1
+        finally:
+            if writer is not None:
+                writer.release()
+            print(f'[vc-record] closed: {self._rec_frames_written} frames')
+
+    def start_recording(self, out_path: str, fps: float) -> dict:
+        if self._rec_thread is not None and self._rec_thread.is_alive():
+            return {'ok': False, 'error': 'already recording'}
+        self._rec_path           = str(out_path)
+        self._rec_fps            = max(1.0, float(fps))
+        self._rec_frames_written = 0
+        self._rec_start_t        = time.monotonic()
+        self._rec_stop.clear()
+        self._rec_thread = threading.Thread(
+            target=self._record_loop, daemon=True, name='vc-record')
+        self._rec_thread.start()
+        return {'ok': True, 'path': self._rec_path, 'fps': self._rec_fps}
+
+    def stop_recording(self) -> dict:
+        if self._rec_thread is None or not self._rec_thread.is_alive():
+            return {'ok': False, 'error': 'not recording'}
+        self._rec_stop.set()
+        self._rec_thread.join(timeout=3.0)
+        elapsed = time.monotonic() - self._rec_start_t
+        return {'ok': True, 'path': self._rec_path,
+                'frames_written': self._rec_frames_written,
+                'duration_s': round(elapsed, 2)}
+
     # -- API surface ----------------------------------------------
 
     def set_params(self, params: dict):
@@ -326,7 +423,13 @@ class VirtualCamera:
             except (TypeError, ValueError):
                 pass
         if 'playback' in params:
-            self.playback = str(params['playback'])
+            new_pb = str(params['playback'])
+            # Live sources (camera / jetson) have no notion of pause / step
+            # / seek — clamp every request to 'live' so a stale UI button
+            # can't freeze the stream.
+            if self._is_live_source():
+                new_pb = 'live'
+            self.playback = new_pb
         if 'speed' in params:
             try:
                 self.speed = float(params['speed'])
@@ -389,6 +492,14 @@ app = Flask(__name__,
             static_folder=str(_HERE / 'web' / 'static'),
             static_url_path='/static')
 
+import logging as _logging
+class _QuietPollEndpoints(_logging.Filter):
+    _MUTE = ('/api/status',)
+    def filter(self, record):
+        msg = record.getMessage()
+        return not any(p in msg for p in self._MUTE)
+_logging.getLogger('werkzeug').addFilter(_QuietPollEndpoints())
+
 _cam: Optional[VirtualCamera] = None
 
 
@@ -412,6 +523,27 @@ def stream_mjpg():
 @app.route('/api/status')
 def api_status():
     return jsonify(_cam.status() if _cam else {})
+
+
+@app.route('/api/record', methods=['POST'])
+def api_record():
+    """Start / stop AVI recording. Body:
+        {"action": "start", "out_path": "/full/path/video.avi", "fps": 16}
+        {"action": "stop"}
+    """
+    if _cam is None:
+        return jsonify({'ok': False, 'error': 'no camera'}), 503
+    body = request.get_json(force=True) or {}
+    action = str(body.get('action', '')).lower()
+    if action == 'start':
+        out = str(body.get('out_path', '')).strip()
+        fps = float(body.get('fps', 16))
+        if not out:
+            return jsonify({'ok': False, 'error': 'out_path required'}), 400
+        return jsonify(_cam.start_recording(out, fps))
+    if action == 'stop':
+        return jsonify(_cam.stop_recording())
+    return jsonify({'ok': False, 'error': f'unknown action: {action!r}'}), 400
 
 
 @app.route('/api/control', methods=['POST'])

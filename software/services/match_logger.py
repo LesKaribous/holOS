@@ -1,38 +1,38 @@
-"""Match logger — captures UART, holOS events, ESPCam, and video frames
-during a manually-started REC session for later replay.
+"""Match logger — captures UART, holOS events, ESPCam text logs during a
+manually-started REC session for later replay.
 
-Single source of truth: every log line carries `t_ms` (monotonic ms since
-session start, used for sync with video frames) + `wall` (ISO timestamp).
-Video frames are written as JPEGs named `NNNNNN_t=Xs.jpg` so any viewer
-can match a frame back to log lines by timestamp.
+The VIDEO part of the recording is owned by the vision_camera supervisor
+process: it has the raw BGR frames before they're JPEG-encoded for MJPEG
+and can dump them straight to AVI without any decode/re-encode chain.
+MatchLogger.start()/stop() just tell the supervisor when to roll.
 
-Design constraints:
-  - Caller-side overhead must be near zero. log() / log_video() push to
-    a per-source bounded queue and return immediately. Writer threads
-    drain queues and write to disk.
-  - When no session is active, both log() and log_video() are O(1) checks.
-  - On session stop, queues are drained before returning so no in-flight
-    log is lost.
+Single source of truth for text logs: every line carries `t_ms` (monotonic
+ms since session start) + `wall` (ISO timestamp). The video AVI's frame
+indices line up with wall-clock via the session's `meta.json` (`started_wall`
++ `record_fps`).
 """
 from __future__ import annotations
 
 import json
-import os
-import queue
 import threading
+import queue
 import time
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-try:
-    import cv2
-    _CV2_OK = True
-except Exception:
-    _CV2_OK = False
+
+_DEFAULT_ROOT    = Path(__file__).resolve().parents[1] / 'logs'
+_VISION_CFG      = Path(__file__).resolve().parents[1] / 'data' / 'vision_config.json'
+_DEFAULT_REC_FPS = 16.0
 
 
-_DEFAULT_ROOT = Path(__file__).resolve().parents[1] / 'logs'
+def _read_record_fps() -> float:
+    try:
+        return float(json.loads(_VISION_CFG.read_text()).get(
+            'record_fps', _DEFAULT_REC_FPS))
+    except Exception:
+        return _DEFAULT_REC_FPS
 
 
 class MatchLogger:
@@ -45,9 +45,7 @@ class MatchLogger:
         self._files: dict = {}            # source -> open file
         self._queues: dict = {}           # source -> Queue
         self._writers: dict = {}          # source -> Thread
-        self._video_q: 'queue.Queue | None' = None
-        self._video_thread: Optional[threading.Thread] = None
-        self._video_idx = 0
+        self._video_summary: Optional[dict] = None  # filled at stop()
         self._stop_evt = threading.Event()
         self._lock = threading.Lock()
 
@@ -65,7 +63,6 @@ class MatchLogger:
             'session_id': self._session_id,
             'path':       str(self._session_dir),
             'elapsed_s':  round(elapsed, 1),
-            'video_frames': self._video_idx,
         }
 
     def start(self, meta: 'dict | None' = None) -> str:
@@ -79,16 +76,22 @@ class MatchLogger:
             self._t0_mono = time.monotonic()
             self._t0_wall = time.time()
             self._stop_evt.clear()
-            self._video_idx = 0
-            self._video_q = queue.Queue(maxsize=64)
-            self._video_thread = threading.Thread(
-                target=self._video_writer_loop, daemon=True,
-                name='match-logger-video')
-            self._video_thread.start()
+            self._video_summary = None
+            fps = _read_record_fps()
+            # Kick the vision_camera supervisor; it writes video.avi
+            # directly from its BGR feed.
+            try:
+                from vision_camera.supervisor import start_recording
+                r = start_recording(str(self._session_dir / 'video.avi'), fps)
+                if not r.get('ok'):
+                    print(f'[match-logger] supervisor record start failed: {r}')
+            except Exception as e:
+                print(f'[match-logger] supervisor unreachable: {e}')
             meta_doc = {
                 'session_id':   self._session_id,
                 'started_wall': now.isoformat(timespec='seconds'),
                 't0_mono':      self._t0_mono,
+                'record_fps':   fps,
                 **(meta or {}),
             }
             (self._session_dir / 'meta.json').write_text(
@@ -104,22 +107,22 @@ class MatchLogger:
             self._stop_evt.set()
             for q in list(self._queues.values()):
                 q.put(None)
-            if self._video_q is not None:
-                self._video_q.put(None)
             for t in list(self._writers.values()):
                 t.join(timeout=2.0)
-            if self._video_thread is not None:
-                self._video_thread.join(timeout=3.0)
             for f in self._files.values():
                 try: f.close()
                 except Exception: pass
             self._files.clear()
             self._queues.clear()
             self._writers.clear()
-            self._video_q = None
-            self._video_thread = None
+            try:
+                from vision_camera.supervisor import stop_recording
+                self._video_summary = stop_recording()
+            except Exception as e:
+                self._video_summary = {'ok': False, 'error': f'{e}'}
+            video_frames = int(self._video_summary.get('frames_written', 0)) \
+                if self._video_summary else 0
             elapsed = time.monotonic() - (self._t0_mono or time.monotonic())
-            video_frames = self._video_idx
             try:
                 meta_path = sdir / 'meta.json'
                 meta = json.loads(meta_path.read_text())
@@ -149,17 +152,6 @@ class MatchLogger:
             q.put_nowait(self._fmt(line))
         except queue.Full:
             pass  # drop on overflow rather than block the caller
-
-    def log_video(self, frame_bgr, t_mono: 'float | None' = None) -> None:
-        if self._session_dir is None or self._video_q is None or not _CV2_OK:
-            return
-        if frame_bgr is None:
-            return
-        t = (t_mono if t_mono is not None else time.monotonic())
-        try:
-            self._video_q.put_nowait((frame_bgr, t))
-        except queue.Full:
-            pass  # drop frame if writer is behind
 
     # ── Internals ──────────────────────────────────────────────────────
 
@@ -201,48 +193,6 @@ class MatchLogger:
                 pass
         try: f.flush()
         except Exception: pass
-
-    def _video_writer_loop(self) -> None:
-        writer = None
-        csv = None
-        target_fps = 4.0
-        try:
-            while True:
-                item = self._video_q.get() if self._video_q else None
-                if item is None:
-                    break
-                frame, t_mono = item
-                if (self._session_dir is None or self._t0_mono is None
-                        or frame is None):
-                    continue
-                t_rel_ms = (t_mono - self._t0_mono) * 1000.0
-                if writer is None:
-                    h, w = frame.shape[:2]
-                    out_path = str(self._session_dir / 'video.avi')
-                    fourcc = cv2.VideoWriter_fourcc(*'MJPG')
-                    writer = cv2.VideoWriter(out_path, fourcc, target_fps,
-                                             (w, h))
-                    if not writer.isOpened():
-                        writer = None
-                        continue
-                    csv = open(self._session_dir / 'video.csv', 'a',
-                               buffering=4096)
-                    csv.write('frame_idx,t_mono_ms,t_iso\n')
-                self._video_idx += 1
-                try:
-                    writer.write(frame)
-                    if csv is not None:
-                        wall = datetime.now().isoformat(timespec='milliseconds')
-                        csv.write(f'{self._video_idx},{t_rel_ms:.1f},{wall}\n')
-                except Exception:
-                    pass
-        finally:
-            try:
-                if writer is not None: writer.release()
-            except Exception: pass
-            try:
-                if csv is not None: csv.close()
-            except Exception: pass
 
 
 # Singleton — imported and reused everywhere.

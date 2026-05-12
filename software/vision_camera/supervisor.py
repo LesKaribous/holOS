@@ -28,24 +28,28 @@ from typing import Callable, Optional
 
 _HERE = Path(__file__).resolve().parent
 _SOFTWARE = _HERE.parent
-_CONFIG = _SOFTWARE / 'data' / 'vision_camera_config.json'
+_CONFIG = _SOFTWARE / 'data' / 'vision_config.json'   # single source of truth
 _LOG    = _SOFTWARE / 'data' / 'vision_camera.log'
 
+# Supervisor-side fallbacks. Field-tunables (camera position, anchors,
+# FPS, etc.) come from vision_config.json — these defaults are only used
+# when the JSON is missing or unreadable. Keep in sync with
+# software/run.py::_VISION_CONFIG_DEFAULTS.
 DEFAULT_CONFIG: dict = {
     'auto_start':  True,
-    'source_kind': 'video',         # video | camera | image | jetson
+    'source_kind': 'video',
     'source_path': 'vision/homography/data/video.2.mp4',
-    'host':        '0.0.0.0',     # bind addr — 0.0.0.0 lets LAN clients reach the stream
+    'host':        '0.0.0.0',
     'port':        5174,
-    'fps':         30,
+    'source_fps':  16,
     'quality':     80,
-    # Jetson-only knobs (ignored for other source kinds)
     'gst_width':   1280,
     'gst_height':  720,
     'gst_fps':     30,
 }
 
 _proc: Optional[subprocess.Popen] = None
+_runtime_override: dict = {}   # in-memory only — wiped on holOS restart
 _state: dict = {
     'state':         'idle',       # idle | starting | running | external | exited | failed | disabled
     'pid':           None,
@@ -79,20 +83,23 @@ def _set_state(**kw) -> None:
 
 
 def _load_config() -> dict:
+    """Read supervisor-relevant keys from the merged vision_config.json.
+    Only keys the supervisor cares about (source/host/port/fps/quality/
+    gst_*) are pulled; world-frame, anchors, etc. are ignored here — those
+    are pipeline-side concerns owned by vision_pipelines_def.py."""
+    base = dict(DEFAULT_CONFIG)
     if _CONFIG.is_file():
         try:
             cfg = json.loads(_CONFIG.read_text())
-            return {**DEFAULT_CONFIG, **cfg}
+            for k in DEFAULT_CONFIG:
+                if k in cfg:
+                    base[k] = cfg[k]
         except Exception as e:
             print(f"[vision-camera] config read failed ({e}) — using defaults")
-            return dict(DEFAULT_CONFIG)
-    try:
-        _CONFIG.parent.mkdir(parents=True, exist_ok=True)
-        _CONFIG.write_text(json.dumps(DEFAULT_CONFIG, indent=2) + '\n')
-        print(f"[vision-camera] seeded default config → {_CONFIG}")
-    except Exception as e:
-        print(f"[vision-camera] could not seed config: {e}")
-    return dict(DEFAULT_CONFIG)
+    # Runtime overrides win over disk — kept in memory only so a reload
+    # restores the persisted config.
+    base.update(_runtime_override)
+    return base
 
 
 def _resolve_source(kind: str, path: str) -> str:
@@ -116,6 +123,36 @@ def _is_port_serving(host: str, port: int, timeout: float = 0.4) -> bool:
             return r.status == 200
     except Exception:
         return False
+
+
+def _post(endpoint: str, body: dict, timeout: float = 2.0) -> dict:
+    """POST a JSON body to the running subprocess. Caller decides whether
+    the supervisor is running; this just speaks HTTP."""
+    with _state_lock:
+        host = _state.get('host') or '127.0.0.1'
+        port = _state.get('port') or 5174
+    probe = '127.0.0.1' if host in ('0.0.0.0', '::', '') else host
+    url = f'http://{probe}:{port}{endpoint}'
+    data = json.dumps(body).encode('utf-8')
+    req = urllib.request.Request(
+        url, data=data, method='POST',
+        headers={'Content-Type': 'application/json'})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return json.loads(r.read().decode('utf-8'))
+    except Exception as e:
+        return {'ok': False, 'error': f'{type(e).__name__}: {e}'}
+
+
+def start_recording(out_path: str, fps: float) -> dict:
+    """Tell the camera subprocess to start writing an AVI from its BGR
+    feed at `fps`. Returns the subprocess's JSON reply."""
+    return _post('/api/record', {
+        'action': 'start', 'out_path': str(out_path), 'fps': float(fps)})
+
+
+def stop_recording() -> dict:
+    return _post('/api/record', {'action': 'stop'})
 
 
 def _tail_log(n_lines: int = 20) -> str:
@@ -204,10 +241,13 @@ def start(on_exit: Optional[Callable[[str], None]] = None) -> dict:
         sys.executable, '-u', '-m', 'vision_camera.camera',
         cfg['source_kind'], src_path,
         '--host', str(host), '--port', str(port),
-        '--fps',     str(int(cfg.get('fps', 30))),
+        '--fps',     str(int(cfg.get('source_fps', 16))),
         '--quality', str(int(cfg.get('quality', 80))),
     ]
-    if cfg['source_kind'] == 'jetson':
+    # gst_* keys double as the capture resolution/fps for the 'camera'
+    # source kind too — cv2.VideoCapture needs them set explicitly after
+    # forcing MJPG fourcc to avoid YUYV fallback at 1080p.
+    if cfg['source_kind'] in ('jetson', 'camera'):
         cmd += ['--gst-width',  str(int(cfg.get('gst_width', 1280))),
                 '--gst-height', str(int(cfg.get('gst_height', 720))),
                 '--gst-fps',    str(int(cfg.get('gst_fps', 30)))]
@@ -295,6 +335,30 @@ def stop() -> None:
     _proc = None
 
 
+def set_runtime_source(source_kind: str, source_path: str) -> dict:
+    """Override the source IN MEMORY ONLY and restart the subprocess.
+    The disk config is untouched — next holOS start restores it."""
+    global _runtime_override
+    _runtime_override = {
+        'source_kind': str(source_kind),
+        'source_path': str(source_path),
+    }
+    stop()
+    return start(on_exit=_on_exit_cb)
+
+
+def clear_runtime_source() -> dict:
+    """Drop the runtime override and restart on the disk config."""
+    global _runtime_override
+    _runtime_override = {}
+    stop()
+    return start(on_exit=_on_exit_cb)
+
+
+def runtime_override() -> dict:
+    return dict(_runtime_override)
+
+
 def status() -> dict:
     """Snapshot of supervisor state — consumed by the topbar status endpoint."""
     with _state_lock:
@@ -307,4 +371,5 @@ def status() -> dict:
         if _is_port_serving(out['host'], int(out['port'])):
             # Caught one popping up
             out['state'] = 'external' if out['state'] != 'disabled' else out['state']
+    out['runtime_override'] = dict(_runtime_override)
     return out

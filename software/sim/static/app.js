@@ -465,10 +465,53 @@ async function pollVisionCamera() {
     } else {
       if (errRow) errRow.style.display = 'none';
     }
+    const ov = s.runtime_override || {};
+    const ovEl = document.getElementById('cam-override-status');
+    if (ovEl) {
+      if (ov.source_kind || ov.source_path) {
+        ovEl.textContent = `override: ${ov.source_kind || '?'} → ${ov.source_path || '?'}`;
+        ovEl.style.color = 'var(--warn)';
+      } else {
+        ovEl.textContent = 'disk config';
+        ovEl.style.color = 'var(--text-dim)';
+      }
+    }
   } catch (e) { /* network blip — try again next tick */ }
 }
 setInterval(pollVisionCamera, 2000);
 window.addEventListener('load', pollVisionCamera);
+
+async function camSetRuntimeSource() {
+  const kind = document.getElementById('cam-src-kind').value;
+  const path = document.getElementById('cam-src-path').value.trim();
+  if (!path) {
+    document.getElementById('cam-override-status').textContent = 'path required';
+    return;
+  }
+  try {
+    const r = await fetch('/api/vision_camera/source', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({source_kind: kind, source_path: path}),
+    });
+    const j = await r.json();
+    if (!j.ok) {
+      document.getElementById('cam-override-status').textContent = 'error: ' + (j.error || 'unknown');
+    }
+  } catch (e) {
+    document.getElementById('cam-override-status').textContent = 'error: ' + e;
+  }
+  pollVisionCamera();
+}
+
+async function camClearRuntimeSource() {
+  try {
+    await fetch('/api/vision_camera/source/clear', {method: 'POST'});
+  } catch (e) {
+    document.getElementById('cam-override-status').textContent = 'error: ' + e;
+  }
+  pollVisionCamera();
+}
 
 // ── Init ───────────────────────────────────────────────────────────────────────
 window.addEventListener('load', () => {

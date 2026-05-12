@@ -25,71 +25,67 @@ MJPEG endpoint:
 
 from __future__ import annotations
 
+import json
+import os
+
 import services.vision_pipelines.nodes  # noqa: F401  — registers all node kinds
 from services.vision_pipelines.pipeline import Pipeline
 from services.vision_pipelines.nodes.base import NODE_KINDS
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# 1. WORLD COORDINATE FRAME
+# 1. LOAD VISION CONFIG (single source of truth — data/vision_config.json)
 # ═══════════════════════════════════════════════════════════════════════════
-# Where is (0, 0) on the BEV image? Mapping origin → axis directions:
-#     'top_left'      → X+ right, Y+ down  (TwinVision native)
-#     'top_right'     → X+ left,  Y+ down
-#     'bottom_left'   → X+ right, Y+ up
-#     'bottom_right'  → X+ left,  Y+ up    (this year's match convention)
-WORLD_ORIGIN_CORNER = 'bottom_right'
-WORLD_TABLE_W_MM    = 3000.0
-WORLD_TABLE_H_MM    = 2000.0
-WORLD_FLIP_THETA    = True
-
-
-# ═══════════════════════════════════════════════════════════════════════════
-# 2. CORNER ANCHORS — values in WORLD frame
-# ═══════════════════════════════════════════════════════════════════════════
-# x_mm / y_mm / yaw_deg are expressed in YOUR world frame (the one defined
-# by WORLD_ORIGIN_CORNER above). This is the same frame your strategy /
-# firmware code reads, so no mental flipping required: write down what
-# you'd measure on the table with a tape rule.
-#
-# yaw_deg = tag's orientation in world frame. 0 = tag's "top edge" points
-# along world +Y. Positive = clockwise rotation (as viewed from above the
-# table). Common values: 0, 90, 180, 270.
-#
-# Keys (top_left / top_right / …) are just legacy slot labels — they don't
-# carry geographic meaning anymore, only "this is anchor #1, #2, #3, #4".
-# Drop one, swap two, doesn't matter as long as 4 entries are present.
-#
-# Build helper in §4 converts these world-frame values to BEV-native
-# automatically using WORLD_ORIGIN_CORNER + table dimensions.
-# Physical layout: 4 ArUcos placed 600 mm from each edge of the
-# 3000 × 2000 mm table → inner rectangle 1800 × 800 mm. With
-# WORLD_ORIGIN_CORNER='bottom_right' (left-handed: X+ left, Y+ up):
-
-#Table officiel
-#   Tag 20  BR  (right, bottom) → small X, small Y → ( 600,  600)
-#   Tag 21  BL  (left,  bottom) → large X, small Y → (2400,  600)
-#   Tag 22  TR  (right, top)    → small X, large Y → ( 600, 1400)
-#   Tag 23  TL  (left,  top)    → large X, large Y → (2400, 1400)
-# ANCHORS = {
-#     'top_left':     {'tag_id': 23, 'x_mm': 2400, 'y_mm': 1400, 'yaw_deg': 0},
-#     'top_right':    {'tag_id': 22, 'x_mm':  600, 'y_mm': 1400, 'yaw_deg': 0},
-#     'bottom_right': {'tag_id': 20, 'x_mm':  600, 'y_mm':  600, 'yaw_deg': 0},
-#     'bottom_left':  {'tag_id': 21, 'x_mm': 2400, 'y_mm':  600, 'yaw_deg': 0},
-# }
-
-
-#Table Adrien
-#   Tag 20  BR  (right, bottom) → small X, small Y → ( 600,  600)
-#   Tag 21  BL  (left,  bottom) → large X, small Y → (2400,  600)
-#   Tag 22  TR  (right, top)    → small X, large Y → ( 600, 1400)
-#   Tag 23  TL  (left,  top)    → large X, large Y → (2400, 1400)
-ANCHORS = {
-    'top_left':     {'tag_id': 23, 'x_mm': 2400, 'y_mm': 1400, 'yaw_deg': 0},
-    'top_right':    {'tag_id': 22, 'x_mm':  600, 'y_mm': 1400, 'yaw_deg': 0},
-    'bottom_right': {'tag_id': 20, 'x_mm':  600, 'y_mm':  600, 'yaw_deg': 0},
-    'bottom_left':  {'tag_id': 21, 'x_mm': 2400, 'y_mm':  600, 'yaw_deg': 0},
+# Field-tunables (FPS, anchors, table size, camera position, robot Z) live
+# in JSON so they can change without editing this file. Static structural
+# choices (ArUco dict, homography mode, detector tag IDs) stay below as
+# Python constants — they're code-shape, not configuration.
+_CFG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                         'data', 'vision_config.json')
+_CFG_DEFAULTS = {
+    'source_fps':          16,
+    'pipeline_fps':        4,
+    'world_origin_corner': 'bottom_right',
+    'world_flip_theta':    True,
+    'table_width_mm':      3000.0,
+    'table_height_mm':     2000.0,
+    'anchors': {
+        'top_left':     {'tag_id': 23, 'x_mm': 2400, 'y_mm': 1400, 'yaw_deg': 0},
+        'top_right':    {'tag_id': 22, 'x_mm':  600, 'y_mm': 1400, 'yaw_deg': 0},
+        'bottom_right': {'tag_id': 20, 'x_mm':  600, 'y_mm':  600, 'yaw_deg': 0},
+        'bottom_left':  {'tag_id': 21, 'x_mm': 2400, 'y_mm':  600, 'yaw_deg': 0},
+    },
+    'cam_yellow_xyz_mm':   [1275.0, -100.0, 1100.0],
+    'cam_blue_xyz_mm':     [1725.0, -100.0, 1100.0],
+    'robot_z_mm':          550.0,
+    'own_object_z_mm':     550.0,
+    'opp_object_z_mm':     550.0,
 }
+
+
+def _load_cfg() -> dict:
+    cfg = dict(_CFG_DEFAULTS)
+    try:
+        with open(_CFG_PATH) as f:
+            cfg.update(json.load(f))
+    except FileNotFoundError:
+        pass
+    except Exception as e:
+        print(f'[vision_pipelines_def] config load failed ({e}) — using defaults')
+    return cfg
+
+
+_CFG = _load_cfg()
+
+# Convenience aliases — read once at module import (pipelines are built
+# at server boot; live config edits need a holOS restart).
+PIPELINE_FPS         = int(_CFG['pipeline_fps'])
+WORLD_ORIGIN_CORNER  = str(_CFG['world_origin_corner'])
+WORLD_FLIP_THETA     = bool(_CFG['world_flip_theta'])
+WORLD_TABLE_W_MM     = float(_CFG['table_width_mm'])
+WORLD_TABLE_H_MM     = float(_CFG['table_height_mm'])
+ANCHORS              = dict(_CFG['anchors'])
+ROBOT_Z_MM           = float(_CFG['robot_z_mm'])
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -132,40 +128,15 @@ SIM_TAG_A_ID    = 20
 SIM_TAG_B_ID    = 22
 TAG_SIZE_MM     = 100.0  # only consulted by sim2 corner-based path
 
-# Camera position (manual override) — entered in WORLD frame.
-# Mirrors with the team: the camera is mounted on a fixed edge of the
-# table but X mirrors so it always views the OWN side. Y and Z stay
-# constant. The active value is selected at boot from the current team
-# and re-pushed to the parallax pipeline whenever the team flips
-# (see `_apply_team` in run.py).
-CAMERA_X_MM_BY_TEAM = {
-    'yellow': 1275.0,
-    'blue':   3000.0 - 1275.0,
-}
+# Initial camera-position values used at pipeline build — overwritten by
+# `_apply_team` in run.py at every team flip (and at boot via force=True),
+# which reads `cam_<team>_xyz_mm` from vision_config.json. So these just
+# need to be a valid placeholder; the runtime path is authoritative.
+_CAM_BLUE          = _CFG['cam_blue_xyz_mm']
+CAMERA_X_MM        = float(_CAM_BLUE[0])
+CAMERA_Y_MM        = float(_CAM_BLUE[1])
+CAMERA_Z_MM        = float(_CAM_BLUE[2])
 
-#CAMERA_Y_MM = 0.0 #table jules
-#CAMERA_Z_MM = 1410.0   # camera height above the table — adjust when the rig moves; affects correction magnitude (factor = (cam_z − robot_tag_z) / cam_z).
-
-CAMERA_Y_MM = -100.0 #table adrien
-CAMERA_Z_MM = 1100.0   # camera height above the table — adjust when the
-
-
-# Initial value used at pipeline build — overwritten by _apply_team in
-# run.py at every team flip (and also at boot via force=True). So this
-# just needs to be a valid placeholder; the runtime path is authoritative.
-CAMERA_X_MM = CAMERA_X_MM_BY_TEAM['blue']
-
-# Parallax
-ROBOT_Z_MM = 550.0 # avec porte cable et tag printed
-#ROBOT_Z_MM = 490.0
-
-# Common
-FPS_LIMIT = 4   # 4 Hz feels reactive in the dashboard. Pipeline tick
-                # auto-skips frames implicitly: each tick reads the LATEST
-                # frame from the source.video drainer slot (not a queue),
-                # so if a tick takes > 250 ms the next one starts late and
-                # everything in between is dropped — exactly the behavior
-                # we want.
 TEAM      = 'blue'        # 'blue' or 'yellow'  (overridden live by topbar)
 TRACK_IDS = list(range(1, 11))
 
@@ -248,7 +219,7 @@ def build_localization() -> Pipeline:
         loc_corrected  → BEV with parallax-corrected positions
         poses          → team-filtered pose_list
     """
-    p = Pipeline(name='localization', fps_limit=FPS_LIMIT)
+    p = Pipeline(name='localization', fps_limit=PIPELINE_FPS)
     src = _add_source(p)
 
     pre = _add(p, 'preprocess', 'pre', {'mode': 'passthrough'})
@@ -343,7 +314,10 @@ def build_localization() -> Pipeline:
     # imencode — overlays drawn upstream in BGR fold into luminance, the
     # encode is ~30% cheaper and the payload ~half size. Acceptable for
     # debug feeds.
-    _OUT_PARAMS = {'jpeg_quality': 60, 'fps_limit': 4,
+    # fps_limit matches PIPELINE_FPS — pipeline ticks N×/s, frame outputs
+    # emit N×/s. Decoupling them only makes sense when you want the UI
+    # slower than detection, and right now the user wants them in sync.
+    _OUT_PARAMS = {'jpeg_quality': 60, 'fps_limit': PIPELINE_FPS,
                    'encode_grayscale': True}
     o_aruco_frame = _add(p, 'output', 'out_aruco_frame',
                          {'feed_id': 'aruco', 'label': 'ArUco detection',
@@ -370,7 +344,7 @@ def build_detection() -> Pipeline:
     Currently just publishes the source frame as `detect_preview` and an
     empty result list. Replace with real detection logic when the rules
     are nailed down."""
-    p = Pipeline(name='detection', fps_limit=FPS_LIMIT)
+    p = Pipeline(name='detection', fps_limit=PIPELINE_FPS)
     src = _add_source(p)
 
     o_prev = _add(p, 'output', 'out_detpreview',

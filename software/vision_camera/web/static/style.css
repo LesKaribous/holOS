@@ -41,6 +41,17 @@ body { margin:0; background:var(--bg); color:var(--text);
   padding: 4px 8px;
 }
 
+/* Live sources (camera / jetson) only get the "live" indicator — every
+   other transport control would be a no-op and could only confuse. */
+.playback[data-source-kind="camera"] .pb-btn:not(.live-only),
+.playback[data-source-kind="jetson"] .pb-btn:not(.live-only),
+.playback[data-source-kind="camera"] #speed-sel,
+.playback[data-source-kind="jetson"] #speed-sel { display: none; }
+/* Conversely, the "● live" pill makes no sense for files / images. */
+.playback:not([data-source-kind="camera"]):not([data-source-kind="jetson"]) .live-only {
+  display: none;
+}
+
 .preview {
   display: flex; justify-content: center; align-items: center;
   padding: 12px;

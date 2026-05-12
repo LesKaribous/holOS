@@ -15,12 +15,12 @@
   <span class="badge" id="stream-badge">stream → /stream.mjpg</span>
 </header>
 
-<section class="playback" id="playback">
+<section class="playback" id="playback" data-source-kind="{{ source_kind }}">
   <button class="pb-btn" data-act="step_back_10" title="-10 frames">⏮⏮</button>
   <button class="pb-btn" data-act="step_back"    title="-1 frame">⏮</button>
   <button class="pb-btn" data-act="pause" data-toggle-mode="pause" title="Pause">⏸</button>
   <button class="pb-btn" data-act="play"  data-toggle-mode="play"  title="Play">▶</button>
-  <button class="pb-btn" data-act="live"  data-toggle-mode="live"  title="Live (camera)">●</button>
+  <button class="pb-btn live-only" data-act="live"  data-toggle-mode="live"  title="Live (camera)">●</button>
   <button class="pb-btn" data-act="step"  title="+1 frame">⏭</button>
   <button class="pb-btn" data-act="step_10" title="+10 frames">⏭⏭</button>
   <select id="speed-sel" title="Playback speed">

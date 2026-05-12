@@ -73,12 +73,14 @@ static const char* currentTeamStr() {
 
 static bool getEmbedCamOffset(float& out_offset_mm,
                               int& out_n_tags,
+                              int& out_bias,
                               const char* team_filter = nullptr,
                               uint32_t timeout_ms = 6000) {
     EmbedDetect r{};
     bool ok = vision.queryEmbedDetect(r, team_filter, timeout_ms);
     out_offset_mm = r.offset_mm;
     out_n_tags    = r.n;
+    out_bias      = r.bias;
     if (!ok) {
         Console::warn("Strategy")
             << "[vision] embed_detect timeout/unreachable"
@@ -121,17 +123,22 @@ static void collectStock(Vec2 target, TableCompass tc, RobotCompass rc) {
     actuators.grab(rc); //wide open
     async motion.goAlign(approach, rc, getCompassOrientation(tc));
     {
-        constexpr int      MAX_RETRY      = 3;
-        constexpr uint32_t ATTEMPT_TO_MS  = 8000;
-        constexpr uint32_t RETRY_DELAY_MS = 400;
-        const float lateral_dir_rad =
-            (getCompassOrientation(tc) - 90.0f) * DEG_TO_RAD;
+        constexpr int      MAX_RETRY        = 3;
+        constexpr uint32_t ATTEMPT_TO_MS    = 8000;
+        constexpr uint32_t RETRY_DELAY_MS   = 400;
+        constexpr float    PARTIAL_STEP_MM  = 60.0f;
+        // Camera "+X = right" in image frame maps to compass(tc) - 90° in
+        // world frame. Kept in DEGREES because motion.goPolar() takes
+        // degrees (it does the DEG_TO_RAD internally).
+        const float lateral_dir_deg = getCompassOrientation(tc) - 90.0f;
+        const float lateral_dir_rad = lateral_dir_deg * DEG_TO_RAD;
         float lateral_mm = 0.0f;
         int   n_tags     = 0;
+        int   bias_hint  = 0;
         bool  got        = false;
         for (int attempt = 1; attempt <= MAX_RETRY; ++attempt) {
             // team_filter = nullptr → both ArUco IDs (36 + 47).
-            if (getEmbedCamOffset(lateral_mm, n_tags, nullptr,
+            if (getEmbedCamOffset(lateral_mm, n_tags, bias_hint, nullptr,
                                   ATTEMPT_TO_MS) && n_tags >= 2) {
                 got = true;
                 Console::info("Strategy")
@@ -139,19 +146,23 @@ static void collectStock(Vec2 target, TableCompass tc, RobotCompass rc) {
                     << " OK n=" << n_tags
                     << " offset=" << lateral_mm << "mm" << Console::endl;
                 break;
-            }else{
-                if(n_tags >= 1){
-                    // Tentative de correction partielle même avec 1 tag (moins fiable, mais mieux que rien)
-                    lateral_mm = std::clamp(lateral_mm, -100.0f, 100.0f); // Clamp pour éviter les valeurs extrêmes
-                    async motion.goPolar(lateral_dir_rad * DEG_TO_RAD, lateral_mm);
-                }
-                else{
-                    async motion.goPolar(sidewiseoffset_dir * DEG_TO_RAD, 20);
-                }
             }
+            // Partial / blind detection — step laterally toward the side
+            // where tags ARE so missing ones come into frame. Prefer the
+            // host-provided bias hint; fall back to sign(offset_mm) when
+            // we have at least one tag; blind probe otherwise.
+            int dir_sign;
+            if      (bias_hint != 0) dir_sign = bias_hint;
+            else if (n_tags    >= 1) dir_sign = (lateral_mm >= 0 ? +1 : -1);
+            else                     dir_sign = +1;
+            async motion.goPolar(lateral_dir_deg,
+                                 float(dir_sign) * PARTIAL_STEP_MM);
             Console::warn("Strategy")
                 << "[vision] try " << attempt << "/" << MAX_RETRY
-                << " FAIL n=" << n_tags << Console::endl;
+                << " FAIL n=" << n_tags
+                << " bias=" << bias_hint
+                << " → step " << (float(dir_sign) * PARTIAL_STEP_MM)
+                << "mm @ " << lateral_dir_deg << "°" << Console::endl;
             if (attempt < MAX_RETRY) waitMs(RETRY_DELAY_MS);
         }
         if (got) {

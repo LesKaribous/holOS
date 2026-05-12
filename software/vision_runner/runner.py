@@ -293,6 +293,14 @@ app = Flask(__name__,
 app.config['SECRET_KEY'] = 'vision-runner'
 socketio = SocketIO(app, cors_allowed_origins='*', async_mode='threading')
 
+import logging as _logging
+class _QuietPollEndpoints(_logging.Filter):
+    _MUTE = ('/api/status',)
+    def filter(self, record):
+        msg = record.getMessage()
+        return not any(p in msg for p in self._MUTE)
+_logging.getLogger('werkzeug').addFilter(_QuietPollEndpoints())
+
 _host: Optional[PipelineHost] = None
 
 

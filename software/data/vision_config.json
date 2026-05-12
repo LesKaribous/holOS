@@ -1,6 +1,34 @@
 {
+  "source_fps":   30,
+  "record_fps":   16,
+  "pipeline_fps": 16,
+
+  "source_kind": "jetson",
+  "source_path": "/dev/video0",
+  "host":        "0.0.0.0",
+  "port":        5174,
+  "quality":     80,
+  "gst_width":   1920,
+  "gst_height":  1080,
+  "gst_fps":     30,
+  "auto_start":  true,
+
+  "world_origin_corner": "bottom_right",
+  "world_flip_theta":    true,
+  "table_width_mm":      3000.0,
+  "table_height_mm":     2000.0,
+
+  "anchors": {
+    "top_left":     {"tag_id": 23, "x_mm": 2400, "y_mm": 1400, "yaw_deg": 0},
+    "top_right":    {"tag_id": 22, "x_mm":  600, "y_mm": 1400, "yaw_deg": 0},
+    "bottom_right": {"tag_id": 20, "x_mm":  600, "y_mm":  600, "yaw_deg": 0},
+    "bottom_left":  {"tag_id": 21, "x_mm": 2400, "y_mm":  600, "yaw_deg": 0}
+  },
+
   "cam_yellow_xyz_mm": [1275.0, -100.0, 1400.0],
   "cam_blue_xyz_mm":   [1725.0, -100.0, 1400.0],
+  "robot_z_mm":        550.0,
+
   "own_object_z_mm": 455.0,
   "opp_object_z_mm": 455.0
 }

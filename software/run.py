@@ -92,7 +92,12 @@ socketio = SocketIO(app, async_mode='threading', cors_allowed_origins='*')
 
 import logging as _logging
 class _QuietPollEndpoints(_logging.Filter):
-    _MUTE = ('/api/log/status', '/api/vision_camera/status')
+    _MUTE = (
+        '/api/log/status',
+        '/api/vision_camera/status',
+        '/api/vision/calibration',     # also matches /api/vision/calibration/pairs
+        '/api/vision/robot_pose',
+    )
     def filter(self, record):
         msg = record.getMessage()
         return not any(p in msg for p in self._MUTE)
@@ -156,8 +161,50 @@ PARALLAX_CALIB_PATH   = os.path.join(_HERE, 'data', 'parallax_calibration.json')
 VISION_CONFIG_PATH    = os.path.join(_HERE, 'data', 'vision_config.json')
 
 _VISION_CONFIG_DEFAULTS = {
+    # FPS knobs — single source of truth. Three independent rates:
+    #   source_fps   — vision_camera capture / MJPEG serving rate.
+    #   record_fps   — rate at which the source-node drainer feeds frames
+    #                  to the match-logger AVI. Subsamples source_fps.
+    #   pipeline_fps — rate at which the analysis pipeline ticks. Further
+    #                  subsamples (drainer keeps latest, tick samples it).
+    # Typical: 30 → 16 → 4. Recording stays smooth, Jetson stays cool.
+    'source_fps':   30,
+    'record_fps':   16,
+    'pipeline_fps': 4,
+
+    # vision_camera supervisor — subprocess plumbing.
+    'source_kind': 'video',         # video | camera | image | jetson
+    'source_path': 'vision/homography/data/video.2.mp4',
+    'host':        '0.0.0.0',       # 0.0.0.0 = reachable from LAN
+    'port':        5174,
+    'quality':     80,
+    'gst_width':   1280,
+    'gst_height':  720,
+    'gst_fps':     30,
+    'auto_start':  True,
+
+    # World coordinate frame — interpretation of every (x_mm, y_mm) below.
+    'world_origin_corner': 'bottom_right',
+    'world_flip_theta':    True,
+    'table_width_mm':      3000.0,
+    'table_height_mm':     2000.0,
+
+    # 4 corner ArUcos in world frame. Keys are legacy slot labels — only
+    # the count (4) matters, not which key holds which corner.
+    'anchors': {
+        'top_left':     {'tag_id': 23, 'x_mm': 2400, 'y_mm': 1400, 'yaw_deg': 0},
+        'top_right':    {'tag_id': 22, 'x_mm':  600, 'y_mm': 1400, 'yaw_deg': 0},
+        'bottom_right': {'tag_id': 20, 'x_mm':  600, 'y_mm':  600, 'yaw_deg': 0},
+        'bottom_left':  {'tag_id': 21, 'x_mm': 2400, 'y_mm':  600, 'yaw_deg': 0},
+    },
+
+    # Camera position per team (mirrors with team since the mount is
+    # rigid but the camera always views the OWN half). z is camera height
+    # above the table — used by parallax correction.
     'cam_yellow_xyz_mm': [1275.0, -100.0, 1100.0],
     'cam_blue_xyz_mm':   [1725.0, -100.0, 1100.0],
+    'robot_z_mm':        550.0,
+
     'own_object_z_mm':   550.0,
     'opp_object_z_mm':   550.0,
 }
@@ -1806,6 +1853,65 @@ def api_vision_camera_status():
         return jsonify(_vc_status())
     except Exception as e:
         return jsonify({'state': 'unknown', 'last_error': str(e)})
+
+
+def _restart_active_pipeline() -> 'dict':
+    """Tear down the active vision pipeline and restart its worker so the
+    source node re-opens its cv2 capture (forces reconnect to the freshly-
+    restarted vision_camera MJPEG stream).
+
+    `shutdown()` clears the pipeline's SocketIO feed subscribers — re-wire
+    them after `enable()` so the UI keeps receiving vision_feed events."""
+    if _pipeline_registry is None:
+        return {'restarted': False, 'reason': 'no registry'}
+    p = _pipeline_registry.active()
+    if p is None:
+        return {'restarted': False, 'reason': 'no active pipeline'}
+    try:
+        was_enabled = bool(p.enabled)
+        p.shutdown()
+        if was_enabled:
+            p.enable()
+            _wire_pipeline_feeds(p)
+            p.set_feed_gate(lambda _feed_id: _socketio_clients_count() > 0)
+        return {'restarted': True, 'pipeline': p.name, 're_enabled': was_enabled}
+    except Exception as e:
+        return {'restarted': False, 'reason': f'{e}'}
+
+
+@app.route('/api/vision_camera/source', methods=['POST'])
+def api_vision_camera_source():
+    """Runtime override: change source kind/path WITHOUT persisting to
+    vision_camera_config.json. Cleared on holOS restart. Also restarts
+    the active vision pipeline so its cv2 capture re-opens on the new
+    MJPEG stream."""
+    data = request.get_json(force=True) or {}
+    kind = str(data.get('source_kind', '')).strip()
+    path = str(data.get('source_path', '')).strip()
+    if kind not in ('video', 'camera', 'image', 'jetson'):
+        return jsonify({'ok': False, 'error': f'bad source_kind: {kind!r}'}), 400
+    if not path:
+        return jsonify({'ok': False, 'error': 'source_path required'}), 400
+    try:
+        from vision_camera.supervisor import set_runtime_source
+        res = set_runtime_source(kind, path)
+        pipe = _restart_active_pipeline()
+        return jsonify({'ok': True, 'result': res, 'pipeline': pipe})
+    except Exception as e:
+        return jsonify({'ok': False, 'error': str(e)}), 500
+
+
+@app.route('/api/vision_camera/source/clear', methods=['POST'])
+def api_vision_camera_source_clear():
+    """Drop the runtime override and restart on the disk config (subprocess
+    + active pipeline)."""
+    try:
+        from vision_camera.supervisor import clear_runtime_source
+        res = clear_runtime_source()
+        pipe = _restart_active_pipeline()
+        return jsonify({'ok': True, 'result': res, 'pipeline': pipe})
+    except Exception as e:
+        return jsonify({'ok': False, 'error': str(e)}), 500
 
 
 @app.route('/api/vision/enable', methods=['POST'])

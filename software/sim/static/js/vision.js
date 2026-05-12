@@ -759,7 +759,16 @@ function _renderPlaybackControls(el, sourceNode, pipelineName) {
   }
   const kind = sourceNode.kind;
   const params = sourceNode.params || {};
-  const mode = params.playback || (kind === 'source.camera' ? 'live' : 'play');
+  const path = String(params.path || '').toLowerCase();
+  // Transport controls only make sense for a seekable video FILE. Cameras
+  // and live-URL video sources (http/https/rtsp) always run "live" — show
+  // only the indicator so a stale Pause click can't freeze the stream.
+  const isLiveSource =
+    (kind === 'source.camera') ||
+    (kind === 'source.video' &&
+     (path.startsWith('http://')  || path.startsWith('https://') ||
+      path.startsWith('rtsp://')));
+  const mode = params.playback || (isLiveSource ? 'live' : 'play');
   const speed = parseFloat(params.speed ?? 1.0);
 
   // ── Memoize ────────────────────────────────────────────────────────
@@ -768,7 +777,7 @@ function _renderPlaybackControls(el, sourceNode, pipelineName) {
   // <button> that was clicked vanishes before the click handler fires,
   // so the click does nothing). Skip the rebuild when the user-visible
   // state hasn't changed.
-  const sig = `${sourceNode.id}|${kind}|${mode}|${speed}|${params.refresh ?? ''}`;
+  const sig = `${sourceNode.id}|${kind}|${isLiveSource}|${mode}|${speed}|${params.refresh ?? ''}`;
   if (el.dataset.sig === sig) return;
   el.dataset.sig = sig;
 
@@ -777,10 +786,8 @@ function _renderPlaybackControls(el, sourceNode, pipelineName) {
              data-act="${act}" title="${title || act}">${label}</button>`;
 
   let html = '';
-  if (kind === 'source.camera') {
-    html = btn('live',  '● live',  mode === 'live') +
-           btn('pause', '⏸',       mode === 'pause') +
-           btn('step',  '⤳',       false, 'capture next frame');
+  if (isLiveSource) {
+    html = btn('live', '● live', true, 'live source — transport disabled');
   } else if (kind === 'source.video') {
     html =
       btn('step_back_10', '⏮⏮',  false, 'back 10 frames') +
