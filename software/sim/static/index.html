@@ -1619,6 +1619,9 @@
           <option value="">— pipeline —</option>
         </select>
         <span class="vd-pill" id="vd-det-status">—</span>
+        <span class="vd-pill" id="vd-det-streamer"
+              title="Persistent MJPEG grabber: state + frame age. Click to restart."
+              onclick="embedCamRestartStreamer()" style="cursor:pointer">stream: —</span>
         <span style="flex:1"></span>
         <span class="vd-pill" id="vd-det-frames">frames: 0</span>
       </div>
@@ -1672,14 +1675,26 @@
         <button class="btn-sm" onclick="embedCamSaveConfig()">Save</button>
       </div>
 
-      <!-- 2-column grid: live preview (annotated) + check results table.
-           The pipeline must publish:
-             detect_preview → annotated frame (color masks, ROIs, found markers)
-             detect_results → list of dicts {name, status, color?, value?, …}
-                              status ∈ 'pass' | 'fail' | 'unknown' -->
+      <!-- 3-column grid: raw fetched frame + annotated preview + check table.
+           - detect_raw     → JPEG as it came off the ESP32 wire (no processing)
+           - detect_preview → annotated frame (corners, IDs, centroid, summary)
+           - detect_results → list of dicts {name, status, color?, value?, …}
+                              status ∈ 'pass' | 'fail' | 'unknown'
+           Raw vs preview side-by-side lets the operator tell a fetch failure
+           apart from an ArUco miss at a glance — the diagnostic Jules needs
+           when a match-time embed_detect takes multiple rounds. -->
       <div class="vd-detect-grid">
         <section class="vd-tile">
-          <header class="vd-tile-head">Detection preview
+          <header class="vd-tile-head">Fetched (raw)
+            <span class="vd-tile-meta" id="vd-meta-detraw"></span>
+          </header>
+          <div class="vd-tile-body" id="vd-tile-detraw">
+            <div class="vd-empty">waiting for feed_id <code>detect_raw</code></div>
+          </div>
+        </section>
+
+        <section class="vd-tile">
+          <header class="vd-tile-head">Processed (overlay)
             <span class="vd-tile-meta" id="vd-meta-detpreview"></span>
           </header>
           <div class="vd-tile-body" id="vd-tile-detpreview">

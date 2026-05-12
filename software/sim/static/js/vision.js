@@ -362,10 +362,12 @@ function visionSetViewPipeline(viewId, pipelineName) {
 
 // ── Detection view tiles ────────────────────────────────────────────────
 const _DETECT_TILE_IDS = {
+  detect_raw:     'vd-tile-detraw',
   detect_preview: 'vd-tile-detpreview',
   detect_results: 'vd-tile-detresults',
 };
 const _DETECT_META_IDS = {
+  detect_raw:     'vd-meta-detraw',
   detect_preview: 'vd-meta-detpreview',
   detect_results: 'vd-meta-detresults',
 };
@@ -384,11 +386,21 @@ socket.on('vision_feed', (data) => {
   if (!pill) return;
   const stage = String(p.stage || '?');
   const src   = String(p.source || '?');
+  // Timing breakdown (only attached to done/error stages from the host).
+  // Showing the split tells the operator whether the bottleneck is the
+  // ESP32 wire (fetch), JPEG decode, or ArUco itself — instead of just
+  // a lump "total" number that hides where the round-trip went.
+  const fetchMs   = (p.fetch_ms   ?? null);
+  const decodeMs  = (p.decode_ms  ?? null);
+  const analyzeMs = (p.analyze_ms ?? null);
+  const timings = (fetchMs != null)
+    ? ` ⏱ f=${fetchMs} d=${decodeMs ?? 0} a=${analyzeMs ?? 0}ms`
+    : '';
   const txt = (() => {
     if (stage === 'request')  return `▶ request from ${src}`;
     if (stage === 'fetching') return `… fetching (${src})`;
-    if (stage === 'done')     return `✓ ${src} n=${p.n ?? '?'}/${p.expected ?? 4} off=${(p.offset_mm ?? 0).toFixed(1)}mm`;
-    if (stage === 'error')    return `✗ ${src} ${p.reason || 'error'}`;
+    if (stage === 'done')     return `✓ ${src} n=${p.n ?? '?'}/${p.expected ?? 4} off=${(p.offset_mm ?? 0).toFixed(1)}mm${timings}`;
+    if (stage === 'error')    return `✗ ${src} ${p.reason || 'error'}${timings}`;
     return `${stage} (${src})`;
   })();
   pill.textContent = txt;
@@ -415,6 +427,46 @@ setInterval(() => {
     }
   }
 }, 500);
+
+// Poll the persistent grabber status while on Detection tab.
+// State/age/frame-count tells the operator at a glance whether the
+// ESP32 stream is live (the hot path for match-time detect_once) or
+// the host is falling back to the slow per-request /capture path.
+function _renderStreamerPill(s) {
+  const pill = document.getElementById('vd-det-streamer');
+  if (!pill) return;
+  if (!s) {
+    pill.textContent = 'stream: —';
+    pill.classList.remove('vd-pill-ok','vd-pill-err','vd-pill-busy');
+    return;
+  }
+  const state = String(s.state || '?');
+  const age   = (s.age_ms != null && s.age_ms >= 0) ? `${s.age_ms}ms` : '—';
+  const fps   = s.frames ?? 0;
+  pill.textContent = `stream: ${state} · ${age} · n=${fps}`;
+  pill.classList.remove('vd-pill-ok','vd-pill-err','vd-pill-busy');
+  if      (state === 'reading' && s.age_ms >= 0 && s.age_ms < 500) pill.classList.add('vd-pill-ok');
+  else if (state === 'error' || state === 'stopped')               pill.classList.add('vd-pill-err');
+  else                                                              pill.classList.add('vd-pill-busy');
+}
+setInterval(() => {
+  if (typeof activeView !== 'string' || activeView !== 'vision-detection') return;
+  fetch('/api/embed_cam/streamer')
+    .then(r => r.json())
+    .then(j => { if (j.ok) _renderStreamerPill(j.status); })
+    .catch(() => {});
+}, 2000);
+
+function embedCamRestartStreamer() {
+  fetch('/api/embed_cam/streamer', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({action: 'restart'}),
+  })
+  .then(r => r.json())
+  .then(j => { if (j.ok) _renderStreamerPill(j.status); })
+  .catch(() => {});
+}
+window.embedCamRestartStreamer = embedCamRestartStreamer;
 
 function _renderDetectionTiles() {
   // Embed-cam feeds are pinned: the operator wants to see the LAST

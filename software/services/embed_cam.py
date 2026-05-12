@@ -64,6 +64,15 @@ _cfg: dict = {
     # out the first JPEG works too. Try `url` first, fall back here
     # if the first attempt times out / returns a multipart payload.
     'mjpeg_url':          'http://192.168.1.81/',
+    # Persistent MJPEG grabber. When `use_streamer` is True, a
+    # background thread tails this URL and keeps the most recent JPEG
+    # in memory. `detect_once` then reads the cached frame instead of
+    # opening a fresh TCP connection on every request — eliminates the
+    # 50-200 ms ESP-side capture latency for match-time queries.
+    'use_streamer':       True,
+    'stream_url':         '',          # blank → reuse `mjpeg_url`
+    # Frame is considered stale (and we fall back to /capture) after this.
+    'stream_max_age_ms':  500,
     'fetch_timeout_s':    1.5,
     # ArUco detection — DICT_4X4_50, IDs 36 (blue) / 47 (yellow). The
     # `team` knob lets the operator restrict detection to one colour
@@ -109,6 +118,175 @@ def set_config(patch: dict) -> dict:
     return get_config()
 
 
+# ── Persistent MJPEG grabber ──────────────────────────────────────────
+# Background reader thread for the ESP32-CAM MJPEG endpoint. Keeps the
+# most recent JPEG + decoded BGR frame in a 1-slot buffer so that
+# detect_once() can return instantly instead of opening a fresh TCP
+# connection on every call. This is the same architecture pattern used
+# by software/vision_source.py for the front-facing Jetson camera.
+
+class MjpegStreamer:
+    """Tails an MJPEG stream in a background thread and exposes the
+    latest decoded frame to consumers. Hunts SOI/EOI markers in the
+    multipart body — works with any firmware that emits a stream of
+    concatenated JPEGs (multipart MIME or raw)."""
+
+    _RECONNECT_BACKOFF_S = 1.0
+
+    def __init__(self):
+        self._url = ''
+        self._timeout = 5.0
+        self._thread: 'Optional[threading.Thread]' = None
+        self._running = False
+        self._slot_lock = threading.Lock()
+        # Latest frame slot (replaced atomically).
+        self._latest_raw:   Optional[bytes] = None
+        self._latest_frame: 'Optional[np.ndarray]' = None
+        self._latest_t = 0.0
+        self._frames = 0
+        self._reconnects = 0
+        self._last_error = ''
+        self._state = 'stopped'  # stopped | connecting | reading | error
+
+    # ── Lifecycle ─────────────────────────────────────────────────────
+    def start(self, url: str, timeout_s: float = 5.0) -> None:
+        if self._running and self._url == url:
+            return
+        self.stop()
+        self._url = url
+        self._timeout = float(timeout_s)
+        self._running = True
+        self._state = 'connecting'
+        self._thread = threading.Thread(target=self._loop,
+                                        name='embedcam-mjpeg',
+                                        daemon=True)
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._running = False
+        t = self._thread
+        self._thread = None
+        # Don't join — the reader is blocked on a socket read; we just
+        # let the daemon thread die when the urlopen socket eventually
+        # times out. Future start() will spin up a fresh thread.
+        self._state = 'stopped'
+
+    # ── Consumer API ──────────────────────────────────────────────────
+    def read_latest(self) -> 'tuple[Optional[bytes], Optional[np.ndarray], dict]':
+        """Snapshot the latest (raw, decoded, status). Status includes
+        age_ms so callers can decide whether the frame is fresh enough."""
+        with self._slot_lock:
+            raw = self._latest_raw
+            frame = self._latest_frame
+            t = self._latest_t
+        age_ms = int((time.monotonic() - t) * 1000) if raw else -1
+        return raw, frame, {
+            'state':      self._state,
+            'url':        self._url,
+            'frames':     self._frames,
+            'reconnects': self._reconnects,
+            'age_ms':     age_ms,
+            'last_error': self._last_error,
+        }
+
+    def status(self) -> dict:
+        _, _, s = self.read_latest()
+        return s
+
+    # ── Reader loop ───────────────────────────────────────────────────
+    def _loop(self) -> None:
+        while self._running:
+            try:
+                self._state = 'connecting'
+                req = urllib.request.Request(
+                    self._url, headers={'User-Agent': 'holOS-stream'})
+                with urllib.request.urlopen(req, timeout=self._timeout) as resp:
+                    self._state = 'reading'
+                    self._read_stream(resp)
+            except Exception as e:
+                self._last_error = str(e)
+                self._state = 'error'
+                self._reconnects += 1
+            if not self._running:
+                break
+            time.sleep(self._RECONNECT_BACKOFF_S)
+
+    def _read_stream(self, resp) -> None:
+        """Consume the response body, slice complete JPEGs by SOI/EOI."""
+        buf = bytearray()
+        # Reading in modest chunks keeps memory bounded if the ESP
+        # bursts a large frame; 8 KiB is well above one VGA JPEG frame
+        # at quality 12 (~10-15 KiB) so usually each read yields a
+        # complete frame plus a fresh header for the next one.
+        CHUNK = 8 * 1024
+        while self._running:
+            chunk = resp.read(CHUNK)
+            if not chunk:
+                return  # peer closed → outer loop reconnects
+            buf.extend(chunk)
+            # Drain every complete JPEG in the buffer.
+            while True:
+                soi = buf.find(b'\xff\xd8')
+                if soi < 0:
+                    # No SOI in buffer — keep the last byte in case it's
+                    # a half-marker straddling chunks.
+                    if len(buf) > 1:
+                        del buf[:-1]
+                    break
+                # Drop bytes before SOI; they're MIME headers we don't need.
+                if soi > 0:
+                    del buf[:soi]
+                eoi = buf.find(b'\xff\xd9', 2)
+                if eoi < 0:
+                    break  # incomplete frame; wait for more bytes
+                jpeg = bytes(buf[:eoi + 2])
+                del buf[:eoi + 2]
+                self._on_jpeg(jpeg)
+
+    def _on_jpeg(self, jpeg: bytes) -> None:
+        if not _CV2_OK:
+            return
+        try:
+            arr = np.frombuffer(jpeg, dtype=np.uint8)
+            frame = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+        except Exception as e:
+            self._last_error = f'decode: {e}'
+            return
+        if frame is None:
+            return
+        with self._slot_lock:
+            self._latest_raw = jpeg
+            self._latest_frame = frame
+            self._latest_t = time.monotonic()
+            self._frames += 1
+
+
+# Module-level singleton.
+_streamer = MjpegStreamer()
+
+
+def start_streamer(url: 'Optional[str]' = None,
+                   timeout_s: 'Optional[float]' = None) -> None:
+    """Start (or restart) the persistent MJPEG grabber. Called at boot
+    from run.py and on config save when stream URL / use_streamer change."""
+    if not _cfg.get('use_streamer', True):
+        _streamer.stop()
+        return
+    u = url or str(_cfg.get('stream_url') or _cfg.get('mjpeg_url') or '')
+    if not u:
+        return
+    t = timeout_s if timeout_s is not None else float(_cfg.get('fetch_timeout_s', 1.5)) * 3
+    _streamer.start(u, timeout_s=t)
+
+
+def stop_streamer() -> None:
+    _streamer.stop()
+
+
+def streamer_status() -> dict:
+    return _streamer.status()
+
+
 # ── Image fetch ───────────────────────────────────────────────────────
 
 def _fetch_jpeg(url: str, timeout_s: float) -> Optional[bytes]:
@@ -135,31 +313,70 @@ def _slice_first_jpeg_from_mjpeg(blob: bytes) -> Optional[bytes]:
 
 
 def fetch_frame() -> Optional['np.ndarray']:
-    """Fetch a single BGR frame from the embedded camera. Returns None
-    on any error (camera offline, timeout, decode failure)."""
+    """Backwards-compat: returns just the decoded BGR frame, no timings."""
+    raw, frame, _ = fetch_frame_timed()
+    return frame
+
+
+def fetch_frame_timed() -> 'tuple[Optional[bytes], Optional[np.ndarray], dict]':
+    """Fetch one frame from the ESP32-CAM. Returns (raw_jpeg, bgr, timings).
+    `raw_jpeg` is exactly what came off the wire (or the slice of a multipart
+    body) — the UI shows it verbatim so the operator can tell a fetch failure
+    apart from an ArUco miss. `timings` has fetch_ms / decode_ms / source_url
+    so the diagnostic pill can show where the round-trip went.
+
+    Strategy:
+      0) If the persistent MJPEG streamer is running and has a frame
+         younger than `stream_max_age_ms`, return it instantly — zero
+         round-trip. This is the hot path for match-time queries.
+      1) Otherwise fall back to a one-shot GET on the /capture endpoint.
+      2) If that fails too, fall back to slicing the first frame off
+         the MJPEG stream synchronously (legacy path)."""
+    timings = {'fetch_ms': 0, 'decode_ms': 0, 'source_url': '', 'source_kind': ''}
     if not _CV2_OK:
-        return None
+        return None, None, timings
+    # 0) Persistent grabber — cached frame, no network roundtrip.
+    if _cfg.get('use_streamer', True):
+        max_age = int(_cfg.get('stream_max_age_ms', 500))
+        raw, frame, st = _streamer.read_latest()
+        if raw is not None and frame is not None and 0 <= st['age_ms'] <= max_age:
+            timings['source_url']  = st['url']
+            timings['source_kind'] = 'stream-cache'
+            timings['fetch_ms']    = st['age_ms']  # how stale, not wall time
+            timings['decode_ms']   = 0            # decoded in reader thread
+            return raw, frame, timings
     url       = str(_cfg.get('url', 'http://192.168.1.81/capture'))
     mjpeg_url = str(_cfg.get('mjpeg_url', 'http://192.168.1.81/'))
     timeout   = float(_cfg.get('fetch_timeout_s', 1.5))
     # 1) Try the dedicated single-shot endpoint first.
+    t0 = time.monotonic()
     blob = _fetch_jpeg(url, timeout)
+    timings['fetch_ms'] = int((time.monotonic() - t0) * 1000)
     if blob and blob[:2] == b'\xff\xd8':
-        # Standard JPEG SOI — decode straight.
+        t1 = time.monotonic()
         arr = np.frombuffer(blob, dtype=np.uint8)
         frame = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+        timings['decode_ms'] = int((time.monotonic() - t1) * 1000)
+        timings['source_url']  = url
+        timings['source_kind'] = 'capture'
         if frame is not None:
-            return frame
+            return bytes(blob), frame, timings
     # 2) Fallback: pull from the MJPEG stream, slice the first frame.
+    t0 = time.monotonic()
     blob = _fetch_jpeg(mjpeg_url, timeout)
+    timings['fetch_ms'] += int((time.monotonic() - t0) * 1000)
     if blob:
         jpeg = _slice_first_jpeg_from_mjpeg(blob)
         if jpeg:
+            t1 = time.monotonic()
             arr = np.frombuffer(jpeg, dtype=np.uint8)
             frame = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+            timings['decode_ms'] = int((time.monotonic() - t1) * 1000)
+            timings['source_url']  = mjpeg_url
+            timings['source_kind'] = 'mjpeg-slice'
             if frame is not None:
-                return frame
-    return None
+                return bytes(jpeg), frame, timings
+    return None, None, timings
 
 
 # ── ArUco detection ────────────────────────────────────────────────────
@@ -388,13 +605,29 @@ def analyze_frame(frame: 'np.ndarray',
 def detect_once(team_override: 'Optional[str]' = None) -> dict:
     """Fetch + analyse + return result dict.  On failure, the dict
     still has all keys but `valid=False`, `n=0` and `preview=None`.
-    `team_override` ('blue' | 'yellow' | 'auto') trumps cfg.team."""
+    `team_override` ('blue' | 'yellow' | 'auto') trumps cfg.team.
+    Timings are split into fetch_ms / decode_ms / analyze_ms so the
+    Detection tab can show where the round-trip went."""
     if not _CV2_OK:
         return _empty('opencv-unavailable')
-    frame = fetch_frame()
+    raw_jpeg, frame, t = fetch_frame_timed()
     if frame is None:
-        return _empty('fetch-failed')
-    return analyze_frame(frame, team_override=team_override)
+        r = _empty('fetch-failed')
+        r['fetch_ms']   = t['fetch_ms']
+        r['decode_ms']  = t['decode_ms']
+        r['source_url']  = t['source_url']
+        r['source_kind'] = t['source_kind']
+        r['raw_jpeg']   = raw_jpeg
+        return r
+    t0 = time.monotonic()
+    result = analyze_frame(frame, team_override=team_override)
+    result['analyze_ms'] = int((time.monotonic() - t0) * 1000)
+    result['fetch_ms']   = t['fetch_ms']
+    result['decode_ms']  = t['decode_ms']
+    result['source_url']  = t['source_url']
+    result['source_kind'] = t['source_kind']
+    result['raw_jpeg']   = raw_jpeg
+    return result
 
 
 def _empty(reason: str) -> dict:
@@ -412,6 +645,12 @@ def _empty(reason: str) -> dict:
         'image_w':     0,
         'image_h':     0,
         'preview':     None,
+        'raw_jpeg':    None,
+        'fetch_ms':    0,
+        'decode_ms':   0,
+        'analyze_ms':  0,
+        'source_url':  '',
+        'source_kind': '',
         'error':       reason,
     }
 
@@ -432,9 +671,9 @@ def preview_to_jpeg(result: dict, jpeg_quality: int = 75) -> Optional[bytes]:
 
 
 def result_to_json(result: dict) -> dict:
-    """Strip the (non-JSON) preview ndarray so the dict can ride a
-    SocketIO frame as JSON."""
-    out = {k: v for k, v in result.items() if k != 'preview'}
+    """Strip the (non-JSON) preview ndarray + raw JPEG bytes so the
+    dict can ride a SocketIO frame as JSON."""
+    out = {k: v for k, v in result.items() if k not in ('preview', 'raw_jpeg')}
     return out
 
 
@@ -474,6 +713,32 @@ def result_to_checks(result: dict) -> list[dict]:
          'status': 'pass' if (full or bias == 0) else 'unknown',
          'value': bias_str},
     ]
+    # Timing breakdown — primary diagnostic when fetches stretch into
+    # multiple rounds. Pass if everything happened under ~500 ms, fail
+    # if fetch itself blew past 1 s (the firmware typically gives up
+    # well before that anyway).
+    fetch_ms   = int(result.get('fetch_ms', 0))
+    decode_ms  = int(result.get('decode_ms', 0))
+    analyze_ms = int(result.get('analyze_ms', 0))
+    total_ms   = fetch_ms + decode_ms + analyze_ms
+    rows.extend([
+        {'name': 'fetch',
+         'status': 'fail' if fetch_ms >= 1000 else ('unknown' if fetch_ms >= 500 else 'pass'),
+         'value': f'{fetch_ms} ms'},
+        {'name': 'decode',
+         'status': 'pass' if decode_ms < 100 else 'unknown',
+         'value': f'{decode_ms} ms'},
+        {'name': 'analyze',
+         'status': 'pass' if analyze_ms < 100 else 'unknown',
+         'value': f'{analyze_ms} ms'},
+        {'name': 'total',
+         'status': 'pass' if total_ms < 500 else ('fail' if total_ms >= 1500 else 'unknown'),
+         'value': f'{total_ms} ms'},
+    ])
+    src_kind = result.get('source_kind')
+    if src_kind:
+        rows.append({'name': 'source', 'status': 'pass',
+                     'value': str(src_kind)})
     if result.get('error'):
         rows.insert(0, {'name': 'error', 'status': 'fail',
                         'value': str(result['error'])})

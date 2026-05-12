@@ -1666,6 +1666,7 @@ except Exception as _ec_err:
 # wasn't on the tab when it landed.
 _last_embed_result: 'Optional[dict]' = None
 _last_embed_jpeg_b64: 'Optional[str]' = None
+_last_embed_raw_b64:  'Optional[str]' = None
 _last_embed_t: float = 0.0
 _last_embed_source: str = ''
 _last_embed_lock = threading.Lock()
@@ -1701,9 +1702,13 @@ def _emit_embed_detect_status(stage: str, source: str = 'ui',
 
 
 def _emit_embed_detect_feeds(result: dict, source: str = 'ui',
-                             jpeg_b64: 'Optional[str]' = None) -> None:
+                             jpeg_b64: 'Optional[str]' = None,
+                             raw_b64:  'Optional[str]' = None) -> None:
     """Publish a detection result to the Detection sub-tab.
-    Pre-encoded `jpeg_b64` skips re-encoding when replaying from cache."""
+    Pre-encoded `jpeg_b64` / `raw_b64` skip re-encoding when replaying.
+    `raw_b64` is the JPEG as it came off the ESP32 wire — the UI shows
+    it next to the annotated preview so the operator can tell a fetch
+    failure apart from an ArUco miss without leaving the page."""
     if _embed_cam is None:
         _emit_embed_detect_status('error', source,
                                   {'reason': 'embed_cam-unavailable'})
@@ -1721,6 +1726,18 @@ def _emit_embed_detect_feeds(result: dict, source: str = 'ui',
         return
     import base64 as _b64
     try:
+        if raw_b64 is None:
+            raw_bytes = result.get('raw_jpeg')
+            if raw_bytes:
+                raw_b64 = _b64.b64encode(raw_bytes).decode()
+        if raw_b64:
+            socketio.emit('vision_feed', {
+                'feed_id':  'detect_raw',
+                'pipeline': 'embed_cam',
+                'kind':     'frame',
+                'jpeg':     raw_b64,
+                'meta':     {'label': f'Embed cam · raw ({source})'},
+            })
         if jpeg_b64 is None:
             jpeg = _embed_cam.preview_to_jpeg(result)
             if jpeg:
@@ -1745,11 +1762,15 @@ def _emit_embed_detect_feeds(result: dict, source: str = 'ui',
             'done' if not result.get('error') else 'error',
             source,
             {
-                'n':         int(result.get('n', 0)),
-                'expected':  int(result.get('expected', 4)),
-                'offset_mm': float(result.get('offset_mm', 0.0)),
-                'team':      str(result.get('team', 'unknown')),
-                'reason':    result.get('error'),
+                'n':          int(result.get('n', 0)),
+                'expected':   int(result.get('expected', 4)),
+                'offset_mm':  float(result.get('offset_mm', 0.0)),
+                'team':       str(result.get('team', 'unknown')),
+                'fetch_ms':   int(result.get('fetch_ms', 0)),
+                'decode_ms':  int(result.get('decode_ms', 0)),
+                'analyze_ms': int(result.get('analyze_ms', 0)),
+                'source_kind': str(result.get('source_kind', '')),
+                'reason':     result.get('error'),
             })
     except Exception as e:
         print(f"[EmbedCam] feed emit failed: {e}")
@@ -1760,7 +1781,7 @@ def _run_embed_detect(source: str, team_override: 'Optional[str]' = None) -> dic
     """Single code path for the UI button AND firmware requests.
     Fetches the frame, runs detection, stores the result in soft
     memory, emits feeds, and returns the result dict."""
-    global _last_embed_result, _last_embed_jpeg_b64
+    global _last_embed_result, _last_embed_jpeg_b64, _last_embed_raw_b64
     global _last_embed_t, _last_embed_source
     if _embed_cam is None:
         _emit_embed_detect_feeds({'error': 'embed_cam-unavailable'},
@@ -1772,17 +1793,22 @@ def _run_embed_detect(source: str, team_override: 'Optional[str]' = None) -> dic
     result = _embed_cam.detect_once(team_override=team_override)
     dt_ms = int((time.monotonic() - t0) * 1000)
     result['_fetch_ms'] = dt_ms
-    # Pre-encode the JPEG once so we can both emit and cache cheaply.
     import base64 as _b64
+    # Raw bytes already came off the wire — just b64 them for transport.
+    raw_b64 = _b64.b64encode(result['raw_jpeg']).decode() if result.get('raw_jpeg') else None
     jpeg = _embed_cam.preview_to_jpeg(result)
     jpeg_b64 = _b64.b64encode(jpeg).decode() if jpeg else None
     with _last_embed_lock:
         _last_embed_result   = result
         _last_embed_jpeg_b64 = jpeg_b64
+        _last_embed_raw_b64  = raw_b64
         _last_embed_t        = time.time()
         _last_embed_source   = source
     _vlog(
-        f"embed_detect done in {dt_ms}ms: "
+        f"embed_detect done in {dt_ms}ms "
+        f"(fetch={result.get('fetch_ms',0)}ms "
+        f"decode={result.get('decode_ms',0)}ms "
+        f"analyze={result.get('analyze_ms',0)}ms): "
         f"n={result.get('n', 0)}/{result.get('expected', 4)} "
         f"offset={result.get('offset_mm', 0.0):+.1f}mm "
         f"valid={int(bool(result.get('valid', False)))} "
@@ -1791,13 +1817,17 @@ def _run_embed_detect(source: str, team_override: 'Optional[str]' = None) -> dic
     try:
         from services.match_logger import MATCH_LOGGER
         MATCH_LOGGER.log('espcam',
-            f"src={source} dt={dt_ms}ms n={result.get('n',0)}/"
+            f"src={source} dt={dt_ms}ms "
+            f"f={result.get('fetch_ms',0)}/d={result.get('decode_ms',0)}/"
+            f"a={result.get('analyze_ms',0)}ms "
+            f"n={result.get('n',0)}/"
             f"{result.get('expected',4)} off={result.get('offset_mm',0.0):+.1f}"
             f" valid={int(bool(result.get('valid', False)))} "
             f"reason={result.get('error') or '-'}")
     except Exception:
         pass
-    _emit_embed_detect_feeds(result, source=source, jpeg_b64=jpeg_b64)
+    _emit_embed_detect_feeds(result, source=source,
+                             jpeg_b64=jpeg_b64, raw_b64=raw_b64)
     return result
 
 
@@ -1828,6 +1858,7 @@ def api_embed_cam_last():
             'result':   _embed_cam.result_to_json(_last_embed_result)
                         if _embed_cam else _last_embed_result,
             'jpeg_b64': _last_embed_jpeg_b64,
+            'raw_b64':  _last_embed_raw_b64,
             't':        _last_embed_t,
             'source':   _last_embed_source,
         })
@@ -1842,7 +1873,8 @@ def api_embed_cam_replay():
             return jsonify({'ok': False, 'error': 'no detection yet'})
         _emit_embed_detect_feeds(_last_embed_result,
                                  source=f"replay/{_last_embed_source}",
-                                 jpeg_b64=_last_embed_jpeg_b64)
+                                 jpeg_b64=_last_embed_jpeg_b64,
+                                 raw_b64=_last_embed_raw_b64)
     return jsonify({'ok': True})
 
 
@@ -1852,8 +1884,38 @@ def api_embed_cam_config():
         return jsonify({'ok': False, 'error': 'embed_cam unavailable'}), 503
     if request.method == 'POST':
         body = request.get_json(silent=True) or {}
+        # Detect changes to streamer-affecting knobs so we can restart it.
+        before = _embed_cam.get_config()
         _embed_cam.set_config(body)
+        after  = _embed_cam.get_config()
+        streamer_keys = ('use_streamer', 'stream_url', 'mjpeg_url',
+                         'fetch_timeout_s')
+        if any(before.get(k) != after.get(k) for k in streamer_keys):
+            try:
+                _embed_cam.start_streamer()  # idempotent restart
+            except Exception as e:
+                print(f"[EmbedCam] streamer restart failed: {e}")
     return jsonify({'ok': True, 'config': _embed_cam.get_config()})
+
+
+@app.route('/api/embed_cam/streamer', methods=['GET', 'POST'])
+def api_embed_cam_streamer():
+    """Status + control endpoint for the persistent MJPEG grabber.
+    GET → current status (state, frames seen, age of cached frame, …).
+    POST {action: 'start'|'stop'|'restart'} → toggle the reader thread."""
+    if _embed_cam is None:
+        return jsonify({'ok': False, 'error': 'embed_cam unavailable'}), 503
+    if request.method == 'POST':
+        body = request.get_json(silent=True) or {}
+        action = str(body.get('action', '')).lower()
+        if action == 'stop':
+            _embed_cam.stop_streamer()
+        elif action in ('start', 'restart'):
+            _embed_cam.start_streamer()
+        else:
+            return jsonify({'ok': False,
+                            'error': f'unknown action: {action!r}'}), 400
+    return jsonify({'ok': True, 'status': _embed_cam.streamer_status()})
 
 
 # ── Vision API ────────────────────────────────────────────────────────────────
@@ -5202,6 +5264,18 @@ def main():
             brain.log(f"[vision-source] start failed: {_vc_err}")
         except Exception:
             pass
+    # Start the persistent ESP32-CAM MJPEG grabber. Background thread
+    # tails the stream into a 1-slot frame cache so detect_once reads
+    # the freshest frame instantly (no TCP handshake, no ESP capture
+    # latency). Failure here is non-fatal — falls back to per-request
+    # /capture fetch on each detect.
+    if _embed_cam is not None:
+        try:
+            _embed_cam.start_streamer()
+            print(f"[EmbedCam] streamer started "
+                  f"({_embed_cam.streamer_status().get('url') or '(disabled)'})")
+        except Exception as _es_err:
+            print(f"[EmbedCam] streamer start failed: {_es_err}")
     # Load saved pipelines + activate the default one (if any). Feed
     # callbacks are wired inside _load_pipelines.
     # NB: vision pose updates are PULL-based now — the strategy queries
