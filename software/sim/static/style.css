@@ -3459,10 +3459,30 @@ html, body { height: 100%; overflow: hidden; margin: 0;
 .vd-pose-cls-object   { color: var(--text-dim); }
 
 /* Compact variant of the pose table — used by the ArUco list, where
-   we want a dense roster with many rows visible at once. */
-.vd-pose-table-compact { font: 10px/1.15 ui-monospace, SFMono-Regular, monospace; }
+   we want a dense roster with many rows visible at once.
+   `table-layout: fixed` + explicit column widths so the columns don't
+   jump every time a px/py value gains or loses a digit. */
+.vd-pose-table-compact {
+  font: 10px/1.15 ui-monospace, SFMono-Regular, monospace;
+  table-layout: fixed;
+}
 .vd-pose-table-compact th,
-.vd-pose-table-compact td { padding: 1px 6px; }
+.vd-pose-table-compact td {
+  padding: 1px 6px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* Column widths: id | role | px | py | age */
+.vd-pose-table-compact th:nth-child(1),
+.vd-pose-table-compact td:nth-child(1) { width: 36px; }
+.vd-pose-table-compact th:nth-child(2),
+.vd-pose-table-compact td:nth-child(2) { width: 52px; }
+.vd-pose-table-compact th:nth-child(3),
+.vd-pose-table-compact td:nth-child(3) { width: 56px; }
+.vd-pose-table-compact th:nth-child(4),
+.vd-pose-table-compact td:nth-child(4) { width: 56px; }
+/* age takes the remainder */
 
 /* ArUco row colors — `data-cls` set by JS each render tick.
    own   = currently-detected own-team tag (green)
@@ -3471,6 +3491,7 @@ html, body { height: 100%; overflow: hidden; margin: 0;
    lost  = was detected, now within the fade-out persistence window (gray) */
 .vd-aru-row[data-cls="own"]      { color: #22c55e; }
 .vd-aru-row[data-cls="opponent"] { color: #ef4444; }
+.vd-aru-row[data-cls="anchor"]   { color: #fbbf24; }
 .vd-aru-row[data-cls="neutral"]  { color: var(--text-dim); }
 .vd-aru-row[data-cls="lost"]     { color: var(--text-dim); }
 
