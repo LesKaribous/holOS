@@ -128,14 +128,34 @@ socket.on('vision_feed', data => {
 });
 
 // ── Vision dashboard state (persistent ArUco list + Own/Opp pose cards) ─
-// ArUco markers fade in place when no longer detected, and drop from the
-// list after _ARU_REMOVE_MS. Pose cards keep their last known reading and
-// gray-out when the corresponding tag is no longer seen.
+// ArUco markers stay colored (green = own team, red = opponent, neutral
+// for anchors / unknowns) while fresh, then gray out the moment we
+// stop seeing them and fade to invisible over _ARU_FADE_MS before
+// being dropped. Avoids the flicker of a tag that drops out for a
+// single frame.
 const _arucoSeen = new Map();             // tag_id → {px, py, num_corners, lastSeen}
 const _poseSeen  = { own: null, opp: null }; // {tag_id, label, naive_x, naive_y, x, y, theta, lastSeen}
-const _ARU_FRESH_MS  = 350;
-const _ARU_REMOVE_MS = 15000;
+const _ARU_FRESH_MS  = 250;               // 5 FPS pose feed = 200 ms; +50 ms margin
+const _ARU_FADE_MS   = 1000;              // persistence after a tag is lost
+const _ARU_REMOVE_MS = _ARU_FRESH_MS + _ARU_FADE_MS;
 const _LOC_FRESH_MS  = 500;
+
+// Tag-id → team affiliation. Blue robots wear tags 1-5, yellow 6-10.
+// Everything else (anchors 20-23, generic objects) is "neutral".
+let _currentTeam = 'blue';
+socket.on('state', s => {
+  if (s && (s.team === 'blue' || s.team === 'yellow')) _currentTeam = s.team;
+});
+function _tagAffiliation(tagId) {
+  if (tagId >= 1 && tagId <= 5)  return 'blue';
+  if (tagId >= 6 && tagId <= 10) return 'yellow';
+  return null;
+}
+function _tagClassForTeam(tagId, team) {
+  const a = _tagAffiliation(tagId);
+  if (a === null)   return 'neutral';
+  return (a === team) ? 'own' : 'opponent';
+}
 
 function _ingestArucoList(items) {
   if (!Array.isArray(items)) return;
@@ -193,10 +213,13 @@ function _renderArucoListPersistent(now) {
     if (age > _ARU_REMOVE_MS) { _arucoSeen.delete(id); continue; }
     const fresh = age < _ARU_FRESH_MS;
     if (fresh) freshCount++;
-    const fadeRange = _ARU_REMOVE_MS - _ARU_FRESH_MS;
+    // Fresh: opacity 1, color = own/opponent/neutral. Lost: opacity
+    // ramps 1→0 over _ARU_FADE_MS, color = neutral gray (so the row
+    // visibly "fades out" toward the white surface).
     const opacity = fresh ? 1
-      : Math.max(0.18, 1 - (age - _ARU_FRESH_MS) / fadeRange);
-    rows.push({ id, m, fresh, opacity, age });
+      : Math.max(0, 1 - (age - _ARU_FRESH_MS) / _ARU_FADE_MS);
+    const cls = fresh ? _tagClassForTeam(id, _currentTeam) : 'lost';
+    rows.push({ id, m, fresh, opacity, age, cls });
   }
   rows.sort((a, b) => a.id - b.id);
 
@@ -208,14 +231,21 @@ function _renderArucoListPersistent(now) {
     }
     return;
   }
-  body.innerHTML = `<table class="vd-pose-table">
-    <thead><tr><th>tag</th><th>px</th><th>py</th><th>corners</th><th>age</th></tr></thead>
+  // Compact table: tag · class label · px,py · age. Class label is the
+  // human-readable role (own / opp / —) so the user doesn't have to
+  // remember the id ranges.
+  const labelFor = cls =>
+    cls === 'own'      ? 'own'      :
+    cls === 'opponent' ? 'opp'      :
+    cls === 'lost'     ? '…'        : '—';
+  body.innerHTML = `<table class="vd-pose-table vd-pose-table-compact">
+    <thead><tr><th>id</th><th>role</th><th>px</th><th>py</th><th>age</th></tr></thead>
     <tbody>${rows.map(r => `
-      <tr class="vd-aru-row" data-fresh="${r.fresh ? 1 : 0}" style="opacity:${r.opacity.toFixed(2)}">
+      <tr class="vd-aru-row" data-fresh="${r.fresh ? 1 : 0}" data-cls="${r.cls}" style="opacity:${r.opacity.toFixed(2)}">
         <td>${r.id}</td>
+        <td>${labelFor(r.cls)}</td>
         <td>${r.m.px != null ? Math.round(r.m.px) : '—'}</td>
         <td>${r.m.py != null ? Math.round(r.m.py) : '—'}</td>
-        <td>${r.m.num_corners ?? '—'}</td>
         <td>${_fmtAge(r.age)}</td>
       </tr>`).join('')}
     </tbody>
@@ -916,8 +946,9 @@ async function _sendPlaybackAction(pipelineName, nodeId, kind, action) {
 }
 
 // Periodic re-render so the dashboard fade animations advance even when
-// no new feed arrives. 400ms is fast enough that the ArUco fade looks
-// continuous without being expensive.
+// no new feed arrives. 120 ms gives ~8 frames over the 1 s ArUco fade
+// — smooth enough that no step is visible, cheap enough that the DOM
+// update doesn't show up in the profiler.
 setInterval(() => {
   if (activeView === 'vision-dashboard') {
     _renderFeedGrid();
@@ -925,7 +956,7 @@ setInterval(() => {
   } else if (activeView === 'vision-detection') {
     _renderDetectionTiles();
   }
-}, 400);
+}, 120);
 
 function _renderTrackerStatus(data) {
   // Heading offset
