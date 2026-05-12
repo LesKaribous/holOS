@@ -96,3 +96,4 @@ software/vision/Scripts
 software/vision_runner/last_source.json
 software/vision/data/parallax_calibration.json
 .venv/
+software/data/vision_camera.log

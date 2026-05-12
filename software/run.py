@@ -90,6 +90,14 @@ app = Flask(__name__, static_folder=_STATIC, template_folder=_STATIC)
 app.config['SEND_FILE_MAX_AGE_DEFAULT'] = 0   # no static cache in dev
 socketio = SocketIO(app, async_mode='threading', cors_allowed_origins='*')
 
+import logging as _logging
+class _QuietPollEndpoints(_logging.Filter):
+    _MUTE = ('/api/log/status', '/api/vision_camera/status')
+    def filter(self, record):
+        msg = record.getMessage()
+        return not any(p in msg for p in self._MUTE)
+_logging.getLogger('werkzeug').addFilter(_QuietPollEndpoints())
+
 # ── Static occupancy map path ─────────────────────────────────────────────────
 
 _STATIC_OCC_PATH = os.path.join(_HERE, 'strategy', 'static_occupancy.json')
