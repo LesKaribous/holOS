@@ -264,7 +264,34 @@ class LocalizationNode(Node):
                 rect.update(det)
 
         if not rect.has_homography:
-            return {}
+            # No homography → cannot project tag pixel coords into the
+            # world frame. We still emit a pose_list with the detected
+            # own/opp tag IDs + null positions so the dashboard cards
+            # populate (tag_id + classification + "—" for x/y/theta).
+            # Without this the operator can't tell "no detection" from
+            # "detection works but homography is broken".
+            ranges = _TEAM_RANGES.get(self._params.get('team', 'blue'),
+                                      _TEAM_RANGES['blue'])
+            pose_list = []
+            for tid in (det.ids or []):
+                tid = int(tid)
+                if tid in ranges['own']:
+                    cls = 'own'
+                elif tid in ranges['opp']:
+                    cls = 'opponent'
+                else:
+                    continue
+                pose_list.append({
+                    'tag_id':         tid,
+                    'label':          f'tag {tid}',
+                    'x_mm':           None,
+                    'y_mm':           None,
+                    'naive_x_mm':     None,
+                    'naive_y_mm':     None,
+                    'theta_rad':      None,
+                    'classification': cls,
+                })
+            return {'pose_list': pose_list}
 
         # If a cam_xyz override is wired in, push it into the tracker as
         # a manual override BEFORE process() so the parallax math uses

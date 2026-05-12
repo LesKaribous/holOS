@@ -3463,7 +3463,7 @@ html, body { height: 100%; overflow: hidden; margin: 0;
    `table-layout: fixed` + explicit column widths so the columns don't
    jump every time a px/py value gains or loses a digit. */
 .vd-pose-table-compact {
-  font: 13px/1.15 ui-monospace, 'Segoe UI' monospace;
+  font: 15px/1.15 ui-monospace, 'Segoe UI' monospace;
   table-layout: fixed;
 }
 .vd-pose-table-compact th,

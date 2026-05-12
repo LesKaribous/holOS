@@ -191,6 +191,15 @@ function _tagClassForTeam(tagId, team) {
   if (a === null) return 'neutral';
   return (a === team) ? 'own' : 'opponent';
 }
+// Role label is intentionally independent of fresh/lost — when a tag
+// flickers, the label stays put. Only the COLOR transitions to gray
+// (handled by `data-cls="lost"` on the row).
+function _roleLabel(tagId, team) {
+  if (_anchorMap[tagId] != null) return _anchorMap[tagId] || 'anc';
+  const a = _tagAffiliation(tagId);
+  if (a === null) return '—';
+  return (a === team) ? 'own' : 'opp';
+}
 
 function _ingestArucoList(items) {
   if (!Array.isArray(items)) return;
@@ -266,20 +275,16 @@ function _renderArucoListPersistent(now) {
     }
     return;
   }
-  // Compact table: tag · class label · px,py · age. Class label is the
-  // human-readable role (own / opp / —) so the user doesn't have to
-  // remember the id ranges.
-  const labelFor = (cls, id) =>
-    cls === 'own'      ? 'own'                       :
-    cls === 'opponent' ? 'opp'                       :
-    cls === 'anchor'   ? (_anchorMap[id] || 'anc')   :
-    cls === 'lost'     ? '…'                         : '—';
+  // Compact table: tag · role · px,py · age. Role is derived from the
+  // tag id alone (NOT from the fresh/lost state) so a flickering tag
+  // doesn't make the role column oscillate. Only the row COLOR follows
+  // the fresh/lost state (data-cls).
   body.innerHTML = `<table class="vd-pose-table vd-pose-table-compact">
     <thead><tr><th>id</th><th>role</th><th>px</th><th>py</th><th>age</th></tr></thead>
     <tbody>${rows.map(r => `
       <tr class="vd-aru-row" data-fresh="${r.fresh ? 1 : 0}" data-cls="${r.cls}" style="opacity:${r.opacity.toFixed(2)}">
         <td>${r.id}</td>
-        <td>${labelFor(r.cls, r.id)}</td>
+        <td>${_roleLabel(r.id, _currentTeam)}</td>
         <td>${r.m.px != null ? Math.round(r.m.px) : '—'}</td>
         <td>${r.m.py != null ? Math.round(r.m.py) : '—'}</td>
         <td>${_fmtAge(r.age)}</td>
@@ -982,8 +987,9 @@ async function _sendPlaybackAction(pipelineName, nodeId, kind, action) {
 }
 
 // Periodic re-render so the dashboard fade animations advance even
-// when no new feed arrives. 200 ms tick × 2 s fade = 10 opacity steps
-// — smooth enough that the fade reads as continuous.
+// when no new feed arrives. 1 s tick — the age column ticks once per
+// second (readable) and the opacity fade has 2-3 visible steps over
+// the 2 s window. Anything faster made the age text feel jittery.
 setInterval(() => {
   if (activeView === 'vision-dashboard') {
     _renderFeedGrid();
@@ -991,7 +997,7 @@ setInterval(() => {
   } else if (activeView === 'vision-detection') {
     _renderDetectionTiles();
   }
-}, 200);
+}, 1000);
 
 function _renderTrackerStatus(data) {
   // Heading offset
