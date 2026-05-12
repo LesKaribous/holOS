@@ -3405,6 +3405,11 @@ html, body { height: 100%; overflow: hidden; margin: 0;
 }
 .vd-tile-body:has(.vd-pose-table),
 .vd-tile-body:has(.vd-loc-card) {
+  flex-direction: column;          /* cross-axis = horizontal, so the
+                                      table/cards take full width but
+                                      keep their natural height — without
+                                      this, rows redistribute the tile
+                                      height and look chunky. */
   align-items: stretch;
   justify-content: flex-start;
   overflow: auto;
