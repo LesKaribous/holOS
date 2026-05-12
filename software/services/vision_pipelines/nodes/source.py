@@ -28,12 +28,15 @@ except Exception as _e:
     _CV2_OK = False
     print(f'[vision.nodes.source] cv2 unavailable: {_e}')
 
+try:
+    from services.match_logger import MATCH_LOGGER as _MATCH_LOG
+except Exception as _e:
+    _MATCH_LOG = None
+    print(f'[vision.nodes.source] match_logger import failed: {_e}')
+
 def _log_video_frame(f):
-    try:
-        from services.match_logger import MATCH_LOGGER
-        MATCH_LOGGER.log_video(f)
-    except Exception:
-        pass
+    if _MATCH_LOG is not None:
+        _MATCH_LOG.log_video(f)
 
 from ..pipeline import NodeIO, Port, PortKind
 from .base import Node, register_node
@@ -336,6 +339,7 @@ class VideoSourceNode(Node):
                 f = self._drainer_frame
             if f is not None:
                 self._last_frame = f
+                _log_video_frame(f)
                 return {'frame': f, 'preview': f}
             # Drainer hasn't produced yet on the very first tick — surface
             # the cached first-frame so downstream still has something.
@@ -399,6 +403,7 @@ class VideoSourceNode(Node):
                 f = self._drainer_frame
             if f is not None:
                 self._last_frame = f
+                _log_video_frame(f)
                 return {'frame': f, 'preview': f}
             # Drainer hasn't produced yet — fall through to direct read so
             # we don't return None on the very first tick.
@@ -529,6 +534,8 @@ class ImageSourceNode(Node):
                 return {}
             self._last_refresh_seen = cur_refresh
         f = s.read()
+        if f is not None:
+            _log_video_frame(f)
         # Sources don't add overlays themselves — frame and preview are
         # the same ndarray. Sharing the reference is fine because the
         # downstream OutputNode does its own .copy() before imencode.
