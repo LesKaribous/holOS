@@ -2003,6 +2003,38 @@ def api_vision_camera_playback():
         return jsonify({'ok': False, 'error': str(e)}), 500
 
 
+@app.route('/api/vision_camera/seek', methods=['POST'])
+def api_vision_camera_seek():
+    """Jump the FrameSource to a specific frame index. Video-only — the
+    reader sets CAP_PROP_POS_FRAMES, decodes one frame, and pauses. Used
+    by the vision_debug page's scrub slider."""
+    data = request.get_json(silent=True) or {}
+    try:
+        frame_idx = int(data.get('frame', -1))
+    except (TypeError, ValueError):
+        return jsonify({'ok': False, 'error': 'frame must be an int'}), 400
+    if frame_idx < 0:
+        return jsonify({'ok': False, 'error': 'frame must be >= 0'}), 400
+    try:
+        import vision_source as _vs
+        src = _vs.get()
+        if src is None:
+            return jsonify({'ok': False, 'error': 'FrameSource not started'}), 503
+        st = src.status()
+        if str(st.get('source_kind', '')) != 'video':
+            return jsonify({'ok': False,
+                            'error': 'seek is video-only '
+                                     f'(source_kind={st.get("source_kind")!r})'}), 400
+        fc = int(st.get('frame_count', -1) or -1)
+        if fc > 0:
+            frame_idx = min(frame_idx, fc - 1)
+        src.set_seek_target(frame_idx)
+        src.set_playback('seek')
+        return jsonify({'ok': True, 'status': src.status()})
+    except Exception as e:
+        return jsonify({'ok': False, 'error': str(e)}), 500
+
+
 @app.route('/api/vision_camera/source/clear', methods=['POST'])
 def api_vision_camera_source_clear():
     """Drop the runtime override and re-open on the disk config."""

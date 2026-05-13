@@ -124,6 +124,17 @@
   <span class="badge" id="last-update">—</span>
 </header>
 
+<div id="seek-bar"
+     style="display:none; align-items:center; gap:10px; padding:6px 14px;
+            background:var(--surface2); border-bottom:1px solid var(--surface3);
+            font:12px ui-monospace,SFMono-Regular,monospace; color:var(--text);">
+  <span style="color:var(--muted);">seek</span>
+  <input type="range" id="seek-slider" min="0" max="0" value="0" step="1"
+         oninput="onSeekSliderInput()" onchange="onSeekSliderChange()"
+         style="flex:1; cursor:pointer;">
+  <span id="seek-readout" style="min-width:120px; text-align:right; color:var(--brand);">— / —</span>
+</div>
+
 <main class="grid">
   <section class="tile">
     <header class="tile-head">ArUco detection (raw frame)
@@ -293,6 +304,7 @@ async function pollVision() {
   renderLog();
   updatePhaseBadge();
   updatePlaybackBtn();
+  updateSeekSlider();
 }
 setInterval(pollVision, 500);
 pollVision();
@@ -651,6 +663,64 @@ function updatePlaybackBtn() {
   btn.style.cursor = 'pointer';
   const paused = _sourceInfo.playback === 'pause';
   btn.textContent = paused ? '▶ Play' : '⏸ Pause';
+}
+
+/* Seek slider — visible only when the source is a video with a known
+ * frame count. While the user is dragging we stop syncing the slider
+ * value from polls (so the thumb doesn't fight the cursor); on release
+ * we POST the new frame index and let the next poll re-sync. */
+let _seekDragging = false;
+
+function updateSeekSlider() {
+  const bar      = document.getElementById('seek-bar');
+  const slider   = document.getElementById('seek-slider');
+  const readout  = document.getElementById('seek-readout');
+  if (!bar || !slider || !readout) return;
+  const kind = _sourceInfo && _sourceInfo.source_kind;
+  const fc   = (_sourceInfo && _sourceInfo.frame_count) | 0;
+  if (kind !== 'video' || fc <= 0) {
+    bar.style.display = 'none';
+    return;
+  }
+  bar.style.display = 'flex';
+  slider.max = String(fc - 1);
+  if (!_seekDragging) {
+    const idx = (_sourceInfo.frame_idx | 0);
+    slider.value = String(Math.max(0, Math.min(fc - 1, idx)));
+    readout.textContent = `${idx} / ${fc - 1}`;
+  }
+}
+
+function onSeekSliderInput() {
+  _seekDragging = true;
+  const slider  = document.getElementById('seek-slider');
+  const readout = document.getElementById('seek-readout');
+  const fc      = (_sourceInfo && _sourceInfo.frame_count) | 0;
+  if (slider && readout && fc > 0) {
+    readout.textContent = `${slider.value} / ${fc - 1}`;
+  }
+}
+
+async function onSeekSliderChange() {
+  const slider = document.getElementById('seek-slider');
+  if (!slider) { _seekDragging = false; return; }
+  const frame = parseInt(slider.value, 10) || 0;
+  try {
+    const r = await fetch('/api/vision_camera/seek',
+                          {method: 'POST', headers: {'Content-Type':'application/json'},
+                           body: JSON.stringify({frame})});
+    const j = await r.json();
+    if (j.ok) {
+      _sourceInfo = j.status;
+    } else {
+      console.warn('[VISION] seek failed:', j);
+    }
+  } catch (e) {
+    console.error('[VISION] seek error:', e);
+  }
+  _seekDragging = false;
+  updateSeekSlider();
+  updatePlaybackBtn();   // seek pauses the source — refresh the pause/play label
 }
 
 async function togglePlayback() {
