@@ -207,8 +207,8 @@ void grabStockHere(Vec2 target, TableCompass tc, RobotCompass rc) {
             return;
         }
     }
-    /*
-    if(!connected || got){
+    
+    //if(!connected || got){
         RuntimeConfig::setInt("motion.timeout_ms", 2000);
         motion.collide(true);
         async motion.goAlign(grab, rc, getCompassOrientation(tc));
@@ -227,8 +227,8 @@ void grabStockHere(Vec2 target, TableCompass tc, RobotCompass rc) {
         actuators.store(rc);
         waitMs(GrabGeom::GRAB_DELAY_MS);
         actuators.moveElevator(rc, ElevatorPose::STORE);
-    }
-    /**/
+    //}
+    
     motion.collide(false);
     safety.enable();
     motion.setFeedrate(1.0f);
@@ -415,9 +415,9 @@ static BlockResult blockCollectC() {
     waitMs(800);
 
     if(ihm.isColor(Settings::BLUE)) {
-        async motion.goAlign(POI::stockBlue_04 + Vec2(0, +350), RobotCompass::AB, getCompassOrientation(TableCompass::NORTH));
+        async motion.goAlign(POI::stockBlue_04 + Vec2(0, +550), RobotCompass::AB, getCompassOrientation(TableCompass::NORTH));
     } else {
-        async motion.goAlign(POI::stockYellow_04 + Vec2(0, +350), RobotCompass::AB, getCompassOrientation(TableCompass::NORTH));
+        async motion.goAlign(POI::stockYellow_04 + Vec2(0, +550), RobotCompass::AB, getCompassOrientation(TableCompass::NORTH));
     }
 
     if(ihm.isColor(Settings::BLUE)) {
