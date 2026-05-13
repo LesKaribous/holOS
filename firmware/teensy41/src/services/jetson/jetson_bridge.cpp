@@ -366,6 +366,29 @@ FLASHMEM void JetsonBridge::handleRequest(Request& req) {
         return;
     }
 
+    // ── Vision heading-offset reply: vis_heading_offset(off=..,ok=0|1)
+    //  Sent by holOS in response to our T:vis sync_heading.
+    if (cmd.startsWith("vis_heading_offset(")) {
+        float off = 0.0f;
+        bool ok   = false;
+        int o = cmd.indexOf('(') + 1, c = cmd.lastIndexOf(')');
+        String body = cmd.substring(o, c);
+        int p;
+        p = body.indexOf("off=");
+        if (p >= 0) {
+            int e = body.indexOf(',', p); if (e < 0) e = body.length();
+            off = body.substring(p + 4, e).toFloat();
+        }
+        p = body.indexOf("ok=");
+        if (p >= 0) {
+            int e = body.indexOf(',', p); if (e < 0) e = body.length();
+            ok = (body.substring(p + 3, e).toInt() != 0);
+        }
+        localisation.onVisionHeadingOffsetReply(off, ok);
+        req.reply("ok");
+        return;
+    }
+
     // ── Cancel in-flight motion ───────────────────────────────────────────────
     // forceCancel() immediately sets _isMoving=false and stops hardware.
     // If a motion command was pending (execute() on the holOS side is waiting

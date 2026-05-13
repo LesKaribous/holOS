@@ -379,6 +379,20 @@ FLASHMEM void recalage(){
     }
     if (localisation.isVisionCalibrated()) {
         Console::success("Strategy") << "[recalage] vision OK" << Console::endl;
+        // Refresh the tag↔robot heading offset using the actual settled
+        // OTOS theta as ground truth. The cal_request path also captures
+        // an offset, but it trusts the firmware's computed knownThetaRad
+        // — after the goAlign there can be a small residual error which
+        // this snapshot picks up. Robot is still stationary at this point
+        // (the goAlign just finished and we are blocking).
+        if (localisation.syncHeading(1500)) {
+            Console::success("Strategy") << "[recalage] heading sync OK"
+                                         << Console::endl;
+        } else {
+            Console::warn("Strategy") << "[recalage] heading sync FAILED — "
+                                      << "keeping cal_request offset"
+                                      << Console::endl;
+        }
     } else if (localisation.visionCalibrationReplyReceived()) {
         Console::error("Strategy") << "[recalage] vision FAILED" << Console::endl;
     } else {

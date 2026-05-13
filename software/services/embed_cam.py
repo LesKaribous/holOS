@@ -83,9 +83,17 @@ _cfg: dict = {
     # Geometry priors used to project pixel offset to mm.
     'expected_count':     4,
     'expected_spread_mm': 150.0,         # mm between leftmost & rightmost
-    # Fallback px→mm scale used when n < 2 (so spread is unknown).
+    # Center-to-center distance between two ADJACENT tags in the row.
+    # The auto-scale reads this every tick and refits scale = pitch /
+    # min(adjacent_gap_px) whenever n >= 2 (used to only refit at n=4,
+    # so partial detections fell back to fallback_scale_mm_per_px →
+    # oversteered laterally when the true scale differed). Pitch is
+    # the right knob because pixel gaps shrink/grow with camera height,
+    # while the spread tells you nothing new once you know the pitch.
+    'tag_pitch_mm':       50.0,          # = expected_spread_mm / (expected_count - 1)
+    # Fallback px→mm scale used when n < 2 (so no pitch is observable).
     # Calibrate empirically once; the auto-scale takes over the moment
-    # we see all 4 tags.
+    # we see ≥ 2 tags.
     'fallback_scale_mm_per_px': 0.5,
     # When n < expected_count, classify the centroid offset against
     # this fraction of the image width to decide left/right bias.
@@ -542,15 +550,29 @@ def analyze_frame(frame: 'np.ndarray',
         elif n_yellow == n: dominant_team = 'yellow'
         else:               dominant_team = 'mixed'
     # ── Auto-scale ────────────────────────────────────────────────
-    # With all 4 tags we trust the EXPECTED_SPREAD_MM prior 100% and
-    # update the rolling scale. With fewer detections we hold the
-    # most recent good scale.
+    # Refit on EVERY tick that shows ≥ 2 tags. Each gap between two
+    # adjacent visible tags in the row is one physical tag pitch
+    # (tag_pitch_mm). Taking min(gaps_px) gives the tightest pixel-
+    # per-pitch estimate and shrugs off the "middle tag missing" case
+    # (which produces one ~50 px gap and one ~100 px gap — min picks
+    # the genuine pitch, the doubled one is correctly ignored).
+    #
+    # Previous behaviour only refit at n == 4 (leftmost-to-rightmost
+    # span = 150 mm). With n == 3 the scale defaulted to whatever
+    # _last_scale_mm_per_px was last — usually 0.5 mm/px until a
+    # 4-tag sighting landed, which made the offset overshoot for any
+    # camera mount whose true scale wasn't ~0.5.
     spread_px = 0.0
     scale = _last_scale_mm_per_px or float(_cfg.get('fallback_scale_mm_per_px', 0.5))
+    pitch_mm = float(_cfg.get('tag_pitch_mm',
+                              spread_mm / max(1, expected - 1)))
     if n >= 2:
         spread_px = tags[-1]['cx'] - tags[0]['cx']
-        if n >= expected and spread_px > 1.0:
-            scale = spread_mm / spread_px
+        gaps_px = [tags[i]['cx'] - tags[i - 1]['cx']
+                   for i in range(1, n)]
+        min_gap_px = min(gaps_px)
+        if min_gap_px > 1.0:
+            scale = pitch_mm / min_gap_px
             with _lock:
                 _last_scale_mm_per_px = scale
     # ── Row-middle estimation (partial-detection aware) ───────────

@@ -201,6 +201,9 @@ FLASHMEM void Localisation::invalidateVisionState() {
     m_visionCalibrationReplyReceived= false;
     m_pendingPoseReply              = false;
     m_lastPoseValid                 = false;
+    m_pendingHeadingReply           = false;
+    m_lastHeadingValid              = false;
+    m_lastHeadingOffset             = 0.0f;
     Console::info("Localisation") << "Vision state invalidated" << Console::endl;
 }
 
@@ -300,6 +303,52 @@ FLASHMEM bool Localisation::queryVisionPose(Vec3& out_pose,
     return false;
 }
 
+// Refresh the tag↔robot heading offset on the holOS side using the
+// robot's CURRENT OTOS theta as ground truth. Send a single sync_heading
+// frame carrying the budget; holOS polls the live pipeline for that
+// long, computes wrap_pi(robot.theta - tag.theta), stores it, replies
+// once. Same single-shot pattern as queryVisionPose() — the wait
+// happens on holOS, not here.
+FLASHMEM bool Localisation::syncHeading(unsigned long timeout_ms) {
+    if (!m_visionCalibrated) {
+        Console::warn("Localisation")
+            << "syncHeading: not calibrated — run recalage first"
+            << Console::endl;
+        return false;
+    }
+    unsigned long t0 = millis();
+    m_pendingHeadingReply = true;
+    m_lastHeadingValid    = false;
+    char frame[40];
+    snprintf(frame, sizeof(frame),
+             "T:vis sync_heading timeout=%lu", timeout_ms);
+    jetsonBridge.pushVisionFrame(frame);
+    const unsigned long wait_budget_ms = timeout_ms + 200UL;
+    while (m_pendingHeadingReply && (millis() - t0) < wait_budget_ms) {
+        jetsonBridge.run();
+        delay(2);
+    }
+    if (m_pendingHeadingReply) {
+        m_pendingHeadingReply = false;
+        Console::warn("Localisation")
+            << "syncHeading timeout after " << long(wait_budget_ms)
+            << "ms (no reply from holOS)" << Console::endl;
+        return false;
+    }
+    if (m_lastHeadingValid) {
+        Console::success("Localisation")
+            << "Heading offset synced: "
+            << (m_lastHeadingOffset * 180.0f / float(M_PI))
+            << " deg" << Console::endl;
+        return true;
+    }
+    Console::warn("Localisation")
+        << "syncHeading: holOS reported ok=0 after "
+        << long(timeout_ms) << "ms wait (tag not visible?)"
+        << Console::endl;
+    return false;
+}
+
 // Convenience: query then push the vision fix into Motion + OTOS.
 // Goes through motion.setAbsPosition() (not just localisation.setPosition)
 // so the motion module's cached _position / _startPosition stay in sync —
@@ -361,4 +410,11 @@ FLASHMEM void Localisation::onVisionPoseReply(Vec3 pos, bool valid) {
     m_lastVisionPose   = pos;
     m_lastPoseValid    = valid;
     m_pendingPoseReply = false;   // unblock any spinning queryVisionPose
+}
+
+FLASHMEM void Localisation::onVisionHeadingOffsetReply(float offset_rad,
+                                                       bool ok) {
+    m_lastHeadingOffset   = offset_rad;
+    m_lastHeadingValid    = ok;
+    m_pendingHeadingReply = false; // unblock any spinning syncHeading
 }

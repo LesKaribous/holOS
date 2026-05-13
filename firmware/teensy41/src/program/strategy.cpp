@@ -348,14 +348,22 @@ static bool pantryEmpty = false;
 
 static BlockResult blockCollectA() {
     waitMs(800);
-    
+
+    // Example syncToVision call — robot has been still for ~800 ms so
+    // a vision pose snapshot now is the freshest possible, and the
+    // strategic value of correcting OTOS drift here is high (the next
+    // move is a delicate stock-row alignment). Falls through on failure
+    // (vision not seeing the tag): we keep the OTOS-only pose and
+    // continue the block. 1 s timeout keeps the worst-case wait bounded.
+    localisation.syncToVision(1000);
+
     if(ihm.isColor(Settings::BLUE)) {
         collectStock(POI::stockBlue_01 + Vec2(0,0), TableCompass::EAST, RobotCompass::AB);
     } else {
         collectStock(POI::stockYellow_01 + Vec2(0,0), TableCompass::WEST, RobotCompass::AB);
     }
 
-    
+
 
     return BlockResult::SUCCESS;
 }

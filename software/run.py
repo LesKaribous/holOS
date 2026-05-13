@@ -4559,6 +4559,50 @@ def _do_connect(port: str):
                         )
                     threading.Thread(target=_do_pose, daemon=True,
                                      name='vis-pose').start()
+                elif line.startswith('sync_heading'):
+                    # Snap the tag↔robot heading offset from the live
+                    # scene. Same poll-wait pattern as pose_request so
+                    # the firmware can call it right after a goAlign
+                    # with the robot stationary, and we'll wait for
+                    # the tag to land in a pipeline tick.
+                    timeout_ms = _kv(line, 'timeout', int, 0)
+                    _vlog(f'rx ← T:vis sync_heading timeout={timeout_ms}')
+                    def _do_sync_heading(_timeout_ms=timeout_ms):
+                        global _vision_heading_offset_rad
+                        deadline = time.monotonic() + max(0, _timeout_ms) / 1000.0
+                        pose = _get_latest_own_pose()
+                        while pose is None and time.monotonic() < deadline:
+                            time.sleep(0.03)
+                            pose = _get_latest_own_pose()
+                        if pose is None:
+                            _vlog(f'sync_heading → ok=0 '
+                                  f'(no own pose visible after {_timeout_ms}ms)',
+                                  'warn')
+                            _send('vis_heading_offset(off=0,ok=0)')
+                            return
+                        tag_theta = pose.get('theta_tag_rad')
+                        if tag_theta is None:
+                            _vlog('sync_heading → ok=0 (pose has no theta)',
+                                  'warn')
+                            _send('vis_heading_offset(off=0,ok=0)')
+                            return
+                        try:
+                            robot_theta = float(robot.theta)
+                        except (TypeError, ValueError, AttributeError) as e:
+                            _vlog(f'sync_heading → ok=0 '
+                                  f'(robot.theta unavailable: {e})', 'warn')
+                            _send('vis_heading_offset(off=0,ok=0)')
+                            return
+                        offset = _wrap_pi(robot_theta - float(tag_theta))
+                        _vision_heading_offset_rad = offset
+                        _vlog(
+                            f"sync_heading → ok=1  Δ={math.degrees(offset):+.1f}° "
+                            f"(tag={math.degrees(tag_theta):+.1f}°, "
+                            f"robot={math.degrees(robot_theta):+.1f}°, "
+                            f"tag #{pose.get('tag_id','?')})")
+                        _send(f'vis_heading_offset(off={offset:.5f},ok=1)')
+                    threading.Thread(target=_do_sync_heading, daemon=True,
+                                     name='vis-sync-heading').start()
                 elif line.startswith('embed_detect'):
                     # Robot-mounted ESP32-CAM detection.  Same code path
                     # as the UI button (_run_embed_detect) → identical

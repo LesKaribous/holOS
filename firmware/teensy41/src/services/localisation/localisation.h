@@ -78,12 +78,21 @@ public:
     bool queryVisionPose(Vec3& out_pose, unsigned long timeout_ms = 300);
     Vec3 syncToVision(unsigned long timeout_ms = 500);
 
+    // syncHeading(timeout_ms)
+    //   Refresh the tag↔robot heading offset on holOS using our CURRENT
+    //   OTOS theta as ground truth. Call right after a goAlign with the
+    //   robot stationary — holOS captures `wrap_pi(robot.theta - tag.theta)`
+    //   and applies it to every subsequent vision pose reply. Returns
+    //   true on success (offset stored in m_lastHeadingOffset).
+    bool syncHeading(unsigned long timeout_ms = 1000);
+
     // Called by JetsonBridge when a vision reply arrives from holOS.
     // Not called by user code.
     void onHomographyLockReply(bool ok);
     void onVisionCalibrationReply(int own_tag, const char* team,
                                   Vec3 vision_pos);
     void onVisionPoseReply(Vec3 pos, bool valid);
+    void onVisionHeadingOffsetReply(float offset_rad, bool ok);
 
     Localisation(): Service(ID_LOCALISATION){};
     SINGLETON(Localisation)
@@ -125,5 +134,11 @@ private :
     volatile bool m_pendingPoseReply = false;
     volatile bool m_lastPoseValid    = false;
     Vec3          m_lastVisionPose   = {0,0,0};
+
+    // syncHeading() shares the same request/reply pattern with its own
+    // flags (filled by onVisionHeadingOffsetReply()).
+    volatile bool m_pendingHeadingReply = false;
+    volatile bool m_lastHeadingValid    = false;
+    float         m_lastHeadingOffset   = 0.0f;
 };
 SINGLETON_EXTERN(Localisation, localisation)
