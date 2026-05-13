@@ -136,14 +136,14 @@ namespace Settings {
 
         // ---- Limites cinématiques ----
         const float
-        MAX_SPEED     = 3000,             // mm/s  (OTOS max tracking speed : 2.5 m/s)
-        MAX_ACCEL     = 1800,             // mm/s²
+        MAX_SPEED     = 5000,             // mm/s  (OTOS max tracking speed : 2.5 m/s)
+        MAX_ACCEL     = 3800,             // mm/s²
         MAX_ROT_SPEED = 10,               // rad/s
         MAX_ROT_ACCEL = 30.0f;            // rad/s²
 
         // ---- Seuils d'arrêt ----
         const float
-        MIN_DISTANCE = 20,                // mm — tolérance position XY
+        MIN_DISTANCE = 15,                // mm — tolérance position XY
         MIN_ANGLE    = 2.0f * DEG_TO_RAD; // rad — tolérance angulaire (~2°)
 
         // ---- Détection de blocage (stall) ----

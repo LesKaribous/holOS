@@ -176,7 +176,7 @@ void grabStockHere(Vec2 target, TableCompass tc, RobotCompass rc) {
             if (attempt < MAX_RETRY) waitMs(RETRY_DELAY_MS);
         }
         if (got) {
-            PolarVec lateral_vec_polar = PolarVec(lateral_dir_rad, lateral_mm);
+            PolarVec lateral_vec_polar = PolarVec(lateral_dir_rad, lateral_mm*1.75);
             Vec2 lateral_vec = lateral_vec_polar.toVec2();
             Vec2 corrected = approach + lateral_vec;
             async motion.goAlign(corrected, rc, getCompassOrientation(tc));
@@ -464,7 +464,7 @@ static BlockResult thermometer_set() {
         
 
         RuntimeConfig::setInt("motion.timeout_ms", 2000); // 5 secondes
-        async motion.go(POI::thermometer_hot_yellow - Vec2(0,200));
+        async motion.go(POI::thermometer_hot_blue - Vec2(0,200));
         probeBorder(TableCompass::EAST, RobotCompass::CA, 200, 100);
         async motion.align(RobotCompass::C, getCompassOrientation(TableCompass::SOUTH));
         async motion.go(POI::thermometer_hot_blue);
