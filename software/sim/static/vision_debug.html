@@ -121,6 +121,14 @@
                  opacity:0.5;">
     ⏸ Pause
   </button>
+  <button id="btn-push-pose" onclick="pushVisionPoseToRobot()" disabled
+          title="Take the latest vision-computed robot pose (parallax-corrected) and push it to the robot via the same SocketIO setRobotPos path the main page uses. Test aid — bypasses syncToVision."
+          style="padding:4px 10px; background:rgba(255,255,255,0.18); color:#fff;
+                 border:1px solid rgba(255,255,255,0.25); border-radius:4px;
+                 cursor:pointer; font:12px ui-monospace,monospace;
+                 opacity:0.5;">
+    ⤓ Set robot pose from vision
+  </button>
   <span class="badge" id="last-update">—</span>
 </header>
 
@@ -305,6 +313,7 @@ async function pollVision() {
   updatePhaseBadge();
   updatePlaybackBtn();
   updateSeekSlider();
+  updatePushPoseBtn();
 }
 setInterval(pollVision, 500);
 pollVision();
@@ -721,6 +730,37 @@ async function onSeekSliderChange() {
   _seekDragging = false;
   updateSeekSlider();
   updatePlaybackBtn();   // seek pauses the source — refresh the pause/play label
+}
+
+function updatePushPoseBtn() {
+  const btn = document.getElementById('btn-push-pose');
+  if (!btn) return;
+  const ok = _visionPose && _visionPose.x_mm != null
+                          && _visionPose.y_mm != null;
+  btn.disabled = !ok;
+  btn.style.opacity = ok ? '1' : '0.5';
+  btn.style.cursor  = ok ? 'pointer' : 'not-allowed';
+}
+
+function pushVisionPoseToRobot() {
+  const v = _visionPose;
+  if (!v || v.x_mm == null || v.y_mm == null) {
+    console.warn('[VISION] push pose: no vision pose available');
+    return;
+  }
+  // The set_robot_pos socket handler in run.py expects theta in DEGREES
+  // (it calls math.radians on it before storing in robot.theta and
+  // forwards `setAbsPosition(x, y, theta_deg)` to the firmware).
+  const theta_deg = (v.theta_rad != null)
+                    ? (v.theta_rad * 180 / Math.PI)
+                    : 0;
+  socket.emit('set_robot_pos', {
+    x:     v.x_mm,
+    y:     v.y_mm,
+    theta: theta_deg,
+  });
+  console.log(`[VISION] pushed pose (${v.x_mm.toFixed(1)}, ${v.y_mm.toFixed(1)}, `
+              + `${theta_deg.toFixed(1)}°) → setAbsPosition`);
 }
 
 async function togglePlayback() {
