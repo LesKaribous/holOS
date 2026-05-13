@@ -72,7 +72,7 @@ _cfg: dict = {
     'probe_interval_s':             15.0,
     'probe_timeout_s':              1.0,
     'probe_skip_if_capture_within_s': 30.0,
-    'fetch_timeout_s':    1.5,
+    'fetch_timeout_s':    5.0,
     # ArUco detection — DICT_4X4_50, IDs 36 (blue) / 47 (yellow). The
     # `team` knob lets the operator restrict detection to one colour
     # in the Detection sub-tab: 'auto' = both, 'blue' = id 36 only,
@@ -320,13 +320,50 @@ def probe_now() -> dict:
 # ── Image fetch ───────────────────────────────────────────────────────
 
 def _fetch_jpeg(url: str, timeout_s: float) -> Optional[bytes]:
-    """GET `url`, return the raw response body. Returns None on error."""
+    """GET `url`, return the response body. Raw HTTP/1.0 over a raw
+    socket — same architecture as the prober. Avoids urllib's HTTP/1.1
+    keep-alive negotiation + per-recv timeout quirks that were tripping
+    on the ESP's 1-2 s capture latency."""
     try:
-        req = urllib.request.Request(url, headers={'User-Agent': 'holOS'})
-        with urllib.request.urlopen(req, timeout=timeout_s) as resp:
-            return resp.read()
+        p = _urlparse(url)
     except Exception:
         return None
+    host = p.hostname or ''
+    if not host:
+        return None
+    port = p.port if p.port else (443 if p.scheme == 'https' else 80)
+    path = p.path or '/'
+    if p.query:
+        path += '?' + p.query
+    req = (f"GET {path} HTTP/1.0\r\n"
+           f"Host: {host}\r\n"
+           f"User-Agent: holOS\r\n"
+           f"Accept: image/jpeg, */*\r\n"
+           f"Connection: close\r\n\r\n").encode()
+    s = None
+    try:
+        s = _socket.create_connection((host, port), timeout=timeout_s)
+        s.settimeout(timeout_s)
+        s.setsockopt(_socket.IPPROTO_TCP, _socket.TCP_NODELAY, 1)
+        s.sendall(req)
+        # Read until peer closes (HTTP/1.0 + Connection: close).
+        buf = bytearray()
+        while True:
+            chunk = s.recv(16384)
+            if not chunk:
+                break
+            buf.extend(chunk)
+        # Split headers / body at the blank line.
+        sep = buf.find(b'\r\n\r\n')
+        if sep < 0:
+            return None
+        return bytes(buf[sep + 4:])
+    except Exception:
+        return None
+    finally:
+        if s is not None:
+            try: s.close()
+            except Exception: pass
 
 
 def fetch_frame() -> Optional['np.ndarray']:

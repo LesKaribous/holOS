@@ -428,46 +428,6 @@ setInterval(() => {
   }
 }, 500);
 
-// Poll the persistent grabber status while on Detection tab.
-// State/age/frame-count tells the operator at a glance whether the
-// ESP32 stream is live (the hot path for match-time detect_once) or
-// the host is falling back to the slow per-request /capture path.
-function _renderStreamerPill(s) {
-  const pill = document.getElementById('vd-det-streamer');
-  if (!pill) return;
-  if (!s) {
-    pill.textContent = 'stream: —';
-    pill.classList.remove('vd-pill-ok','vd-pill-err','vd-pill-busy');
-    return;
-  }
-  const state = String(s.state || '?');
-  const age   = (s.age_ms != null && s.age_ms >= 0) ? `${s.age_ms}ms` : '—';
-  const fps   = s.frames ?? 0;
-  pill.textContent = `stream: ${state} · ${age} · n=${fps}`;
-  pill.classList.remove('vd-pill-ok','vd-pill-err','vd-pill-busy');
-  if      (state === 'reading' && s.age_ms >= 0 && s.age_ms < 500) pill.classList.add('vd-pill-ok');
-  else if (state === 'error' || state === 'stopped')               pill.classList.add('vd-pill-err');
-  else                                                              pill.classList.add('vd-pill-busy');
-}
-setInterval(() => {
-  if (typeof activeView !== 'string' || activeView !== 'vision-detection') return;
-  fetch('/api/embed_cam/streamer')
-    .then(r => r.json())
-    .then(j => { if (j.ok) _renderStreamerPill(j.status); })
-    .catch(() => {});
-}, 2000);
-
-function embedCamRestartStreamer() {
-  fetch('/api/embed_cam/streamer', {
-    method: 'POST', headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({action: 'restart'}),
-  })
-  .then(r => r.json())
-  .then(j => { if (j.ok) _renderStreamerPill(j.status); })
-  .catch(() => {});
-}
-window.embedCamRestartStreamer = embedCamRestartStreamer;
-
 function _renderDetectionTiles() {
   // Embed-cam feeds are pinned: the operator wants to see the LAST
   // requested capture even if it landed long ago, so we don't apply
