@@ -592,8 +592,8 @@ function _vcFillInputs(cfg) {
   };
   setVal('vc-cam-y-x', cy[0]); setVal('vc-cam-y-y', cy[1]); setVal('vc-cam-y-z', cy[2]);
   setVal('vc-cam-b-x', cb[0]); setVal('vc-cam-b-y', cb[1]); setVal('vc-cam-b-z', cb[2]);
-  setVal('vc-z-own', cfg.own_object_z_mm);
-  setVal('vc-z-opp', cfg.opp_object_z_mm);
+  setVal('vc-robot-z', cfg.robot_z_mm);
+  setVal('vc-z-opp',   cfg.opp_object_z_mm);
 }
 
 function visionConfigLoad() {
@@ -615,12 +615,12 @@ function visionConfigSave() {
   const body = {
     cam_yellow_xyz_mm: [num('vc-cam-y-x'), num('vc-cam-y-y'), num('vc-cam-y-z')],
     cam_blue_xyz_mm:   [num('vc-cam-b-x'), num('vc-cam-b-y'), num('vc-cam-b-z')],
-    own_object_z_mm:   num('vc-z-own'),
+    robot_z_mm:        num('vc-robot-z'),
     opp_object_z_mm:   num('vc-z-opp'),
   };
   if (body.cam_yellow_xyz_mm.some(v => v == null) ||
       body.cam_blue_xyz_mm.some(v => v == null) ||
-      body.own_object_z_mm == null || body.opp_object_z_mm == null) {
+      body.robot_z_mm == null || body.opp_object_z_mm == null) {
     _vcStatusMsg('✗ Valeurs manquantes', '#c0392b');
     return;
   }

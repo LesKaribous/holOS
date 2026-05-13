@@ -226,7 +226,6 @@ _VISION_CONFIG_DEFAULTS = {
     'cam_blue_xyz_mm':   [1725.0, -100.0, 1100.0],
     'robot_z_mm':        550.0,
 
-    'own_object_z_mm':   550.0,
     'opp_object_z_mm':   550.0,
 }
 
@@ -869,7 +868,7 @@ def api_vision_config_json_set():
             v = data[k]
             if isinstance(v, list) and len(v) == 3:
                 cfg[k] = [float(v[0]), float(v[1]), float(v[2])]
-    for k in ('own_object_z_mm', 'opp_object_z_mm'):
+    for k in ('robot_z_mm', 'opp_object_z_mm'):
         if k in data:
             try: cfg[k] = float(data[k])
             except (TypeError, ValueError): pass
@@ -3980,7 +3979,7 @@ def _apply_team(team: str, source: str = 'ui',
     cam_x_for_team = cam_xyz[0] if len(cam_xyz) >= 1 else None
     cam_y_for_team = cam_xyz[1] if len(cam_xyz) >= 2 else None
     cam_z_for_team = cam_xyz[2] if len(cam_xyz) >= 3 else None
-    own_z = vcfg.get('own_object_z_mm')
+    own_z = vcfg.get('robot_z_mm')
     opp_z = vcfg.get('opp_object_z_mm')
     if _pipeline_registry is not None:
         for p in _pipeline_registry.all():
@@ -3999,10 +3998,15 @@ def _apply_team(team: str, source: str = 'ui',
                             if cam_z_for_team is not None and 'cam_z_mm' in schema:
                                 params_to_set['cam_z_mm'] = float(cam_z_for_team)
                         if rec.kind == 'parallax':
-                            if own_z is not None and 'own_object_z_mm' in schema:
-                                params_to_set['own_object_z_mm'] = float(own_z)
+                            if own_z is not None and 'robot_z_mm' in schema:
+                                params_to_set['robot_z_mm'] = float(own_z)
                             if opp_z is not None and 'opp_object_z_mm' in schema:
                                 params_to_set['opp_object_z_mm'] = float(opp_z)
+                        # localization node also tracks the OWN robot tag
+                        # height — same physical value as parallax's own z.
+                        if rec.kind == 'localization':
+                            if own_z is not None and 'robot_z_mm' in schema:
+                                params_to_set['robot_z_mm'] = float(own_z)
                         if params_to_set:
                             try: rec.instance.set_params(params_to_set)
                             except Exception: pass

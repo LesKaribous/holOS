@@ -189,7 +189,7 @@ def build_pipeline(source_kind: str, source_path: str) -> Pipeline:
                 'coord_frame': 'world'})        # values entered in world frame
 
     par = _add(p, 'parallax', 'par',
-               {'object_z_mm':         ROBOT_Z_MM,
+               {'robot_z_mm':          ROBOT_Z_MM,
                 'use_naive_xy':        True,
                 'preview_draw_camera': True,
                 'preview_draw_grid':   False})

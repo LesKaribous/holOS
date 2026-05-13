@@ -54,7 +54,6 @@ _CFG_DEFAULTS = {
     'cam_yellow_xyz_mm':   [1275.0, -100.0, 1100.0],
     'cam_blue_xyz_mm':     [1725.0, -100.0, 1100.0],
     'robot_z_mm':          550.0,
-    'own_object_z_mm':     550.0,
     'opp_object_z_mm':     550.0,
 }
 
@@ -267,7 +266,7 @@ def build_localization() -> Pipeline:
                 'cam_z_mm': CAMERA_Z_MM, 'coord_frame': 'world'})
 
     par = _add(p, 'parallax', 'par',
-               {'object_z_mm':         ROBOT_Z_MM,
+               {'robot_z_mm':          ROBOT_Z_MM,
                 'use_naive_xy':        True,
                 'preview_draw_camera': True,
                 'preview_draw_grid':   False,

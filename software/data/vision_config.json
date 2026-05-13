@@ -24,8 +24,6 @@
 
   "cam_yellow_xyz_mm": [1275.0, -100.0, 1400.0],
   "cam_blue_xyz_mm":   [1725.0, -100.0, 1400.0],
-  "robot_z_mm":        550.0,
-
-  "own_object_z_mm": 455.0,
+  "robot_z_mm":      455.0,
   "opp_object_z_mm": 455.0
 }

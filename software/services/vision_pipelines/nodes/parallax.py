@@ -28,7 +28,12 @@ Params
     cam_x_mm, cam_y_mm, cam_z_mm : camera position above the table (mm).
                                    z is height above the floor; set
                                    reasonably (typically 1500-2000 mm).
-    object_z_mm                  : tag height above the floor (mm).
+    robot_z_mm                   : OWN robot tag height above the floor (mm).
+                                   Applied to tag ids in the own-team range
+                                   (1-5 blue, 6-10 yellow), and as the
+                                   fallback when a tag id is unknown.
+    opp_object_z_mm              : OPP robot tag height (mm). Applied to
+                                   tag ids outside the own-team range.
     use_naive_xy                 : if True, read naive_x_mm/naive_y_mm
                                    from the input (the localization node
                                    exposes those alongside the corrected
@@ -100,16 +105,11 @@ class ParallaxCorrectionNode(Node):
                          'help': 'camera Y over the table (mm)'},
         'cam_z_mm':     {'type': 'float', 'default': 1600.0,
                          'help': 'camera height above the table (mm)'},
-        'object_z_mm':  {'type': 'float', 'default': 490.0,
-                         'help': 'fallback tag height (mm) — used if '
-                                 'own/opp_object_z_mm are unset or tag_id '
-                                 'is unknown'},
-        'own_object_z_mm': {'type': 'float', 'default': 0.0,
-                            'help': 'tag height for OWN robot (mm). '
-                                    '0 = fall back to object_z_mm'},
-        'opp_object_z_mm': {'type': 'float', 'default': 0.0,
-                            'help': 'tag height for OPP robot (mm). '
-                                    '0 = fall back to object_z_mm'},
+        'robot_z_mm':      {'type': 'float', 'default': 490.0,
+                            'help': 'OWN robot tag height (mm). Also used '
+                                    'as the fallback when tag_id is unknown.'},
+        'opp_object_z_mm': {'type': 'float', 'default': 490.0,
+                            'help': 'OPP robot tag height (mm).'},
         'team':         {'type': 'str',   'default': 'blue',
                          'enum': ['blue', 'yellow'],
                          'help': 'OWN team — yellow=ids 6-10, blue=ids 1-5'},
@@ -203,9 +203,8 @@ class ParallaxCorrectionNode(Node):
             if cs is not None and (cs.get('flip_x') or cs.get('flip_y')):
                 from ._coords_helpers import flip_mm
                 cx, cy = flip_mm(cx, cy, cs)
-        oz_fallback = float(self._params.get('object_z_mm', 490.0))
-        oz_own      = float(self._params.get('own_object_z_mm', 0.0)) or oz_fallback
-        oz_opp      = float(self._params.get('opp_object_z_mm', 0.0)) or oz_fallback
+        oz_own      = float(self._params.get('robot_z_mm', 490.0))
+        oz_opp      = float(self._params.get('opp_object_z_mm', 490.0))
         team        = str(self._params.get('team', 'blue')).lower()
         own_range   = set(range(6, 11)) if team == 'yellow' else set(range(1, 6))
         use_naive   = bool(self._params.get('use_naive_xy', False))
@@ -214,7 +213,7 @@ class ParallaxCorrectionNode(Node):
         self._last_cam_xyz = (cx, cy, cz)
         self._last_object_z_mm = oz_own
 
-        max_oz = max(oz_own, oz_opp, oz_fallback)
+        max_oz = max(oz_own, oz_opp)
         broken_geom = (cz <= max_oz + 1e-3)
         if broken_geom:
             self._last_error = (
@@ -229,12 +228,12 @@ class ParallaxCorrectionNode(Node):
                 tid = int(tag_id) if tag_id is not None else -1
             except (TypeError, ValueError):
                 tid = -1
-            if tid in own_range:
-                oz = oz_own
-            elif tid > 0:
+            # Unknown ids fall back to OWN z — the only sensible default
+            # when we're correcting a tag we can't place team-wise.
+            if tid > 0 and tid not in own_range:
                 oz = oz_opp
             else:
-                oz = oz_fallback
+                oz = oz_own
             return (cz - oz) / cz
 
         factor_own = (cz - oz_own) / cz if not broken_geom else 1.0
@@ -421,6 +420,6 @@ class ParallaxCorrectionNode(Node):
             ],
             'cam_xyz_used':  list(self._last_cam_xyz),
             'object_z_mm':   float(self._last_object_z_mm
-                                   or self._params.get('object_z_mm', 490.0)),
+                                   or self._params.get('robot_z_mm', 490.0)),
             'last_error':    self._last_error,
         }

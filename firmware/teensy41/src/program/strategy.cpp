@@ -227,7 +227,7 @@ void grabStockHere(Vec2 target, TableCompass tc, RobotCompass rc) {
         waitMs(GrabGeom::GRAB_DELAY_MS);
         actuators.moveElevator(rc, ElevatorPose::STORE);
     }
-
+    
     motion.collide(false);
     safety.enable();
     motion.setFeedrate(1.0f);
