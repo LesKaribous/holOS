@@ -90,7 +90,7 @@ _cfg: dict = {
     # oversteered laterally when the true scale differed). Pitch is
     # the right knob because pixel gaps shrink/grow with camera height,
     # while the spread tells you nothing new once you know the pitch.
-    'tag_pitch_mm':       50.0,          # = expected_spread_mm / (expected_count - 1)
+    'tag_pitch_mm':       30.0,          # = expected_spread_mm / (expected_count - 1)
     # Fallback px→mm scale used when n < 2 (so no pitch is observable).
     # Calibrate empirically once; the auto-scale takes over the moment
     # we see ≥ 2 tags.
