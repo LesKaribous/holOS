@@ -458,27 +458,68 @@ async function pollVisionCamera() {
 }
 setInterval(pollVisionCamera, 2000);
 
-// ── ESP32-CAM streamer status poll ─────────────────────────────────────────
-// Persistent MJPEG grabber lives in services/embed_cam.py. We poll its
-// status every 2 s to surface "is the ESP actually feeding us frames" on
-// the topbar without the operator having to open the Detection tab. Pill
-// states mirror the panel description: live (<500 ms age), stale, conn,
-// err, off.
-function _espDotClass(s) {
-  if (!s) return 'cg-dot';
-  if (s.state === 'reading' && s.age_ms >= 0 && s.age_ms < 500) return 'cg-dot connected';
-  if (s.state === 'error' || s.state === 'stopped')             return 'cg-dot disconnected';
-  return 'cg-dot';  // connecting / stale
+// ── ESP32-CAM status poll ──────────────────────────────────────────────────
+// Two independent signals are surfaced via /api/embed_cam/streamer:
+//   ping     — lightweight HEAD on the host root every 5 s (background
+//              thread in services/embed_cam.py). NEVER hits /capture
+//              so it can't starve on-demand detect calls. Drives the
+//              topbar pill when the streamer is off.
+//   streamer — persistent MJPEG grabber. Off by default; when on,
+//              takes over the pill (frame age = the truer "live" signal).
+function _espDotClass(s, p) {
+  // Streamer on and reading? Use its state.
+  if (s && s.state === 'reading' && s.age_ms >= 0 && s.age_ms < 500)
+    return 'cg-dot connected';
+  if (s && (s.state === 'error')) return 'cg-dot disconnected';
+  // Otherwise fall back to the pinger.
+  if (p && p.last) {
+    if (p.last.ok)            return 'cg-dot connected';
+    if (p.last.duration_ms >= 0) return 'cg-dot disconnected';
+  }
+  return 'cg-dot';
 }
-function _espSubLabel(s) {
-  if (!s) return '—';
-  if (s.state === 'stopped')    return 'off';
-  if (s.state === 'connecting') return 'conn';
-  if (s.state === 'error')      return 'err';
-  if (s.state === 'reading') {
+function _espSubLabel(s, p) {
+  // Streamer takes precedence when it's running.
+  if (s && s.state === 'reading')
     return (s.age_ms >= 0 && s.age_ms < 500) ? 'live' : 'stale';
+  if (s && s.state === 'connecting') return 'conn';
+  if (s && s.state === 'error')      return 'err';
+  // Streamer off → use ping verdict.
+  if (p && p.last && p.last.t_ms) {
+    if (p.last.ok) return 'ping ok';
+    if (p.last.error === 'timeout') return 'ping to';
+    return 'ping err';
   }
   return '—';
+}
+function _fmtHms(t_ms) {
+  if (!t_ms) return '—';
+  const d = new Date(t_ms);
+  const pad = n => String(n).padStart(2, '0');
+  return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+}
+function _renderPingHistory(history) {
+  const tbody = document.getElementById('esp-ping-history-body');
+  if (!tbody) return;
+  if (!Array.isArray(history) || history.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="4" style="color:var(--text-dim);padding:2px 0">no pings yet…</td></tr>';
+    return;
+  }
+  // Newest first, max 8 rows.
+  const rows = history.slice().reverse().slice(0, 8).map(p => {
+    const time = _fmtHms(p.t_ms);
+    const ms = (p.duration_ms != null && p.duration_ms >= 0) ? String(p.duration_ms) : '—';
+    const code = p.http_status ? String(p.http_status) : (p.ok ? 'ok' : '—');
+    const codeColor = p.ok ? 'var(--ok, #4ec46e)' : 'var(--err, #e25555)';
+    const err = p.error ? p.error.replace(/</g,'&lt;') : '';
+    return `<tr>
+      <td style="padding:1px 4px 1px 0;color:var(--text-dim)">${time}</td>
+      <td style="padding:1px 4px">${ms}</td>
+      <td style="padding:1px 4px;color:${codeColor}">${code}</td>
+      <td style="padding:1px 0;color:var(--err);overflow:hidden;text-overflow:ellipsis;max-width:160px;white-space:nowrap" title="${err}">${err}</td>
+    </tr>`;
+  }).join('');
+  tbody.innerHTML = rows;
 }
 async function pollEspStreamer() {
   try {
@@ -487,18 +528,49 @@ async function pollEspStreamer() {
     const j = await r.json();
     if (!j.ok) return;
     const s = j.status || {};
+    const p = s.ping || {};
+
+    // Topbar pill
     const dot = document.getElementById('cg-dot-esp');
     const sub = document.getElementById('cg-sub-esp');
-    if (dot) dot.className = _espDotClass(s);
-    if (sub) sub.textContent = _espSubLabel(s);
+    if (dot) dot.className = _espDotClass(s, p);
+    if (sub) sub.textContent = _espSubLabel(s, p);
     const node = document.getElementById('cg-node-esp');
     if (node) {
-      const ageTxt = (s.age_ms != null && s.age_ms >= 0) ? `${s.age_ms} ms` : '—';
-      node.title = `ESP streamer · ${s.state || '?'} · age ${ageTxt}` +
-                   ` · frames ${s.frames || 0}` +
-                   (s.last_error ? `\n${s.last_error}` : '');
+      const pingTxt = p.last ?
+        `ping ${p.last.ok ? 'ok' : 'fail'} · ${p.last.duration_ms >= 0 ? p.last.duration_ms+'ms' : '—'}` +
+        (p.last.http_status ? ` · HTTP ${p.last.http_status}` : '') +
+        (p.last.error ? ` · ${p.last.error}` : '')
+        : 'no ping yet';
+      const streamTxt = s.state === 'stopped'
+        ? 'streamer: off'
+        : `streamer: ${s.state || '?'} · frames ${s.frames || 0}`;
+      node.title = `${pingTxt}\n${streamTxt}`;
     }
+
     const setText = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
+
+    // Pinger section
+    if (p.last && p.last.t_ms) {
+      const okTxt = p.last.ok ? 'ok' : 'fail';
+      const codeTxt = p.last.http_status ? ` · HTTP ${p.last.http_status}` : '';
+      setText('esp-ping-last',
+        `${_fmtHms(p.last.t_ms)} · ${okTxt} · ${p.last.duration_ms >= 0 ? p.last.duration_ms+' ms' : '—'}${codeTxt}`);
+    } else {
+      setText('esp-ping-last', '—');
+    }
+    setText('esp-ping-url', p.last?.url || '—');
+    const perr = document.getElementById('esp-ping-error-row');
+    const perv = document.getElementById('esp-ping-error-val');
+    if (p.last && p.last.error) {
+      if (perr) perr.style.display = '';
+      if (perv) perv.textContent = p.last.error;
+    } else {
+      if (perr) perr.style.display = 'none';
+    }
+    _renderPingHistory(p.history);
+
+    // Streamer section
     setText('esp-state-val',      s.state || '—');
     setText('esp-url-val',        s.url || '—');
     setText('esp-frames-val',     String(s.frames ?? 0));

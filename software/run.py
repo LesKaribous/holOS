@@ -1925,8 +1925,10 @@ def api_embed_cam_config():
 @app.route('/api/embed_cam/streamer', methods=['GET', 'POST'])
 def api_embed_cam_streamer():
     """Status + control endpoint for the persistent MJPEG grabber.
-    GET → current status (state, frames seen, age of cached frame, …).
-    POST {action: 'start'|'stop'|'restart'} → toggle the reader thread."""
+    GET → current status, including the lightweight HEAD pinger
+          result under 'ping' (since the topbar pill is driven from
+          the pinger when streaming is off).
+    POST {action} → start | stop | restart | ping (one-shot)."""
     if _embed_cam is None:
         return jsonify({'ok': False, 'error': 'embed_cam unavailable'}), 503
     if request.method == 'POST':
@@ -1936,10 +1938,14 @@ def api_embed_cam_streamer():
             _embed_cam.stop_streamer()
         elif action in ('start', 'restart'):
             _embed_cam.start_streamer()
+        elif action == 'ping':
+            _embed_cam.ping_now()
         else:
             return jsonify({'ok': False,
                             'error': f'unknown action: {action!r}'}), 400
-    return jsonify({'ok': True, 'status': _embed_cam.streamer_status()})
+    status = _embed_cam.streamer_status()
+    status['ping'] = _embed_cam.ping_status()
+    return jsonify({'ok': True, 'status': status})
 
 
 # ── Vision API ────────────────────────────────────────────────────────────────
@@ -5288,16 +5294,26 @@ def main():
             brain.log(f"[vision-source] start failed: {_vc_err}")
         except Exception:
             pass
-    # Start the persistent ESP32-CAM MJPEG grabber. Background thread
-    # tails the stream into a 1-slot frame cache so detect_once reads
-    # the freshest frame instantly (no TCP handshake, no ESP capture
-    # latency). Failure here is non-fatal — falls back to per-request
-    # /capture fetch on each detect.
+    # Start the ESP32-CAM liveness pinger (always) and the persistent
+    # MJPEG grabber (only if use_streamer was explicitly set on). The
+    # pinger is a 1-roundtrip HEAD to the host root every 5 s — never
+    # touches /capture so it can't starve on-demand detect calls. The
+    # streamer is off by default since it monopolises the ESP single-
+    # client slot; enable from the ESP panel only if your firmware
+    # supports concurrent stream + capture.
     if _embed_cam is not None:
         try:
-            _embed_cam.start_streamer()
-            print(f"[EmbedCam] streamer started "
-                  f"({_embed_cam.streamer_status().get('url') or '(disabled)'})")
+            _embed_cam.start_pinger()
+            print("[EmbedCam] liveness pinger started")
+        except Exception as _ep_err:
+            print(f"[EmbedCam] pinger start failed: {_ep_err}")
+        try:
+            _embed_cam.start_streamer(force=False)
+            st = _embed_cam.streamer_status()
+            if st.get('state') != 'stopped':
+                print(f"[EmbedCam] streamer started ({st.get('url') or '?'})")
+            else:
+                print("[EmbedCam] streamer disabled (on-demand /capture mode)")
         except Exception as _es_err:
             print(f"[EmbedCam] streamer start failed: {_es_err}")
     # Load saved pipelines + activate the default one (if any). Feed

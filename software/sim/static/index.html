@@ -165,7 +165,46 @@
 
 <!-- ── ESPCAM streamer panel ───────────────────────────────────────────────── -->
 <div id="esp-panel" class="conn-panel hidden">
-  <div class="conn-panel-title">ESP32-CAM streamer</div>
+  <!-- Reachability (HEAD pinger). Always on, lightweight, never touches
+       /capture so it can run forever without starving on-demand fetches. -->
+  <div class="conn-panel-title">ESP32-CAM reachability</div>
+  <div class="conn-panel-row">
+    <span class="conn-panel-lbl">Last ping</span>
+    <span id="esp-ping-last">—</span>
+  </div>
+  <div class="conn-panel-row">
+    <span class="conn-panel-lbl">URL</span>
+    <span id="esp-ping-url" style="font:11px ui-monospace,monospace; color:var(--text-dim); word-break:break-all">—</span>
+  </div>
+  <div class="conn-panel-row" id="esp-ping-error-row" style="display:none">
+    <span class="conn-panel-lbl">Last error</span>
+    <span id="esp-ping-error-val" style="font:11px ui-monospace,monospace; color:var(--err); white-space:pre-wrap; word-break:break-word;">—</span>
+  </div>
+  <div class="conn-panel-row" style="display:block">
+    <div style="font:11px ui-monospace,monospace; color:var(--text-dim); margin-bottom:2px">Recent pings</div>
+    <table id="esp-ping-history" style="width:100%;border-collapse:collapse;font:11px ui-monospace,monospace">
+      <thead>
+        <tr style="color:var(--text-dim);text-align:left">
+          <th style="font-weight:normal;padding:1px 4px 1px 0">time</th>
+          <th style="font-weight:normal;padding:1px 4px">ms</th>
+          <th style="font-weight:normal;padding:1px 4px">code</th>
+          <th style="font-weight:normal;padding:1px 0">err</th>
+        </tr>
+      </thead>
+      <tbody id="esp-ping-history-body">
+        <tr><td colspan="4" style="color:var(--text-dim);padding:2px 0">no pings yet…</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="conn-panel-row" style="gap:6px;margin-top:4px">
+    <button class="btn-tiny" onclick="espStreamerAction('ping')"
+            title="Fire a HEAD on the ESP host root right now.">↻ Ping now</button>
+  </div>
+
+  <!-- Streamer (persistent MJPEG grabber). Off by default — most ESP
+       firmwares can't handle a long-lived stream + on-demand /capture
+       at the same time. Enable here only if you've confirmed yours can. -->
+  <div class="conn-panel-title" style="margin-top:10px">Streamer (optional)</div>
   <div class="conn-panel-row">
     <span class="conn-panel-lbl">State</span>
     <span id="esp-state-val">—</span>

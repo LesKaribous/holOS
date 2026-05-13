@@ -66,13 +66,23 @@ _cfg: dict = {
     'mjpeg_url':          'http://192.168.1.81/',
     # Persistent MJPEG grabber. When `use_streamer` is True, a
     # background thread tails this URL and keeps the most recent JPEG
-    # in memory. `detect_once` then reads the cached frame instead of
-    # opening a fresh TCP connection on every request — eliminates the
-    # 50-200 ms ESP-side capture latency for match-time queries.
-    'use_streamer':       True,
+    # in memory. Off by default — most ESP32-CAM firmwares (AI-Thinker
+    # in particular) handle one HTTP client at a time and the streamer
+    # monopolises that slot, blocking /capture. Turn on manually from
+    # the ESP panel if you've confirmed your firmware supports
+    # concurrent stream + capture.
+    'use_streamer':       False,
     'stream_url':         '',          # blank → reuse `mjpeg_url`
     # Frame is considered stale (and we fall back to /capture) after this.
     'stream_max_age_ms':  500,
+    # Lightweight liveness pinger. Runs in a background thread and
+    # sends a HEAD to the host root (NEVER /capture, so the sensor is
+    # untouched). Result drives the ESP topbar pill so the operator
+    # can tell "ESP is alive" from "streamer is happy" — they're
+    # different things and conflating them is what bit us before.
+    'ping_enabled':       True,
+    'ping_interval_s':    5.0,
+    'ping_timeout_s':     1.0,
     'fetch_timeout_s':    1.5,
     # ArUco detection — DICT_4X4_50, IDs 36 (blue) / 47 (yellow). The
     # `team` knob lets the operator restrict detection to one colour
@@ -271,12 +281,20 @@ _streamer = MjpegStreamer()
 
 
 def start_streamer(url: 'Optional[str]' = None,
-                   timeout_s: 'Optional[float]' = None) -> None:
-    """Start (or restart) the persistent MJPEG grabber. Called at boot
-    from run.py and on config save when stream URL / use_streamer change."""
-    if not _cfg.get('use_streamer', True):
+                   timeout_s: 'Optional[float]' = None,
+                   force: bool = True) -> None:
+    """Start (or restart) the persistent MJPEG grabber.
+
+    - `force=True` (default, used by the panel's Start button) starts
+      unconditionally and flips `use_streamer` to True so subsequent
+      config-change restarts keep it running.
+    - `force=False` (used at boot) respects the `use_streamer` flag —
+      starts only if the user previously enabled streaming."""
+    if not force and not _cfg.get('use_streamer', False):
         _streamer.stop()
         return
+    if force:
+        _cfg['use_streamer'] = True
     u = url or str(_cfg.get('stream_url') or _cfg.get('mjpeg_url') or '')
     if not u:
         return
@@ -285,11 +303,205 @@ def start_streamer(url: 'Optional[str]' = None,
 
 
 def stop_streamer() -> None:
+    """Stop the streamer AND record intent so it stays off across
+    config-change restart triggers."""
+    _cfg['use_streamer'] = False
     _streamer.stop()
 
 
 def streamer_status() -> dict:
     return _streamer.status()
+
+
+# ── ESP liveness pinger ───────────────────────────────────────────────
+# Single TCP+HEAD round-trip to the camera host root. Never touches
+# /capture so the ESP sensor is not triggered. The pill in the topbar
+# is driven from this when the streamer is off — the "is ESP reachable"
+# question and the "is streamer happy" question are different and
+# conflating them caused the streamer-blocks-/capture confusion.
+
+import socket as _socket
+from urllib.parse import urlparse as _urlparse
+
+
+class EspPinger:
+    def __init__(self):
+        self._thread: 'Optional[threading.Thread]' = None
+        self._running = False
+        self._lock = threading.Lock()
+        # Latest ping result.
+        self._last: dict = {
+            't_ms':       0,
+            'ok':         False,
+            'http_status': 0,
+            'duration_ms': -1,
+            'error':      '',
+            'url':        '',
+        }
+        # Ring buffer of recent results (newest last).
+        self._history: 'list[dict]' = []
+
+    _HISTORY_MAX = 12
+
+    # ── Lifecycle ─────────────────────────────────────────────────────
+    def start(self) -> None:
+        if self._running:
+            return
+        self._running = True
+        self._thread = threading.Thread(target=self._loop,
+                                        name='embedcam-ping',
+                                        daemon=True)
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._running = False
+        self._thread = None
+
+    # ── Consumer API ──────────────────────────────────────────────────
+    def status(self) -> dict:
+        with self._lock:
+            return {
+                'enabled':  bool(self._running),
+                'last':     dict(self._last),
+                'history':  list(self._history),
+            }
+
+    def ping_now(self) -> dict:
+        """Synchronous one-shot ping, for the panel's manual refresh."""
+        return self._do_ping_and_record()
+
+    # ── Reader loop ───────────────────────────────────────────────────
+    def _loop(self) -> None:
+        while self._running:
+            try:
+                self._do_ping_and_record()
+            except Exception:
+                pass  # never let the thread die from a transient error
+            # Sleep in small slices so stop() is responsive.
+            interval = float(_cfg.get('ping_interval_s', 5.0))
+            slept = 0.0
+            while self._running and slept < interval:
+                time.sleep(0.25)
+                slept += 0.25
+
+    # ── Ping primitive ────────────────────────────────────────────────
+    def _do_ping_and_record(self) -> dict:
+        url = self._resolve_ping_url()
+        result = self._raw_ping(url) if url else {
+            't_ms': int(time.time() * 1000),
+            'ok': False, 'http_status': 0, 'duration_ms': -1,
+            'error': 'no host configured', 'url': '',
+        }
+        with self._lock:
+            self._last = result
+            self._history.append(result)
+            if len(self._history) > self._HISTORY_MAX:
+                del self._history[:-self._HISTORY_MAX]
+        return result
+
+    @staticmethod
+    def _resolve_ping_url() -> str:
+        """Always host root — never the configured /capture path,
+        so HEAD doesn't accidentally fire the camera sensor on
+        firmwares where HEAD on /capture still runs the handler."""
+        cap = str(_cfg.get('url') or '').strip()
+        if not cap:
+            return ''
+        try:
+            p = _urlparse(cap)
+            host = p.hostname or ''
+            if not host:
+                return ''
+            port = p.port if p.port else (80 if p.scheme == 'http' else 443)
+            scheme = p.scheme or 'http'
+            return f"{scheme}://{host}:{port}/"
+        except Exception:
+            return ''
+
+    @staticmethod
+    def _raw_ping(url: str) -> dict:
+        """Raw TCP + minimal HEAD. Bypasses urllib to avoid the
+        connection pooling / keepalive heuristics that interact
+        badly with single-client ESP firmwares."""
+        timeout_s = float(_cfg.get('ping_timeout_s', 1.0))
+        info = {
+            't_ms':        int(time.time() * 1000),
+            'ok':          False,
+            'http_status': 0,
+            'duration_ms': 0,
+            'error':       '',
+            'url':         url,
+        }
+        try:
+            p = _urlparse(url)
+        except Exception as e:
+            info['error'] = f'urlparse: {e}'
+            return info
+        host = p.hostname or ''
+        port = p.port if p.port else (80 if p.scheme == 'http' else 443)
+        if not host:
+            info['error'] = 'no host in url'
+            return info
+        t0 = time.monotonic()
+        s = None
+        try:
+            s = _socket.create_connection((host, port), timeout=timeout_s)
+            s.settimeout(timeout_s)
+            req = (f"HEAD {p.path or '/'} HTTP/1.0\r\n"
+                   f"Host: {host}\r\n"
+                   f"User-Agent: holOS-ping\r\n"
+                   f"Connection: close\r\n\r\n").encode()
+            s.sendall(req)
+            # Read just the status line (first \r\n) — don't drain body.
+            buf = b''
+            while b'\r\n' not in buf and len(buf) < 256:
+                chunk = s.recv(256)
+                if not chunk:
+                    break
+                buf += chunk
+            first = buf.split(b'\r\n', 1)[0].decode('latin-1', errors='replace')
+            info['duration_ms'] = int((time.monotonic() - t0) * 1000)
+            parts = first.split()
+            if len(parts) >= 2 and parts[1].isdigit():
+                info['http_status'] = int(parts[1])
+                # Any HTTP response (incl. 4xx/5xx) means the server is up.
+                info['ok'] = True
+            else:
+                info['error'] = f'bad reply: {first[:64]!r}'
+        except _socket.timeout:
+            info['duration_ms'] = int((time.monotonic() - t0) * 1000)
+            info['error'] = 'timeout'
+        except OSError as e:
+            info['duration_ms'] = int((time.monotonic() - t0) * 1000)
+            info['error'] = f'{type(e).__name__}: {e}'
+        except Exception as e:
+            info['duration_ms'] = int((time.monotonic() - t0) * 1000)
+            info['error'] = f'{type(e).__name__}: {e}'
+        finally:
+            if s is not None:
+                try: s.close()
+                except Exception: pass
+        return info
+
+
+_pinger = EspPinger()
+
+
+def start_pinger() -> None:
+    if _cfg.get('ping_enabled', True):
+        _pinger.start()
+
+
+def stop_pinger() -> None:
+    _pinger.stop()
+
+
+def ping_status() -> dict:
+    return _pinger.status()
+
+
+def ping_now() -> dict:
+    return _pinger.ping_now()
 
 
 # ── Image fetch ───────────────────────────────────────────────────────
