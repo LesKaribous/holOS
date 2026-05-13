@@ -104,7 +104,7 @@ namespace GrabGeom {
     constexpr float    APPROACH_OFFSET = 260.0f;
     constexpr float    GRAB_OFFSET     = 100;//180.0f;
     constexpr uint32_t GRAB_DELAY_MS   = 1000;
-    constexpr float    SIDE_OFFSET     = -20.0f;
+    constexpr float    SIDE_OFFSET     = 0.0f;
 }
 
 // Grab-only sequence: vision auto-correction + forward into grab pose
@@ -131,10 +131,10 @@ void grabStockHere(Vec2 target, TableCompass tc, RobotCompass rc) {
     bool connected = false;
 
     {
-        constexpr int      MAX_RETRY        = 2;
-        constexpr uint32_t ATTEMPT_TO_MS    = 2000;
+        constexpr int      MAX_RETRY        = 3;
+        constexpr uint32_t ATTEMPT_TO_MS    = 1500;
         constexpr uint32_t RETRY_DELAY_MS   = 400;
-        constexpr float    PARTIAL_STEP_MM  = 60.0f;
+        constexpr float    PARTIAL_STEP_MM  = 30.0f;
         // Camera "+X = right" in image frame maps to compass(tc) - 90° in
         // world frame. Kept in DEGREES because motion.goPolar() takes
         // degrees (it does the DEG_TO_RAD internally).

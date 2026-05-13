@@ -147,39 +147,67 @@ class XBeeTransport(Transport):
             self._on_disconnect()
 
     def _cleanup(self) -> None:
-        """Stop reader/heartbeat threads and close the serial port unconditionally."""
+        """Stop reader/heartbeat threads and close the serial port unconditionally.
+
+        Shutdown order matters — the reader thread is blocked in
+        serial.read(timeout=0.1s) and the heartbeat thread is blocked
+        in execute().  We must:
+          1. flip _running first so threads exit on their next poll;
+          2. unblock anyone waiting on _pending / _motion_done_evt;
+          3. join the reader BEFORE closing the fd (closing under an
+             active read() can leave the kernel fd in a half-dead
+             state on some Linux drivers — the next open() then
+             returns EBUSY even after the Teensy is rebooted, which
+             is exactly the "can't reopen port" symptom);
+          4. THEN close, and NEVER flush — tcdrain() blocks when the
+             firmware has already vanished mid-write.
+        """
+        # 1. Signal exit
         self._running       = False
         self._connected     = False
         self._heartbeat_ok  = False
         self._bridge_type   = None
-        # Release any pending execute() calls so they don't hang
+        # 2. Release any pending execute() / motion waiters
         with self._lock:
             for evt in self._pending.values():
                 evt.set()
             self._pending.clear()
             self._replies.clear()
-        self._motion_done_evt.set()   # unblock any waiting motion call
+        self._motion_done_evt.set()
         self._waiting_motion = False
-        # Clear all subscribers so stale closures (e.g. socketio.emit refs) are released
-        self._tel_subs.clear()
+        # Clear subscribers AFTER joining the reader, not now — clearing
+        # them up front looks safe but means the reader's still-running
+        # tick before it notices _running=False loses its callbacks
+        # silently. Tiny race, but we may as well order it correctly.
+
+        # 3. Join threads — they should exit within one read timeout
+        # (~100 ms) of seeing _running=False.  Don't join self; cleanup
+        # can be entered from either worker.
+        cur = threading.current_thread()
+        if (self._reader_thread is not None
+                and self._reader_thread.is_alive()
+                and self._reader_thread is not cur):
+            self._reader_thread.join(timeout=2.0)
+            self._reader_thread = None
+        if (self._hb_thread is not None
+                and self._hb_thread.is_alive()
+                and self._hb_thread is not cur):
+            self._hb_thread.join(timeout=2.0)
+            self._hb_thread = None
+
+        # 4. Now the fd has no active reader.  Close without flushing.
         if self._serial is not None:
             try:
                 if self._serial.is_open:
-                    self._serial.flush()
                     self._serial.close()
             except Exception:
                 pass
             self._serial = None
-        # Wait for other threads to exit (ensures port is released).
-        # Skip joining the current thread — _cleanup() can be called from the
-        # reader thread itself when the serial port drops unexpectedly.
-        cur = threading.current_thread()
-        if self._reader_thread is not None and self._reader_thread.is_alive() and self._reader_thread is not cur:
-            self._reader_thread.join(timeout=2.0)
-            self._reader_thread = None
-        if self._hb_thread is not None and self._hb_thread.is_alive() and self._hb_thread is not cur:
-            self._hb_thread.join(timeout=2.0)
-            self._hb_thread = None
+
+        # Drop subscribers last — anything the reader might have fired
+        # while joining is already through; from here on the transport
+        # has no callbacks bound to a (likely-stale) UI session.
+        self._tel_subs.clear()
 
     @property
     def is_connected(self) -> bool:
@@ -349,8 +377,13 @@ class XBeeTransport(Transport):
     def _reader_loop(self) -> None:
         buf = b""
         while self._running:
+            # Defensive snapshot: _cleanup() can null self._serial from
+            # another thread between the while-check and the .read() call.
+            ser = self._serial
+            if ser is None:
+                return
             try:
-                chunk = self._serial.read(256)
+                chunk = ser.read(256)
                 if not chunk:
                     continue
                 buf += chunk
