@@ -1884,68 +1884,26 @@ def api_embed_cam_config():
         return jsonify({'ok': False, 'error': 'embed_cam unavailable'}), 503
     if request.method == 'POST':
         body = request.get_json(silent=True) or {}
-        before = _embed_cam.get_config()
-        # IP-rotation convenience: when the Detection-tab URL field
-        # changes host (e.g. 192.168.1.81 → 192.168.1.42) and the
-        # streamer URLs were tracking the old host, auto-update them
-        # so the operator doesn't have to retype URLs in three places.
-        # Skipped if the user explicitly passes mjpeg_url / stream_url
-        # in the same request.
-        if 'url' in body and 'mjpeg_url' not in body and 'stream_url' not in body:
-            try:
-                from urllib.parse import urlparse, urlunparse
-                old_cap = urlparse(str(before.get('url', '')))
-                new_cap = urlparse(str(body.get('url', '')))
-                if (old_cap.hostname and new_cap.hostname
-                        and old_cap.hostname != new_cap.hostname):
-                    for k in ('mjpeg_url', 'stream_url'):
-                        old = urlparse(str(before.get(k, '')))
-                        if old.hostname == old_cap.hostname:
-                            port = f":{old.port}" if old.port else ''
-                            body[k] = urlunparse((
-                                old.scheme or new_cap.scheme,
-                                f"{new_cap.hostname}{port}",
-                                old.path, '', '', ''))
-            except Exception:
-                pass
         _embed_cam.set_config(body)
-        after = _embed_cam.get_config()
-        # `url` joins the streamer-restart key list: changing the IP
-        # via the Detection-tab URL field must restart the grabber.
-        streamer_keys = ('use_streamer', 'stream_url', 'mjpeg_url',
-                         'fetch_timeout_s', 'url')
-        if any(before.get(k) != after.get(k) for k in streamer_keys):
-            try:
-                _embed_cam.start_streamer()  # idempotent restart
-            except Exception as e:
-                print(f"[EmbedCam] streamer restart failed: {e}")
     return jsonify({'ok': True, 'config': _embed_cam.get_config()})
 
 
-@app.route('/api/embed_cam/streamer', methods=['GET', 'POST'])
-def api_embed_cam_streamer():
-    """Status + control endpoint for the persistent MJPEG grabber.
-    GET → current status, including the lightweight HEAD pinger
-          result under 'ping' (since the topbar pill is driven from
-          the pinger when streaming is off).
-    POST {action} → start | stop | restart | ping (one-shot)."""
+@app.route('/api/embed_cam/health', methods=['GET', 'POST'])
+def api_embed_cam_health():
+    """ESP32-CAM liveness state.
+    GET → {online, last_probe, history, last_capture_age_s, last_capture_ok}
+    POST {action: 'probe'} → fire a one-shot TCP-connect probe now."""
     if _embed_cam is None:
         return jsonify({'ok': False, 'error': 'embed_cam unavailable'}), 503
     if request.method == 'POST':
         body = request.get_json(silent=True) or {}
         action = str(body.get('action', '')).lower()
-        if action == 'stop':
-            _embed_cam.stop_streamer()
-        elif action in ('start', 'restart'):
-            _embed_cam.start_streamer()
-        elif action == 'ping':
-            _embed_cam.ping_now()
+        if action == 'probe':
+            _embed_cam.probe_now()
         else:
             return jsonify({'ok': False,
                             'error': f'unknown action: {action!r}'}), 400
-    status = _embed_cam.streamer_status()
-    status['ping'] = _embed_cam.ping_status()
-    return jsonify({'ok': True, 'status': status})
+    return jsonify({'ok': True, 'status': _embed_cam.prober_status()})
 
 
 # ── Vision API ────────────────────────────────────────────────────────────────
@@ -5294,28 +5252,18 @@ def main():
             brain.log(f"[vision-source] start failed: {_vc_err}")
         except Exception:
             pass
-    # Start the ESP32-CAM liveness pinger (always) and the persistent
-    # MJPEG grabber (only if use_streamer was explicitly set on). The
-    # pinger is a 1-roundtrip HEAD to the host root every 5 s — never
-    # touches /capture so it can't starve on-demand detect calls. The
-    # streamer is off by default since it monopolises the ESP single-
-    # client slot; enable from the ESP panel only if your firmware
-    # supports concurrent stream + capture.
+    # Start the ESP32-CAM liveness prober. Background thread does a
+    # zero-data TCP connect to host:port every 15 s — closes immediately
+    # on accept, no HTTP request sent, camera sensor never triggered.
+    # Skips entirely when a /capture happened in the last 30 s (the
+    # capture itself proves the ESP is alive), so during an active
+    # match we add zero ESP traffic.
     if _embed_cam is not None:
         try:
-            _embed_cam.start_pinger()
-            print("[EmbedCam] liveness pinger started")
+            _embed_cam.start_prober()
+            print("[EmbedCam] liveness prober started")
         except Exception as _ep_err:
-            print(f"[EmbedCam] pinger start failed: {_ep_err}")
-        try:
-            _embed_cam.start_streamer(force=False)
-            st = _embed_cam.streamer_status()
-            if st.get('state') != 'stopped':
-                print(f"[EmbedCam] streamer started ({st.get('url') or '?'})")
-            else:
-                print("[EmbedCam] streamer disabled (on-demand /capture mode)")
-        except Exception as _es_err:
-            print(f"[EmbedCam] streamer start failed: {_es_err}")
+            print(f"[EmbedCam] prober start failed: {_ep_err}")
     # Load saved pipelines + activate the default one (if any). Feed
     # callbacks are wired inside _load_pipelines.
     # NB: vision pose updates are PULL-based now — the strategy queries

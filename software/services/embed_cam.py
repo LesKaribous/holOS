@@ -58,31 +58,20 @@ _STOCK_IDS = {TAG_BLUE, TAG_YELLOW}
 
 _cfg: dict = {
     # ESPCAM HTTP endpoint that returns a single JPEG when fetched.
-    'url':                'http://192.168.1.81/capture',
-    # Fallback URL: a `/` endpoint on the bare AI-Thinker firmware
-    # only serves MJPEG; fetching the multipart stream and slicing
-    # out the first JPEG works too. Try `url` first, fall back here
-    # if the first attempt times out / returns a multipart payload.
-    'mjpeg_url':          'http://192.168.1.81/',
-    # Persistent MJPEG grabber. When `use_streamer` is True, a
-    # background thread tails this URL and keeps the most recent JPEG
-    # in memory. Off by default — most ESP32-CAM firmwares (AI-Thinker
-    # in particular) handle one HTTP client at a time and the streamer
-    # monopolises that slot, blocking /capture. Turn on manually from
-    # the ESP panel if you've confirmed your firmware supports
-    # concurrent stream + capture.
-    'use_streamer':       False,
-    'stream_url':         '',          # blank → reuse `mjpeg_url`
-    # Frame is considered stale (and we fall back to /capture) after this.
-    'stream_max_age_ms':  500,
-    # Lightweight liveness pinger. Runs in a background thread and
-    # sends a HEAD to the host root (NEVER /capture, so the sensor is
-    # untouched). Result drives the ESP topbar pill so the operator
-    # can tell "ESP is alive" from "streamer is happy" — they're
-    # different things and conflating them is what bit us before.
-    'ping_enabled':       True,
-    'ping_interval_s':    5.0,
-    'ping_timeout_s':     1.0,
+    # One-picture-at-a-time is the only mode we support — the firmware
+    # is single-client and any persistent connection blocks the camera.
+    'url':                'http://192.168.0.102/capture',
+    # Liveness prober. Runs in a background thread and opens a single
+    # TCP connection to the camera host:port — no HTTP request sent,
+    # the socket is closed immediately on accept. Costs the ESP one
+    # accept()+close() pair; cannot fire the camera. The prober skips
+    # entirely when a /capture has happened recently (see
+    # `probe_skip_if_capture_within_s`) so during active use we add
+    # zero ESP traffic.
+    'probe_enabled':                True,
+    'probe_interval_s':             15.0,
+    'probe_timeout_s':              1.0,
+    'probe_skip_if_capture_within_s': 30.0,
     'fetch_timeout_s':    1.5,
     # ArUco detection — DICT_4X4_50, IDs 36 (blue) / 47 (yellow). The
     # `team` knob lets the operator restrict detection to one colour
@@ -133,215 +122,41 @@ def set_config(patch: dict) -> dict:
     return get_config()
 
 
-# ── Persistent MJPEG grabber ──────────────────────────────────────────
-# Background reader thread for the ESP32-CAM MJPEG endpoint. Keeps the
-# most recent JPEG + decoded BGR frame in a 1-slot buffer so that
-# detect_once() can return instantly instead of opening a fresh TCP
-# connection on every call. This is the same architecture pattern used
-# by software/vision_source.py for the front-facing Jetson camera.
-
-class MjpegStreamer:
-    """Tails an MJPEG stream in a background thread and exposes the
-    latest decoded frame to consumers. Hunts SOI/EOI markers in the
-    multipart body — works with any firmware that emits a stream of
-    concatenated JPEGs (multipart MIME or raw)."""
-
-    _RECONNECT_BACKOFF_S = 1.0
-
-    def __init__(self):
-        self._url = ''
-        self._timeout = 5.0
-        self._thread: 'Optional[threading.Thread]' = None
-        self._running = False
-        self._slot_lock = threading.Lock()
-        # Latest frame slot (replaced atomically).
-        self._latest_raw:   Optional[bytes] = None
-        self._latest_frame: 'Optional[np.ndarray]' = None
-        self._latest_t = 0.0
-        self._frames = 0
-        self._reconnects = 0
-        self._last_error = ''
-        self._state = 'stopped'  # stopped | connecting | reading | error
-
-    # ── Lifecycle ─────────────────────────────────────────────────────
-    def start(self, url: str, timeout_s: float = 5.0) -> None:
-        if self._running and self._url == url:
-            return
-        self.stop()
-        self._url = url
-        self._timeout = float(timeout_s)
-        self._running = True
-        self._state = 'connecting'
-        self._thread = threading.Thread(target=self._loop,
-                                        name='embedcam-mjpeg',
-                                        daemon=True)
-        self._thread.start()
-
-    def stop(self) -> None:
-        self._running = False
-        t = self._thread
-        self._thread = None
-        # Don't join — the reader is blocked on a socket read; we just
-        # let the daemon thread die when the urlopen socket eventually
-        # times out. Future start() will spin up a fresh thread.
-        self._state = 'stopped'
-
-    # ── Consumer API ──────────────────────────────────────────────────
-    def read_latest(self) -> 'tuple[Optional[bytes], Optional[np.ndarray], dict]':
-        """Snapshot the latest (raw, decoded, status). Status includes
-        age_ms so callers can decide whether the frame is fresh enough."""
-        with self._slot_lock:
-            raw = self._latest_raw
-            frame = self._latest_frame
-            t = self._latest_t
-        age_ms = int((time.monotonic() - t) * 1000) if raw else -1
-        return raw, frame, {
-            'state':      self._state,
-            'url':        self._url,
-            'frames':     self._frames,
-            'reconnects': self._reconnects,
-            'age_ms':     age_ms,
-            'last_error': self._last_error,
-        }
-
-    def status(self) -> dict:
-        _, _, s = self.read_latest()
-        return s
-
-    # ── Reader loop ───────────────────────────────────────────────────
-    def _loop(self) -> None:
-        while self._running:
-            try:
-                self._state = 'connecting'
-                req = urllib.request.Request(
-                    self._url, headers={'User-Agent': 'holOS-stream'})
-                with urllib.request.urlopen(req, timeout=self._timeout) as resp:
-                    self._state = 'reading'
-                    self._read_stream(resp)
-            except Exception as e:
-                self._last_error = str(e)
-                self._state = 'error'
-                self._reconnects += 1
-            if not self._running:
-                break
-            time.sleep(self._RECONNECT_BACKOFF_S)
-
-    def _read_stream(self, resp) -> None:
-        """Consume the response body, slice complete JPEGs by SOI/EOI."""
-        buf = bytearray()
-        # Reading in modest chunks keeps memory bounded if the ESP
-        # bursts a large frame; 8 KiB is well above one VGA JPEG frame
-        # at quality 12 (~10-15 KiB) so usually each read yields a
-        # complete frame plus a fresh header for the next one.
-        CHUNK = 8 * 1024
-        while self._running:
-            chunk = resp.read(CHUNK)
-            if not chunk:
-                return  # peer closed → outer loop reconnects
-            buf.extend(chunk)
-            # Drain every complete JPEG in the buffer.
-            while True:
-                soi = buf.find(b'\xff\xd8')
-                if soi < 0:
-                    # No SOI in buffer — keep the last byte in case it's
-                    # a half-marker straddling chunks.
-                    if len(buf) > 1:
-                        del buf[:-1]
-                    break
-                # Drop bytes before SOI; they're MIME headers we don't need.
-                if soi > 0:
-                    del buf[:soi]
-                eoi = buf.find(b'\xff\xd9', 2)
-                if eoi < 0:
-                    break  # incomplete frame; wait for more bytes
-                jpeg = bytes(buf[:eoi + 2])
-                del buf[:eoi + 2]
-                self._on_jpeg(jpeg)
-
-    def _on_jpeg(self, jpeg: bytes) -> None:
-        if not _CV2_OK:
-            return
-        try:
-            arr = np.frombuffer(jpeg, dtype=np.uint8)
-            frame = cv2.imdecode(arr, cv2.IMREAD_COLOR)
-        except Exception as e:
-            self._last_error = f'decode: {e}'
-            return
-        if frame is None:
-            return
-        with self._slot_lock:
-            self._latest_raw = jpeg
-            self._latest_frame = frame
-            self._latest_t = time.monotonic()
-            self._frames += 1
-
-
-# Module-level singleton.
-_streamer = MjpegStreamer()
-
-
-def start_streamer(url: 'Optional[str]' = None,
-                   timeout_s: 'Optional[float]' = None,
-                   force: bool = True) -> None:
-    """Start (or restart) the persistent MJPEG grabber.
-
-    - `force=True` (default, used by the panel's Start button) starts
-      unconditionally and flips `use_streamer` to True so subsequent
-      config-change restarts keep it running.
-    - `force=False` (used at boot) respects the `use_streamer` flag —
-      starts only if the user previously enabled streaming."""
-    if not force and not _cfg.get('use_streamer', False):
-        _streamer.stop()
-        return
-    if force:
-        _cfg['use_streamer'] = True
-    u = url or str(_cfg.get('stream_url') or _cfg.get('mjpeg_url') or '')
-    if not u:
-        return
-    t = timeout_s if timeout_s is not None else float(_cfg.get('fetch_timeout_s', 1.5)) * 3
-    _streamer.start(u, timeout_s=t)
-
-
-def stop_streamer() -> None:
-    """Stop the streamer AND record intent so it stays off across
-    config-change restart triggers."""
-    _cfg['use_streamer'] = False
-    _streamer.stop()
-
-
-def streamer_status() -> dict:
-    return _streamer.status()
-
-
-# ── ESP liveness pinger ───────────────────────────────────────────────
-# Single TCP+HEAD round-trip to the camera host root. Never touches
-# /capture so the ESP sensor is not triggered. The pill in the topbar
-# is driven from this when the streamer is off — the "is ESP reachable"
-# question and the "is streamer happy" question are different and
-# conflating them caused the streamer-blocks-/capture confusion.
+# ── Liveness prober ───────────────────────────────────────────────────
+# Detects "ESP online/offline" without ever touching the camera. Opens
+# a TCP socket to the ESP host:port, closes it immediately — no HTTP
+# request is sent, no handler is invoked on the ESP, the camera sensor
+# is never triggered. Cost to the ESP: one accept()+close() pair.
+#
+# Smart polling: a successful /capture is itself proof the ESP is alive,
+# so the probe loop skips entirely when fetch_frame_timed has succeeded
+# within `probe_skip_if_capture_within_s`. During an active match
+# (continuous embed_detect calls) this means zero extra ESP traffic;
+# during idle, one TCP-connect every `probe_interval_s` (default 15 s).
 
 import socket as _socket
 from urllib.parse import urlparse as _urlparse
 
 
-class EspPinger:
+class EspProber:
+    _HISTORY_MAX = 12
+
     def __init__(self):
         self._thread: 'Optional[threading.Thread]' = None
         self._running = False
         self._lock = threading.Lock()
-        # Latest ping result.
         self._last: dict = {
-            't_ms':       0,
-            'ok':         False,
-            'http_status': 0,
+            't_ms':        0,
+            'ok':          False,
             'duration_ms': -1,
-            'error':      '',
-            'url':        '',
+            'error':       '',
+            'host':        '',
+            'port':        0,
+            'kind':        '',
         }
-        # Ring buffer of recent results (newest last).
         self._history: 'list[dict]' = []
-
-    _HISTORY_MAX = 12
+        self._last_capture_t = 0.0    # monotonic seconds
+        self._last_capture_ok = False
 
     # ── Lifecycle ─────────────────────────────────────────────────────
     def start(self) -> None:
@@ -349,7 +164,7 @@ class EspPinger:
             return
         self._running = True
         self._thread = threading.Thread(target=self._loop,
-                                        name='embedcam-ping',
+                                        name='embedcam-probe',
                                         daemon=True)
         self._thread.start()
 
@@ -360,38 +175,75 @@ class EspPinger:
     # ── Consumer API ──────────────────────────────────────────────────
     def status(self) -> dict:
         with self._lock:
+            now = time.monotonic()
+            cap_age_s = (now - self._last_capture_t) if self._last_capture_t else -1.0
             return {
-                'enabled':  bool(self._running),
-                'last':     dict(self._last),
-                'history':  list(self._history),
+                'enabled':            bool(self._running),
+                'last':               dict(self._last),
+                'history':            list(self._history),
+                'last_capture_age_s': round(cap_age_s, 2) if cap_age_s >= 0 else -1.0,
+                'last_capture_ok':    bool(self._last_capture_ok),
+                'online':             self._derive_online_locked(now),
             }
 
-    def ping_now(self) -> dict:
-        """Synchronous one-shot ping, for the panel's manual refresh."""
-        return self._do_ping_and_record()
+    def probe_now(self) -> dict:
+        """Synchronous one-shot probe — used by the panel's manual button."""
+        return self._do_probe_and_record('probe-manual')
 
-    # ── Reader loop ───────────────────────────────────────────────────
+    def record_capture(self, ok: bool) -> None:
+        """Called by fetch_frame_timed on every /capture attempt. A
+        recent successful capture is a stronger health signal than the
+        TCP probe — _derive_online prefers it."""
+        with self._lock:
+            self._last_capture_t = time.monotonic()
+            self._last_capture_ok = bool(ok)
+
+    # ── Internal ──────────────────────────────────────────────────────
+    def _derive_online_locked(self, now: float) -> bool:
+        skip_s = float(_cfg.get('probe_skip_if_capture_within_s', 30.0))
+        capture_recent = (self._last_capture_t > 0
+                          and (now - self._last_capture_t) <= skip_s)
+        if capture_recent:
+            return self._last_capture_ok
+        return bool(self._last.get('ok', False))
+
     def _loop(self) -> None:
         while self._running:
             try:
-                self._do_ping_and_record()
+                self._maybe_probe()
             except Exception:
-                pass  # never let the thread die from a transient error
-            # Sleep in small slices so stop() is responsive.
-            interval = float(_cfg.get('ping_interval_s', 5.0))
+                pass
+            interval = float(_cfg.get('probe_interval_s', 15.0))
             slept = 0.0
             while self._running and slept < interval:
                 time.sleep(0.25)
                 slept += 0.25
 
-    # ── Ping primitive ────────────────────────────────────────────────
-    def _do_ping_and_record(self) -> dict:
-        url = self._resolve_ping_url()
-        result = self._raw_ping(url) if url else {
-            't_ms': int(time.time() * 1000),
-            'ok': False, 'http_status': 0, 'duration_ms': -1,
-            'error': 'no host configured', 'url': '',
-        }
+    def _maybe_probe(self) -> None:
+        """Skip the TCP probe if a /capture succeeded recently."""
+        skip_s = float(_cfg.get('probe_skip_if_capture_within_s', 30.0))
+        with self._lock:
+            cap_age = (time.monotonic() - self._last_capture_t
+                       if self._last_capture_t else 1e9)
+            cap_ok = self._last_capture_ok
+        if cap_age <= skip_s and cap_ok:
+            return
+        self._do_probe_and_record('probe')
+
+    def _do_probe_and_record(self, kind: str) -> dict:
+        host, port = self._resolve_host_port()
+        if not host:
+            result = {
+                't_ms':        int(time.time() * 1000),
+                'ok':          False,
+                'duration_ms': -1,
+                'error':       'no host configured',
+                'host':        '', 'port': 0,
+                'kind':        kind,
+            }
+        else:
+            result = self._raw_probe(host, port)
+            result['kind'] = kind
         with self._lock:
             self._last = result
             self._history.append(result)
@@ -400,74 +252,35 @@ class EspPinger:
         return result
 
     @staticmethod
-    def _resolve_ping_url() -> str:
-        """Always host root — never the configured /capture path,
-        so HEAD doesn't accidentally fire the camera sensor on
-        firmwares where HEAD on /capture still runs the handler."""
+    def _resolve_host_port() -> 'tuple[str, int]':
         cap = str(_cfg.get('url') or '').strip()
         if not cap:
-            return ''
+            return '', 0
         try:
             p = _urlparse(cap)
             host = p.hostname or ''
-            if not host:
-                return ''
-            port = p.port if p.port else (80 if p.scheme == 'http' else 443)
-            scheme = p.scheme or 'http'
-            return f"{scheme}://{host}:{port}/"
+            port = p.port if p.port else (443 if p.scheme == 'https' else 80)
+            return host, port
         except Exception:
-            return ''
+            return '', 0
 
     @staticmethod
-    def _raw_ping(url: str) -> dict:
-        """Raw TCP + minimal HEAD. Bypasses urllib to avoid the
-        connection pooling / keepalive heuristics that interact
-        badly with single-client ESP firmwares."""
-        timeout_s = float(_cfg.get('ping_timeout_s', 1.0))
+    def _raw_probe(host: str, port: int) -> dict:
+        """TCP connect + immediate close. No HTTP request sent."""
+        timeout_s = float(_cfg.get('probe_timeout_s', 1.0))
         info = {
             't_ms':        int(time.time() * 1000),
             'ok':          False,
-            'http_status': 0,
             'duration_ms': 0,
             'error':       '',
-            'url':         url,
+            'host':        host, 'port': port,
         }
-        try:
-            p = _urlparse(url)
-        except Exception as e:
-            info['error'] = f'urlparse: {e}'
-            return info
-        host = p.hostname or ''
-        port = p.port if p.port else (80 if p.scheme == 'http' else 443)
-        if not host:
-            info['error'] = 'no host in url'
-            return info
         t0 = time.monotonic()
         s = None
         try:
             s = _socket.create_connection((host, port), timeout=timeout_s)
-            s.settimeout(timeout_s)
-            req = (f"HEAD {p.path or '/'} HTTP/1.0\r\n"
-                   f"Host: {host}\r\n"
-                   f"User-Agent: holOS-ping\r\n"
-                   f"Connection: close\r\n\r\n").encode()
-            s.sendall(req)
-            # Read just the status line (first \r\n) — don't drain body.
-            buf = b''
-            while b'\r\n' not in buf and len(buf) < 256:
-                chunk = s.recv(256)
-                if not chunk:
-                    break
-                buf += chunk
-            first = buf.split(b'\r\n', 1)[0].decode('latin-1', errors='replace')
+            info['ok'] = True
             info['duration_ms'] = int((time.monotonic() - t0) * 1000)
-            parts = first.split()
-            if len(parts) >= 2 and parts[1].isdigit():
-                info['http_status'] = int(parts[1])
-                # Any HTTP response (incl. 4xx/5xx) means the server is up.
-                info['ok'] = True
-            else:
-                info['error'] = f'bad reply: {first[:64]!r}'
         except _socket.timeout:
             info['duration_ms'] = int((time.monotonic() - t0) * 1000)
             info['error'] = 'timeout'
@@ -484,24 +297,24 @@ class EspPinger:
         return info
 
 
-_pinger = EspPinger()
+_prober = EspProber()
 
 
-def start_pinger() -> None:
-    if _cfg.get('ping_enabled', True):
-        _pinger.start()
+def start_prober() -> None:
+    if _cfg.get('probe_enabled', True):
+        _prober.start()
 
 
-def stop_pinger() -> None:
-    _pinger.stop()
+def stop_prober() -> None:
+    _prober.stop()
 
 
-def ping_status() -> dict:
-    return _pinger.status()
+def prober_status() -> dict:
+    return _prober.status()
 
 
-def ping_now() -> dict:
-    return _pinger.ping_now()
+def probe_now() -> dict:
+    return _prober.probe_now()
 
 
 # ── Image fetch ───────────────────────────────────────────────────────
@@ -516,19 +329,6 @@ def _fetch_jpeg(url: str, timeout_s: float) -> Optional[bytes]:
         return None
 
 
-def _slice_first_jpeg_from_mjpeg(blob: bytes) -> Optional[bytes]:
-    """ESP32-CAM AI-Thinker firmware serves only MJPEG on `/`. Pull the
-    first complete JPEG frame out of a multipart blob by hunting for
-    the SOI (0xFFD8) and EOI (0xFFD9) markers."""
-    soi = blob.find(b'\xff\xd8')
-    if soi < 0:
-        return None
-    eoi = blob.find(b'\xff\xd9', soi + 2)
-    if eoi < 0:
-        return None
-    return blob[soi:eoi + 2]
-
-
 def fetch_frame() -> Optional['np.ndarray']:
     """Backwards-compat: returns just the decoded BGR frame, no timings."""
     raw, frame, _ = fetch_frame_timed()
@@ -536,63 +336,30 @@ def fetch_frame() -> Optional['np.ndarray']:
 
 
 def fetch_frame_timed() -> 'tuple[Optional[bytes], Optional[np.ndarray], dict]':
-    """Fetch one frame from the ESP32-CAM. Returns (raw_jpeg, bgr, timings).
-    `raw_jpeg` is exactly what came off the wire (or the slice of a multipart
-    body) — the UI shows it verbatim so the operator can tell a fetch failure
-    apart from an ArUco miss. `timings` has fetch_ms / decode_ms / source_url
-    so the diagnostic pill can show where the round-trip went.
-
-    Strategy:
-      0) If the persistent MJPEG streamer is running and has a frame
-         younger than `stream_max_age_ms`, return it instantly — zero
-         round-trip. This is the hot path for match-time queries.
-      1) Otherwise fall back to a one-shot GET on the /capture endpoint.
-      2) If that fails too, fall back to slicing the first frame off
-         the MJPEG stream synchronously (legacy path)."""
+    """Fetch one frame from the ESP32-CAM via /capture. Returns
+    (raw_jpeg, bgr, timings). One picture at a time — no streaming, no
+    MJPEG slicing, no caching. The outcome is stamped into the prober
+    so a successful capture short-circuits the next periodic probe."""
     timings = {'fetch_ms': 0, 'decode_ms': 0, 'source_url': '', 'source_kind': ''}
     if not _CV2_OK:
+        _prober.record_capture(False)
         return None, None, timings
-    # 0) Persistent grabber — cached frame, no network roundtrip.
-    if _cfg.get('use_streamer', True):
-        max_age = int(_cfg.get('stream_max_age_ms', 500))
-        raw, frame, st = _streamer.read_latest()
-        if raw is not None and frame is not None and 0 <= st['age_ms'] <= max_age:
-            timings['source_url']  = st['url']
-            timings['source_kind'] = 'stream-cache'
-            timings['fetch_ms']    = st['age_ms']  # how stale, not wall time
-            timings['decode_ms']   = 0            # decoded in reader thread
-            return raw, frame, timings
-    url       = str(_cfg.get('url', 'http://192.168.1.81/capture'))
-    mjpeg_url = str(_cfg.get('mjpeg_url', 'http://192.168.1.81/'))
-    timeout   = float(_cfg.get('fetch_timeout_s', 1.5))
-    # 1) Try the dedicated single-shot endpoint first.
+    url     = str(_cfg.get('url', 'http://192.168.1.81/capture'))
+    timeout = float(_cfg.get('fetch_timeout_s', 1.5))
     t0 = time.monotonic()
     blob = _fetch_jpeg(url, timeout)
-    timings['fetch_ms'] = int((time.monotonic() - t0) * 1000)
+    timings['fetch_ms']    = int((time.monotonic() - t0) * 1000)
+    timings['source_url']  = url
+    timings['source_kind'] = 'capture'
     if blob and blob[:2] == b'\xff\xd8':
         t1 = time.monotonic()
         arr = np.frombuffer(blob, dtype=np.uint8)
         frame = cv2.imdecode(arr, cv2.IMREAD_COLOR)
         timings['decode_ms'] = int((time.monotonic() - t1) * 1000)
-        timings['source_url']  = url
-        timings['source_kind'] = 'capture'
         if frame is not None:
+            _prober.record_capture(True)
             return bytes(blob), frame, timings
-    # 2) Fallback: pull from the MJPEG stream, slice the first frame.
-    t0 = time.monotonic()
-    blob = _fetch_jpeg(mjpeg_url, timeout)
-    timings['fetch_ms'] += int((time.monotonic() - t0) * 1000)
-    if blob:
-        jpeg = _slice_first_jpeg_from_mjpeg(blob)
-        if jpeg:
-            t1 = time.monotonic()
-            arr = np.frombuffer(jpeg, dtype=np.uint8)
-            frame = cv2.imdecode(arr, cv2.IMREAD_COLOR)
-            timings['decode_ms'] = int((time.monotonic() - t1) * 1000)
-            timings['source_url']  = mjpeg_url
-            timings['source_kind'] = 'mjpeg-slice'
-            if frame is not None:
-                return bytes(jpeg), frame, timings
+    _prober.record_capture(False)
     return None, None, timings
 
 

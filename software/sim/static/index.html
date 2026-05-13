@@ -163,87 +163,53 @@
   </div>
 </div>
 
-<!-- ── ESPCAM streamer panel ───────────────────────────────────────────────── -->
+<!-- ── ESPCAM liveness panel ──────────────────────────────────────────────── -->
 <div id="esp-panel" class="conn-panel hidden">
-  <!-- Reachability (HEAD pinger). Always on, lightweight, never touches
-       /capture so it can run forever without starving on-demand fetches. -->
-  <div class="conn-panel-title">ESP32-CAM reachability</div>
+  <div class="conn-panel-title">ESP32-CAM</div>
   <div class="conn-panel-row">
-    <span class="conn-panel-lbl">Last ping</span>
-    <span id="esp-ping-last">—</span>
+    <span class="conn-panel-lbl">State</span>
+    <span id="esp-online-val">—</span>
   </div>
   <div class="conn-panel-row">
-    <span class="conn-panel-lbl">URL</span>
-    <span id="esp-ping-url" style="font:11px ui-monospace,monospace; color:var(--text-dim); word-break:break-all">—</span>
+    <span class="conn-panel-lbl">Last probe</span>
+    <span id="esp-probe-last-val">—</span>
   </div>
-  <div class="conn-panel-row" id="esp-ping-error-row" style="display:none">
+  <div class="conn-panel-row">
+    <span class="conn-panel-lbl">Host</span>
+    <span id="esp-probe-host-val" style="font:11px ui-monospace,monospace; color:var(--text-dim); word-break:break-all">—</span>
+  </div>
+  <div class="conn-panel-row">
+    <span class="conn-panel-lbl">Last /capture</span>
+    <span id="esp-cap-age-val">—</span>
+  </div>
+  <div class="conn-panel-row" id="esp-probe-error-row" style="display:none">
     <span class="conn-panel-lbl">Last error</span>
-    <span id="esp-ping-error-val" style="font:11px ui-monospace,monospace; color:var(--err); white-space:pre-wrap; word-break:break-word;">—</span>
+    <span id="esp-probe-error-val" style="font:11px ui-monospace,monospace; color:var(--err); white-space:pre-wrap; word-break:break-word;">—</span>
   </div>
   <div class="conn-panel-row" style="display:block">
-    <div style="font:11px ui-monospace,monospace; color:var(--text-dim); margin-bottom:2px">Recent pings</div>
-    <table id="esp-ping-history" style="width:100%;border-collapse:collapse;font:11px ui-monospace,monospace">
+    <div style="font:11px ui-monospace,monospace; color:var(--text-dim); margin-bottom:2px">Recent probes</div>
+    <table id="esp-probe-history" style="width:100%;border-collapse:collapse;font:11px ui-monospace,monospace">
       <thead>
         <tr style="color:var(--text-dim);text-align:left">
           <th style="font-weight:normal;padding:1px 4px 1px 0">time</th>
           <th style="font-weight:normal;padding:1px 4px">ms</th>
-          <th style="font-weight:normal;padding:1px 4px">code</th>
-          <th style="font-weight:normal;padding:1px 0">err</th>
+          <th style="font-weight:normal;padding:1px 4px">ok</th>
+          <th style="font-weight:normal;padding:1px 0">note</th>
         </tr>
       </thead>
-      <tbody id="esp-ping-history-body">
-        <tr><td colspan="4" style="color:var(--text-dim);padding:2px 0">no pings yet…</td></tr>
+      <tbody id="esp-probe-history-body">
+        <tr><td colspan="4" style="color:var(--text-dim);padding:2px 0">no probes yet…</td></tr>
       </tbody>
     </table>
   </div>
   <div class="conn-panel-row" style="gap:6px;margin-top:4px">
-    <button class="btn-tiny" onclick="espStreamerAction('ping')"
-            title="Fire a HEAD on the ESP host root right now.">↻ Ping now</button>
-  </div>
-
-  <!-- Streamer (persistent MJPEG grabber). Off by default — most ESP
-       firmwares can't handle a long-lived stream + on-demand /capture
-       at the same time. Enable here only if you've confirmed yours can. -->
-  <div class="conn-panel-title" style="margin-top:10px">Streamer (optional)</div>
-  <div class="conn-panel-row">
-    <span class="conn-panel-lbl">State</span>
-    <span id="esp-state-val">—</span>
-  </div>
-  <div class="conn-panel-row">
-    <span class="conn-panel-lbl">URL</span>
-    <span id="esp-url-val" style="font:11px ui-monospace,monospace; color:var(--text-dim); word-break:break-all">—</span>
-  </div>
-  <div class="conn-panel-row">
-    <span class="conn-panel-lbl">Frames</span>
-    <span id="esp-frames-val">—</span>
-  </div>
-  <div class="conn-panel-row">
-    <span class="conn-panel-lbl">Cache age</span>
-    <span id="esp-age-val">—</span>
-  </div>
-  <div class="conn-panel-row">
-    <span class="conn-panel-lbl">Reconnects</span>
-    <span id="esp-reconnects-val">—</span>
-  </div>
-  <div class="conn-panel-row" id="esp-error-row" style="display:none">
-    <span class="conn-panel-lbl">Last error</span>
-    <span id="esp-error-val" style="font:11px ui-monospace,monospace; color:var(--err); white-space:pre-wrap; word-break:break-word;">—</span>
-  </div>
-  <div class="conn-panel-row" style="gap:6px;margin-top:8px">
-    <button class="btn-tiny green" onclick="espStreamerAction('restart')"
-            title="Re-open the stream socket — useful after the ESP drops Wi-Fi.">↻ Restart</button>
-    <button class="btn-tiny" onclick="espStreamerAction('stop')"
-            title="Stop the persistent grabber. detect_once will fall back to per-request /capture fetches.">Stop</button>
-    <button class="btn-tiny" onclick="espStreamerAction('start')"
-            title="Start the grabber (if previously stopped).">Start</button>
+    <button class="btn-tiny" onclick="espHealthAction('probe')"
+            title="Fire a one-shot TCP connect right now.">↻ Probe now</button>
   </div>
   <div class="conn-panel-row" style="font:11px ui-monospace,monospace; color:var(--text-dim); line-height:1.4; margin-top:6px">
-    Live = JPEG arrived &lt; 500 ms ago. Stale = stream open but no recent frames
-    (ESP frozen or slow). Err = TCP/HTTP failure — see Last error.
-  </div>
-  <div class="conn-panel-row" style="font:11px ui-monospace,monospace; color:var(--text-dim); line-height:1.4">
-    URL/IP set in <b>Vision → Detection → ⚙</b>. Changing the host there
-    auto-updates this streamer.
+    Probes are TCP-connect only — no HTTP, never fires the camera.
+    Skipped automatically when a recent /capture already proved the
+    ESP is alive. URL set in <b>Vision → Detection → ⚙</b>.
   </div>
 </div>
 

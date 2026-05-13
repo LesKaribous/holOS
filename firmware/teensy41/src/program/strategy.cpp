@@ -102,7 +102,7 @@ static bool getEmbedCamOffset(float& out_offset_mm,
 // poses from the current robot pose without recomputing constants.
 namespace GrabGeom {
     constexpr float    APPROACH_OFFSET = 260.0f;
-    constexpr float    GRAB_OFFSET     = 180.0f;
+    constexpr float    GRAB_OFFSET     = 100;//180.0f;
     constexpr uint32_t GRAB_DELAY_MS   = 1000;
     constexpr float    SIDE_OFFSET     = 0.0f;
 }
@@ -127,6 +127,8 @@ void grabStockHere(Vec2 target, TableCompass tc, RobotCompass rc) {
     // drift, so the corrected physical pose matches `approach_planned`
     // in the world frame. Subsequent moves then reference clean coords.
     const Vec2 approach_planned = approach;
+    bool  got        = false;
+    bool connected = false;
 
     {
         constexpr int      MAX_RETRY        = 3;
@@ -141,32 +143,35 @@ void grabStockHere(Vec2 target, TableCompass tc, RobotCompass rc) {
         float lateral_mm = 0.0f;
         int   n_tags     = 0;
         int   bias_hint  = 0;
-        bool  got        = false;
-        for (int attempt = 1; attempt <= MAX_RETRY; ++attempt) {
-            if (getEmbedCamOffset(lateral_mm, n_tags, bias_hint, nullptr,
-                                  ATTEMPT_TO_MS) && n_tags >= 1) {
-                got = true;
-                Console::info("Strategy")
-                    << "[vision] try " << attempt << "/" << MAX_RETRY
-                    << " OK n=" << n_tags
-                    << " offset=" << lateral_mm << "mm"
-                    << " bias=" << bias_hint << Console::endl;
-                break;
-            }
 
-            if (bias_hint != 0) {
-                async motion.goPolar(lateral_dir_deg,
-                                     float(bias_hint) * PARTIAL_STEP_MM);
-                Console::warn("Strategy")
-                    << "[vision] try " << attempt << "/" << MAX_RETRY
-                    << " no tags → probe "
-                    << (float(bias_hint) * PARTIAL_STEP_MM)
-                    << "mm @ " << lateral_dir_deg << "°" << Console::endl;
-            } else {
-                Console::warn("Strategy")
-                    << "[vision] try " << attempt << "/" << MAX_RETRY
-                    << " no tags, no bias — retry in place"
-                    << Console::endl;
+        for (int attempt = 1; attempt <= MAX_RETRY; ++attempt) {
+            connected = getEmbedCamOffset(lateral_mm, n_tags, bias_hint, nullptr, ATTEMPT_TO_MS);
+
+            if(connected){
+                if (n_tags >= 1) {
+                    got = true;
+                    Console::info("Strategy")
+                        << "[vision] try " << attempt << "/" << MAX_RETRY
+                        << " OK n=" << n_tags
+                        << " offset=" << lateral_mm << "mm"
+                        << " bias=" << bias_hint << Console::endl;
+                    break;
+                }
+
+                if (bias_hint != 0) {
+                    async motion.goPolar(lateral_dir_deg,
+                                        float(bias_hint) * PARTIAL_STEP_MM);
+                    Console::warn("Strategy")
+                        << "[vision] try " << attempt << "/" << MAX_RETRY
+                        << " no tags → probe "
+                        << (float(bias_hint) * PARTIAL_STEP_MM)
+                        << "mm @ " << lateral_dir_deg << "°" << Console::endl;
+                } else {
+                    Console::warn("Strategy")
+                        << "[vision] try " << attempt << "/" << MAX_RETRY
+                        << " no tags, no bias — retry in place"
+                        << Console::endl;
+                }
             }
             if (attempt < MAX_RETRY) waitMs(RETRY_DELAY_MS);
         }
@@ -202,24 +207,26 @@ void grabStockHere(Vec2 target, TableCompass tc, RobotCompass rc) {
         }
     }
 
-    RuntimeConfig::setInt("motion.timeout_ms", 2000);
-    motion.collide(true);
-    async motion.goAlign(grab, rc, getCompassOrientation(tc));
-    motion.collide(false);
+    if(!connected || got){
+        RuntimeConfig::setInt("motion.timeout_ms", 2000);
+        motion.collide(true);
+        async motion.goAlign(grab, rc, getCompassOrientation(tc));
+        motion.collide(false);
 
-    actuators.moveElevator(rc, ElevatorPose::DOWN);
-    waitMs(GrabGeom::GRAB_DELAY_MS);
-    actuators.drop(rc);//gather
-    waitMs(GrabGeom::GRAB_DELAY_MS);
-    actuators.moveElevator(rc, ElevatorPose::STORE);
-    waitMs(GrabGeom::GRAB_DELAY_MS);
-    actuators.grab(rc);//wide open
-    waitMs(GrabGeom::GRAB_DELAY_MS);
-    actuators.moveElevator(rc, ElevatorPose::DOWN);
-    waitMs(GrabGeom::GRAB_DELAY_MS);
-    actuators.store(rc);
-    waitMs(GrabGeom::GRAB_DELAY_MS);
-    actuators.moveElevator(rc, ElevatorPose::STORE);
+        actuators.moveElevator(rc, ElevatorPose::DOWN);
+        waitMs(GrabGeom::GRAB_DELAY_MS);
+        actuators.drop(rc);//gather
+        waitMs(GrabGeom::GRAB_DELAY_MS);
+        actuators.moveElevator(rc, ElevatorPose::STORE);
+        waitMs(GrabGeom::GRAB_DELAY_MS);
+        actuators.grab(rc);//wide open
+        waitMs(GrabGeom::GRAB_DELAY_MS);
+        actuators.moveElevator(rc, ElevatorPose::DOWN);
+        waitMs(GrabGeom::GRAB_DELAY_MS);
+        actuators.store(rc);
+        waitMs(GrabGeom::GRAB_DELAY_MS);
+        actuators.moveElevator(rc, ElevatorPose::STORE);
+    }
 
     motion.collide(false);
     safety.enable();
