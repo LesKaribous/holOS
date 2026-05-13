@@ -91,6 +91,11 @@ _cfg: dict = {
     # When n < expected_count, classify the centroid offset against
     # this fraction of the image width to decide left/right bias.
     'bias_dead_zone_frac': 0.10,
+    # Single-tag case: assume the visible tag is the outermost of the
+    # row. Distance (in mm) from that outermost tag CENTRE to the row
+    # middle. Operator-specified: 30 (module width) + 15 (half module)
+    # = 45 mm. Adjust if the physical stock geometry changes.
+    'single_tag_offset_mm': 45.0,
 }
 
 # Most recent successful (n>=2) auto-calibrated scale. Used as the
@@ -560,29 +565,69 @@ def analyze_frame(frame: 'np.ndarray',
             scale = spread_mm / spread_px
             with _lock:
                 _last_scale_mm_per_px = scale
-    # ── Lateral offset ────────────────────────────────────────────
-    # Centre of the detected tags minus the image centre, scaled.
-    offset_mm = 0.0
-    if n > 0:
-        cx_tags = sum(t['cx'] for t in tags) / n
-        offset_mm = (cx_tags - cx_img) * scale
-    # ── Bias hint when n < expected ───────────────────────────────
-    # Tell the strategy which way to nudge to bring the missing tags
-    # into the frame. If the surviving detections cluster left of
-    # centre, the missing ones probably sit to the right → bias=+1
-    # (and vice versa). This is the OPPOSITE side of the cluster,
-    # since the missing tags are on the side the camera doesn't see.
+    # ── Row-middle estimation (partial-detection aware) ───────────
+    # 4 stocks in a row; the true row centre is the midpoint of the
+    # inner two tags (T2 and T3). With <4 visible, we pick the
+    # interpretation where the resulting row-middle estimate is
+    # closest to an image edge — that's the side where the missing
+    # tag sits off-screen.
+    #
+    #   n=4 → midpoint of t[1] and t[2] (inner two).
+    #   n=3 → choose midpoint(t[0],t[1]) (LEFT-of-cluster) or
+    #         midpoint(t[1],t[2]) (RIGHT-of-cluster); the one with the
+    #         smaller distance to its nearest image edge wins.
+    #   n=2 → measure pixel gap between the two visible tags, then
+    #         project one half-gap OUTSIDE the cluster on the side
+    #         closest to the image edge (assumes the visible pair are
+    #         T1+T2 or T3+T4, not the middle T2+T3).
+    #   n=1 → assume the tag is the outermost; row centre sits
+    #         `single_tag_offset_mm` toward image centre.
+    #   n=0 → no info; report cx_img (offset 0). Strategy treats this
+    #         as "no stock" and skips the grab.
+    #
+    # The bias is rewritten to mean "side where the missing tag is"
+    # (-1 = LEFT, +1 = RIGHT) so the strategy can step the robot in
+    # that direction to bring missing tags back into frame.
+    single_off_mm = float(_cfg.get('single_tag_offset_mm', 45.0))
+    px_per_mm = (1.0 / scale) if scale and scale > 0 else 0.0
+    row_center_px = cx_img
     bias = 0
-    if 0 < n < expected:
-        cx_tags = sum(t['cx'] for t in tags) / n
-        dz = float(_cfg.get('bias_dead_zone_frac', 0.10)) * w
-        if (cx_tags - cx_img) > dz:
-            # Detections lean right → the missing ones are out to the LEFT.
+    if n == 1:
+        if tags[0]['cx'] >= cx_img:
+            row_center_px = tags[0]['cx'] - single_off_mm * px_per_mm
             bias = -1
-        elif (cx_tags - cx_img) < -dz:
-            bias = +1
         else:
-            bias = 0
+            row_center_px = tags[0]['cx'] + single_off_mm * px_per_mm
+            bias = +1
+    elif n == 2:
+        gap_px = tags[1]['cx'] - tags[0]['cx']
+        opt_left  = tags[0]['cx'] - gap_px / 2.0   # visible = (T3,T4)
+        opt_right = tags[1]['cx'] + gap_px / 2.0   # visible = (T1,T2)
+        dist_left  = min(opt_left,  w - opt_left)
+        dist_right = min(opt_right, w - opt_right)
+        if dist_left <= dist_right:
+            row_center_px = opt_left
+            bias = -1
+        else:
+            row_center_px = opt_right
+            bias = +1
+    elif n == 3:
+        opt_left  = (tags[0]['cx'] + tags[1]['cx']) / 2.0  # visible = (T2,T3,T4)
+        opt_right = (tags[1]['cx'] + tags[2]['cx']) / 2.0  # visible = (T1,T2,T3)
+        dist_left  = min(opt_left,  w - opt_left)
+        dist_right = min(opt_right, w - opt_right)
+        if dist_left <= dist_right:
+            row_center_px = opt_left
+            bias = -1
+        else:
+            row_center_px = opt_right
+            bias = +1
+    elif n >= 4:
+        # All visible — true row middle is the midpoint of the inner two.
+        row_center_px = (tags[1]['cx'] + tags[2]['cx']) / 2.0
+        bias = 0
+    # n == 0 → leave row_center_px=cx_img, bias=0 (offset_mm = 0).
+    offset_mm = (row_center_px - cx_img) * scale
     valid = (n >= 1) and (scale is not None) and (scale > 0)
     preview = _annotate(frame, tags, spread_px, scale, offset_mm, dominant_team)
     return {

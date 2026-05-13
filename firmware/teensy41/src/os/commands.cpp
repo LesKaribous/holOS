@@ -58,6 +58,7 @@ FLASHMEM void registerCommands() {
     //CommandHandler::registerCommand("close(side)", "Close actuator on a specific side", command_close);
     CommandHandler::registerCommand("recalage()", "Execute recalage routine", command_recalage);
     CommandHandler::registerCommand("test_sync_vision()", "Diag: go (1000,1000), syncToVision, go (1000,1000); 2nd move should land on target if vision sync works", command_test_sync_vision);
+    CommandHandler::registerCommand("autoGrab()", "Bench test: assume robot is at approach pose, run vision-correction + grab sequence (team-default tc/rc)", command_autoGrab);
 
     //Actuators
     CommandHandler::registerCommand("elevator(side, pose)", "Raise elevator to desired pose", command_elevator);
@@ -872,6 +873,10 @@ FLASHMEM void command_recalage(const args_t& args){
 
 FLASHMEM void command_test_sync_vision(const args_t& args){
     testSyncToVision();
+}
+
+FLASHMEM void command_autoGrab(const args_t& args){
+    autoGrab();
 }
 
 

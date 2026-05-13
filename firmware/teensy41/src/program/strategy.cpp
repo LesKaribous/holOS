@@ -97,21 +97,29 @@ static bool getEmbedCamOffset(float& out_offset_mm,
 }
 
 
-// Offset commun factored
-static void collectStock(Vec2 target, TableCompass tc, RobotCompass rc) {
+// ── Stock-grab geometry (shared by collectStock / grabStockHere / autoGrab)
+// One source of truth so autoGrab can synthesize the same target/grab
+// poses from the current robot pose without recomputing constants.
+namespace GrabGeom {
     constexpr float    APPROACH_OFFSET = 260.0f;
     constexpr float    GRAB_OFFSET     = 180.0f;
     constexpr uint32_t GRAB_DELAY_MS   = 1000;
-    const float sideOffset = 0;
+    constexpr float    SIDE_OFFSET     = 0.0f;
+}
 
+// Grab-only sequence: vision auto-correction + forward into grab pose
+// + gripper choreography. ASSUMES the robot is already aligned at the
+// approach pose for (target, tc, rc) — does NOT call the initial
+// goAlign(approach). Factored out of collectStock so autoGrab can
+// trigger only the bottom half for bench-testing the embed-cam loop.
+void grabStockHere(Vec2 target, TableCompass tc, RobotCompass rc) {
     const float compass_rad = getCompassOrientation(tc) * DEG_TO_RAD;
-    Vec2 approach = target - PolarVec(compass_rad, APPROACH_OFFSET).toVec2();
-    Vec2 grab     = target - PolarVec(compass_rad, GRAB_OFFSET).toVec2();
+    Vec2 approach = target - PolarVec(compass_rad, GrabGeom::APPROACH_OFFSET).toVec2();
+    Vec2 grab     = target - PolarVec(compass_rad, GrabGeom::GRAB_OFFSET).toVec2();
 
-    float sidewiseoffset_dir = compass_rad +90.0f; // Direction latérale perpendiculaire à l'approche
-
-    approach += PolarVec(sidewiseoffset_dir * DEG_TO_RAD, sideOffset).toVec2(); // Offset latéral pour compenser la largeur du préhenseur
-    grab += PolarVec(sidewiseoffset_dir * DEG_TO_RAD, sideOffset).toVec2(); // Offset latéral pour compenser la largeur du préhenseur
+    float sidewiseoffset_dir = compass_rad + 90.0f; // perpendicular to approach
+    approach += PolarVec(sidewiseoffset_dir * DEG_TO_RAD, GrabGeom::SIDE_OFFSET).toVec2();
+    grab     += PolarVec(sidewiseoffset_dir * DEG_TO_RAD, GrabGeom::SIDE_OFFSET).toVec2();
 
     // Keep the planned (pre-correction) approach. After the embed cam
     // re-centres us laterally, we declare *this* pose as our absolute
@@ -120,8 +128,6 @@ static void collectStock(Vec2 target, TableCompass tc, RobotCompass rc) {
     // in the world frame. Subsequent moves then reference clean coords.
     const Vec2 approach_planned = approach;
 
-    actuators.grab(rc); //wide open
-    async motion.goAlign(approach, rc, getCompassOrientation(tc));
     {
         constexpr int      MAX_RETRY        = 3;
         constexpr uint32_t ATTEMPT_TO_MS    = 8000;
@@ -167,12 +173,8 @@ static void collectStock(Vec2 target, TableCompass tc, RobotCompass rc) {
         }
         if (got) {
             Vec2 lateral_vec = PolarVec(lateral_dir_rad, lateral_mm).toVec2();
-            // Move physically to the corrected pose...
             Vec2 corrected = approach + lateral_vec;
             async motion.goAlign(corrected, rc, getCompassOrientation(tc));
-            // ...then overwrite localisation: declare we are at the
-            // PLANNED approach (no offset). The lateral correction was
-            // OTOS drift; we just absorbed it. Heading kept at tc.
             Vec3 ref(approach_planned.a, approach_planned.b, localisation.getPosition().z);
             motion.setAbsPosition(ref);
             Console::info("Strategy")
@@ -180,9 +182,6 @@ static void collectStock(Vec2 target, TableCompass tc, RobotCompass rc) {
                 << approach_planned.a << "," << approach_planned.b
                 << ") — offset " << lateral_mm
                 << "mm absorbed" << Console::endl;
-            // `grab` is referenced to `target` (world frame), so it
-            // stays correct — no offset needed now that the ref is
-            // back in sync.
         } else {
             Console::warn("Strategy")
                 << "[vision] gave up after " << MAX_RETRY
@@ -190,30 +189,77 @@ static void collectStock(Vec2 target, TableCompass tc, RobotCompass rc) {
         }
     }
 
-    RuntimeConfig::setInt("motion.timeout_ms", 2000); // 5 secondes
+    RuntimeConfig::setInt("motion.timeout_ms", 2000);
     motion.collide(true);
-    // Step 4 — forward to (corrected, or original) grab pose.
-    async motion.goAlign(grab,     rc, getCompassOrientation(tc));
+    async motion.goAlign(grab, rc, getCompassOrientation(tc));
     motion.collide(false);
 
     actuators.moveElevator(rc, ElevatorPose::DOWN);
-    waitMs(GRAB_DELAY_MS);
+    waitMs(GrabGeom::GRAB_DELAY_MS);
     actuators.drop(rc);//gather
-    waitMs(GRAB_DELAY_MS);
+    waitMs(GrabGeom::GRAB_DELAY_MS);
     actuators.moveElevator(rc, ElevatorPose::STORE);
-    waitMs(GRAB_DELAY_MS);
+    waitMs(GrabGeom::GRAB_DELAY_MS);
     actuators.grab(rc);//wide open
-    waitMs(GRAB_DELAY_MS);
+    waitMs(GrabGeom::GRAB_DELAY_MS);
     actuators.moveElevator(rc, ElevatorPose::DOWN);
-    waitMs(GRAB_DELAY_MS);
+    waitMs(GrabGeom::GRAB_DELAY_MS);
     actuators.store(rc);
-    waitMs(GRAB_DELAY_MS);
+    waitMs(GrabGeom::GRAB_DELAY_MS);
     actuators.moveElevator(rc, ElevatorPose::STORE);
 
     motion.collide(false);
     safety.enable();
     motion.setFeedrate(1.0f);
-    Console::info("Strategy") << "[collectStock] done      SP=" << String(freeStack()) << Console::endl;
+    Console::info("Strategy") << "[grabStockHere] done      SP=" << String(freeStack()) << Console::endl;
+}
+
+// Full collect: open gripper → drive to approach pose → grabStockHere.
+// Kept as the public entry for the strategy blocks; only the approach
+// motion changed (now isolated here), the rest is shared with autoGrab.
+static void collectStock(Vec2 target, TableCompass tc, RobotCompass rc) {
+    const float compass_rad = getCompassOrientation(tc) * DEG_TO_RAD;
+    Vec2 approach = target - PolarVec(compass_rad, GrabGeom::APPROACH_OFFSET).toVec2();
+    approach += PolarVec((compass_rad + 90.0f) * DEG_TO_RAD,
+                         GrabGeom::SIDE_OFFSET).toVec2();
+
+    actuators.grab(rc); //wide open
+    async motion.goAlign(approach, rc, getCompassOrientation(tc));
+    grabStockHere(target, tc, rc);
+}
+
+// autoGrab(): test entry point — assumes the robot is *already* parked
+// at the approach pose for the team's stock A POI, opens the gripper,
+// and runs the vision-correction + grab sequence. Synthesizes `target`
+// from the current pose so the operator doesn't have to type
+// coordinates; pick tc/rc to match blockCollectA (BLUE→EAST/AB,
+// YELLOW→WEST/AB).
+void autoGrab() {
+    motion.setAbsPosition({0,0,-60*DEG_TO_RAD});
+    const TableCompass tc = TableCompass::EAST;
+    const RobotCompass rc = RobotCompass::AB;
+
+    const Vec3 cur = localisation.getPosition();
+    const float compass_rad = getCompassOrientation(tc) * DEG_TO_RAD;
+    // The robot is presumed to BE at the approach pose; reconstruct
+    // the world-frame target by adding APPROACH_OFFSET back along the
+    // compass direction.
+    const Vec2 target = Vec2(cur.a, cur.b)
+                      + PolarVec(compass_rad, GrabGeom::APPROACH_OFFSET).toVec2();
+
+    Console::info("Strategy")
+        << "[autoGrab] tc=" << getCompassOrientation(tc) << "deg"
+        << " cur=(" << cur.a << "," << cur.b << ")"
+        << " target=(" << target.a << "," << target.b << ")"
+        << Console::endl;
+
+    actuators.grab(rc); //wide open
+    grabStockHere(target, tc, rc);
+    actuators.moveElevator(rc, ElevatorPose::DOWN);
+    waitMs(GrabGeom::GRAB_DELAY_MS);
+    actuators.grab(rc);//wide open
+    waitMs(GrabGeom::GRAB_DELAY_MS);
+    actuators.moveElevator(rc, ElevatorPose::UP);
 }
 
 // Offset commun factored
