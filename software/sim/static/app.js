@@ -378,7 +378,7 @@ document.addEventListener('click', e => {
 function togglePanel(id) {
   const el = document.getElementById(id); if (!el) return;
   const wasHidden = el.classList.contains('hidden');
-  ['wifi-panel','serial-panel','server-panel','robot-panel','cam-panel','net-panel','color-popup']
+  ['wifi-panel','serial-panel','server-panel','robot-panel','cam-panel','net-panel','esp-panel','color-popup']
     .forEach(i => document.getElementById(i)?.classList.add('hidden'));
   if (wasHidden) {
     el.classList.remove('hidden');
@@ -457,6 +457,76 @@ async function pollVisionCamera() {
   } catch (e) { /* network blip — try again next tick */ }
 }
 setInterval(pollVisionCamera, 2000);
+
+// ── ESP32-CAM streamer status poll ─────────────────────────────────────────
+// Persistent MJPEG grabber lives in services/embed_cam.py. We poll its
+// status every 2 s to surface "is the ESP actually feeding us frames" on
+// the topbar without the operator having to open the Detection tab. Pill
+// states mirror the panel description: live (<500 ms age), stale, conn,
+// err, off.
+function _espDotClass(s) {
+  if (!s) return 'cg-dot';
+  if (s.state === 'reading' && s.age_ms >= 0 && s.age_ms < 500) return 'cg-dot connected';
+  if (s.state === 'error' || s.state === 'stopped')             return 'cg-dot disconnected';
+  return 'cg-dot';  // connecting / stale
+}
+function _espSubLabel(s) {
+  if (!s) return '—';
+  if (s.state === 'stopped')    return 'off';
+  if (s.state === 'connecting') return 'conn';
+  if (s.state === 'error')      return 'err';
+  if (s.state === 'reading') {
+    return (s.age_ms >= 0 && s.age_ms < 500) ? 'live' : 'stale';
+  }
+  return '—';
+}
+async function pollEspStreamer() {
+  try {
+    const r = await fetch('/api/embed_cam/streamer', {cache: 'no-store'});
+    if (!r.ok) return;
+    const j = await r.json();
+    if (!j.ok) return;
+    const s = j.status || {};
+    const dot = document.getElementById('cg-dot-esp');
+    const sub = document.getElementById('cg-sub-esp');
+    if (dot) dot.className = _espDotClass(s);
+    if (sub) sub.textContent = _espSubLabel(s);
+    const node = document.getElementById('cg-node-esp');
+    if (node) {
+      const ageTxt = (s.age_ms != null && s.age_ms >= 0) ? `${s.age_ms} ms` : '—';
+      node.title = `ESP streamer · ${s.state || '?'} · age ${ageTxt}` +
+                   ` · frames ${s.frames || 0}` +
+                   (s.last_error ? `\n${s.last_error}` : '');
+    }
+    const setText = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
+    setText('esp-state-val',      s.state || '—');
+    setText('esp-url-val',        s.url || '—');
+    setText('esp-frames-val',     String(s.frames ?? 0));
+    setText('esp-age-val',        (s.age_ms != null && s.age_ms >= 0) ? `${s.age_ms} ms` : '—');
+    setText('esp-reconnects-val', String(s.reconnects ?? 0));
+    const errRow = document.getElementById('esp-error-row');
+    const errVal = document.getElementById('esp-error-val');
+    if (s.last_error) {
+      if (errRow) errRow.style.display = '';
+      if (errVal) errVal.textContent = s.last_error;
+    } else {
+      if (errRow) errRow.style.display = 'none';
+    }
+  } catch (e) { /* network blip — try again next tick */ }
+}
+setInterval(pollEspStreamer, 2000);
+
+function espStreamerAction(action) {
+  fetch('/api/embed_cam/streamer', {
+    method:  'POST',
+    headers: {'Content-Type': 'application/json'},
+    body:    JSON.stringify({action: action}),
+  })
+  .then(r => r.json())
+  .then(() => pollEspStreamer())
+  .catch(() => {});
+}
+window.espStreamerAction = espStreamerAction;
 window.addEventListener('load', pollVisionCamera);
 
 async function camSetRuntimeSource() {

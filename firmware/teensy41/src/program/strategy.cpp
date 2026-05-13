@@ -143,32 +143,31 @@ void grabStockHere(Vec2 target, TableCompass tc, RobotCompass rc) {
         int   bias_hint  = 0;
         bool  got        = false;
         for (int attempt = 1; attempt <= MAX_RETRY; ++attempt) {
-            // team_filter = nullptr → both ArUco IDs (36 + 47).
             if (getEmbedCamOffset(lateral_mm, n_tags, bias_hint, nullptr,
-                                  ATTEMPT_TO_MS) && n_tags >= 2) {
+                                  ATTEMPT_TO_MS) && n_tags >= 1) {
                 got = true;
                 Console::info("Strategy")
                     << "[vision] try " << attempt << "/" << MAX_RETRY
                     << " OK n=" << n_tags
-                    << " offset=" << lateral_mm << "mm" << Console::endl;
+                    << " offset=" << lateral_mm << "mm"
+                    << " bias=" << bias_hint << Console::endl;
                 break;
             }
-            // Partial / blind detection — step laterally toward the side
-            // where tags ARE so missing ones come into frame. Prefer the
-            // host-provided bias hint; fall back to sign(offset_mm) when
-            // we have at least one tag; blind probe otherwise.
-            int dir_sign;
-            if      (bias_hint != 0) dir_sign = bias_hint;
-            else if (n_tags    >= 1) dir_sign = (lateral_mm >= 0 ? +1 : -1);
-            else                     dir_sign = +1;
-            async motion.goPolar(lateral_dir_deg,
-                                 float(dir_sign) * PARTIAL_STEP_MM);
-            Console::warn("Strategy")
-                << "[vision] try " << attempt << "/" << MAX_RETRY
-                << " FAIL n=" << n_tags
-                << " bias=" << bias_hint
-                << " → step " << (float(dir_sign) * PARTIAL_STEP_MM)
-                << "mm @ " << lateral_dir_deg << "°" << Console::endl;
+
+            if (bias_hint != 0) {
+                async motion.goPolar(lateral_dir_deg,
+                                     float(bias_hint) * PARTIAL_STEP_MM);
+                Console::warn("Strategy")
+                    << "[vision] try " << attempt << "/" << MAX_RETRY
+                    << " no tags → probe "
+                    << (float(bias_hint) * PARTIAL_STEP_MM)
+                    << "mm @ " << lateral_dir_deg << "°" << Console::endl;
+            } else {
+                Console::warn("Strategy")
+                    << "[vision] try " << attempt << "/" << MAX_RETRY
+                    << " no tags, no bias — retry in place"
+                    << Console::endl;
+            }
             if (attempt < MAX_RETRY) waitMs(RETRY_DELAY_MS);
         }
         if (got) {
@@ -183,9 +182,23 @@ void grabStockHere(Vec2 target, TableCompass tc, RobotCompass rc) {
                 << ") — offset " << lateral_mm
                 << "mm absorbed" << Console::endl;
         } else {
+            // No tags after MAX_RETRY → either the stock is empty OR
+            // the camera failed to fetch a frame (likely if you never
+            // saw the picture refresh in the Detection tab). Caller-
+            // level block returns SUCCESS regardless; we just skip the
+            // grab choreography so the planner moves on instead of
+            // replaying this mission against empty air. A low beep
+            // (200 Hz, well below the 440 Hz button tone) alerts the
+            // operator that vision came up empty — check the streamer
+            // pill in the webapp Detection tab.
             Console::warn("Strategy")
-                << "[vision] gave up after " << MAX_RETRY
-                << " tries — using nominal pose" << Console::endl;
+                << "[vision] no tags after " << MAX_RETRY
+                << " tries — empty stock or camera fail, skipping grab"
+                << Console::endl;
+            ihm.playTone(200, 400);
+            safety.enable();
+            motion.setFeedrate(1.0f);
+            return;
         }
     }
 
@@ -255,6 +268,7 @@ void autoGrab() {
 
     actuators.grab(rc); //wide open
     grabStockHere(target, tc, rc);
+    
     actuators.moveElevator(rc, ElevatorPose::DOWN);
     waitMs(GrabGeom::GRAB_DELAY_MS);
     actuators.grab(rc);//wide open

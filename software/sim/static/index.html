@@ -82,6 +82,14 @@
       <span class="cg-sub" id="cg-sub-net">—</span>
     </button>
 
+    <!-- Node: ESP32-CAM persistent MJPEG grabber status. -->
+    <button class="cg-node cg-node-btn" id="cg-node-esp"
+            onclick="togglePanel('esp-panel')" title="ESP32-CAM streamer (persistent MJPEG grabber)">
+      <span class="cg-dot" id="cg-dot-esp"></span>
+      <span class="cg-lbl">ESP</span>
+      <span class="cg-sub" id="cg-sub-esp">—</span>
+    </button>
+
   </div>
 </header>
 
@@ -152,6 +160,47 @@
     <button class="btn-tiny green" onclick="camSetRuntimeSource()" title="Apply now — NOT saved to disk">Apply</button>
     <button class="btn-tiny"       onclick="camClearRuntimeSource()" title="Drop override, reload disk config">↺ Restore</button>
     <span id="cam-override-status" style="font:11px ui-monospace,monospace; color:var(--text-dim)"></span>
+  </div>
+</div>
+
+<!-- ── ESPCAM streamer panel ───────────────────────────────────────────────── -->
+<div id="esp-panel" class="conn-panel hidden">
+  <div class="conn-panel-title">ESP32-CAM streamer</div>
+  <div class="conn-panel-row">
+    <span class="conn-panel-lbl">State</span>
+    <span id="esp-state-val">—</span>
+  </div>
+  <div class="conn-panel-row">
+    <span class="conn-panel-lbl">URL</span>
+    <span id="esp-url-val" style="font:11px ui-monospace,monospace; color:var(--text-dim); word-break:break-all">—</span>
+  </div>
+  <div class="conn-panel-row">
+    <span class="conn-panel-lbl">Frames</span>
+    <span id="esp-frames-val">—</span>
+  </div>
+  <div class="conn-panel-row">
+    <span class="conn-panel-lbl">Cache age</span>
+    <span id="esp-age-val">—</span>
+  </div>
+  <div class="conn-panel-row">
+    <span class="conn-panel-lbl">Reconnects</span>
+    <span id="esp-reconnects-val">—</span>
+  </div>
+  <div class="conn-panel-row" id="esp-error-row" style="display:none">
+    <span class="conn-panel-lbl">Last error</span>
+    <span id="esp-error-val" style="font:11px ui-monospace,monospace; color:var(--err); white-space:pre-wrap; word-break:break-word;">—</span>
+  </div>
+  <div class="conn-panel-row" style="gap:6px;margin-top:8px">
+    <button class="btn-tiny green" onclick="espStreamerAction('restart')"
+            title="Re-open the stream socket — useful after the ESP drops Wi-Fi.">↻ Restart</button>
+    <button class="btn-tiny" onclick="espStreamerAction('stop')"
+            title="Stop the persistent grabber. detect_once will fall back to per-request /capture fetches.">Stop</button>
+    <button class="btn-tiny" onclick="espStreamerAction('start')"
+            title="Start the grabber (if previously stopped).">Start</button>
+  </div>
+  <div class="conn-panel-row" style="font:11px ui-monospace,monospace; color:var(--text-dim); line-height:1.4; margin-top:6px">
+    Live = JPEG arrived &lt; 500 ms ago. Stale = stream open but no recent frames
+    (ESP frozen or slow). Err = TCP/HTTP failure — see Last error.
   </div>
 </div>
 
