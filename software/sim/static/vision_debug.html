@@ -129,6 +129,17 @@
                  opacity:0.5;">
     ⤓ Set robot pose from vision
   </button>
+  <label id="auto-sync-toggle"
+         title="When enabled, the latest vision pose is pushed to the robot every second via setAbsPosition. Use to live-correct OTOS drift. NOTE: the firmware applies it even while the robot is moving — the OTOS frame jumps by Δ each tick, so corrections appear as small steps in the controller's setpoint distance."
+         style="display:inline-flex; align-items:center; gap:6px; padding:4px 10px;
+                background:rgba(255,255,255,0.18); color:#fff;
+                border:1px solid rgba(255,255,255,0.25); border-radius:4px;
+                font:12px ui-monospace,monospace; cursor:pointer;">
+    <input type="checkbox" id="chk-auto-sync" onchange="toggleAutoSync()"
+           style="cursor:pointer; margin:0;">
+    <span>↻ Auto-sync 1Hz</span>
+    <span id="auto-sync-tick" style="color:var(--brand); min-width:36px; text-align:right;">—</span>
+  </label>
   <button id="btn-capture-heading" onclick="captureHeadingOffset()" disabled
           title="Snap the tag↔robot angular offset using the robot's CURRENT OTOS theta vs the tag's CURRENT vision theta. The tag is mounted on top of the robot at an arbitrary angle — this calibrates it so subsequent vision queries return the robot's heading instead of the tag's. Aim the camera at the robot, leave it still, click."
           style="padding:4px 10px; background:rgba(255,255,255,0.18); color:#fff;
@@ -803,6 +814,34 @@ function pushVisionPoseToRobot() {
   });
   console.log(`[VISION] pushed pose (${v.x_mm.toFixed(1)}, ${v.y_mm.toFixed(1)}, `
               + `${theta_deg.toFixed(1)}°) → setAbsPosition`);
+}
+
+let _autoSyncTimer = null;
+let _autoSyncCount = 0;
+const AUTO_SYNC_PERIOD_MS = 1000;
+
+function toggleAutoSync() {
+  const chk = document.getElementById('chk-auto-sync');
+  const tick = document.getElementById('auto-sync-tick');
+  if (chk && chk.checked) {
+    if (_autoSyncTimer) clearInterval(_autoSyncTimer);
+    _autoSyncCount = 0;
+    _autoSyncTimer = setInterval(() => {
+      const v = _visionPose;
+      if (!v || v.x_mm == null || v.y_mm == null) {
+        if (tick) tick.textContent = 'wait';
+        return;
+      }
+      pushVisionPoseToRobot();
+      _autoSyncCount++;
+      if (tick) tick.textContent = `#${_autoSyncCount}`;
+    }, AUTO_SYNC_PERIOD_MS);
+    console.log('[VISION] auto-sync enabled (1 Hz)');
+  } else {
+    if (_autoSyncTimer) { clearInterval(_autoSyncTimer); _autoSyncTimer = null; }
+    if (tick) tick.textContent = '—';
+    console.log('[VISION] auto-sync disabled');
+  }
 }
 
 async function togglePlayback() {
