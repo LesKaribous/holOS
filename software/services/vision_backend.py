@@ -89,7 +89,13 @@ TEAM_TAG_RANGES = {
 DEFAULT_CONFIG = {
     "dict":               "4x4_50",       # ArUco dictionary
     "fps_limit":          25,             # max processing fps
-    "jpeg_quality":       70,             # 30..95
+    "jpeg_quality":       70,             # 30..95 — kept for back-compat
+    # Wire-transmission knobs. The pipeline still detects + rectifies at
+    # native resolution; these only shrink the JPEG that leaves the Jetson
+    # over SocketIO. The ESP32-CAM shares the same WiFi, so a 1080p@q70
+    # stream at 25 fps saturates the link and starves /capture fetches.
+    "stream_max_width":   720,            # downscale before encode (0 = off)
+    "stream_jpeg_quality": 50,            # 30..95 — used on the wire only
     "show_aruco":         True,           # draw detected markers on raw
     "show_ids":           True,           # draw IDs on raw
     "show_grid":          True,           # draw mm grid on rectified
@@ -827,8 +833,25 @@ class VisionBackend:
     # -- encoding helpers ------------------------------------------------
 
     def _encode_frames(self, frame, result, states, cfg):
-        """Build raw + rectified annotated JPEGs. Returns (raw_bytes, rect_bytes)."""
-        quality = [cv2.IMWRITE_JPEG_QUALITY, int(cfg.get("jpeg_quality", 70))]
+        """Build raw + rectified annotated JPEGs. Returns (raw_bytes, rect_bytes).
+        The detector + rectifier upstream worked on `frame` at native
+        resolution; the bytes built here are wire-only — downscaled and
+        quality-clipped per `stream_max_width` / `stream_jpeg_quality`
+        so the SocketIO push doesn't saturate the shared WiFi link."""
+        wire_q = int(cfg.get("stream_jpeg_quality",
+                              cfg.get("jpeg_quality", 70)))
+        quality = [cv2.IMWRITE_JPEG_QUALITY, wire_q]
+        max_w = int(cfg.get("stream_max_width", 0) or 0)
+
+        def _shrink(img):
+            if img is None or max_w <= 0:
+                return img
+            h, w = img.shape[:2]
+            if w <= max_w:
+                return img
+            new_h = int(round(h * (max_w / float(w))))
+            return cv2.resize(img, (max_w, new_h),
+                              interpolation=cv2.INTER_AREA)
 
         raw_out = frame
         if cfg.get('show_aruco', True):
@@ -865,7 +888,7 @@ class VisionBackend:
                 (0, 200, 80), 1, cv2.LINE_AA,
             )
 
-        _, raw_j = cv2.imencode('.jpg', raw_out, quality)
+        _, raw_j = cv2.imencode('.jpg', _shrink(raw_out), quality)
         raw_bytes = bytes(raw_j)
 
         # Rectified (top-down) view
@@ -876,7 +899,7 @@ class VisionBackend:
                 if cfg.get('show_grid', True):
                     rect_out = self._rectifier.draw_grid(rect_out)
                 rect_out = self._draw_robots_on_rect(rect_out, states)
-                _, rect_j = cv2.imencode('.jpg', rect_out, quality)
+                _, rect_j = cv2.imencode('.jpg', _shrink(rect_out), quality)
                 rect_bytes = bytes(rect_j)
 
         return raw_bytes, rect_bytes
