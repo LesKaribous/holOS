@@ -320,79 +320,22 @@ def probe_now() -> dict:
 # ── Image fetch ───────────────────────────────────────────────────────
 
 def _fetch_jpeg(url: str, timeout_s: float) -> Optional[bytes]:
-    """GET `url`, return the response body. Raw HTTP/1.0 over a raw
-    socket. Parses Content-Length and reads exactly that many body
-    bytes — the ESP doesn't always close the connection after the
-    response, so a naive read-until-EOF hangs on the next recv() for
-    the full timeout."""
+    """Single HTTP GET → response body. Mirrors what the ESP's own
+    webpage button does (`fetch('/capture?t=...')`): let the stdlib
+    handle HTTP/1.1, Content-Length, chunked encoding, keep-alive vs
+    close. A cache-buster query keeps any proxy/router on the path
+    from serving a stale 304."""
+    sep = '&' if ('?' in url) else '?'
+    full = f"{url}{sep}t={int(time.time() * 1000)}"
+    req = urllib.request.Request(
+        full, headers={'User-Agent':   'holOS',
+                       'Accept':       'image/jpeg, */*',
+                       'Cache-Control': 'no-store'})
     try:
-        p = _urlparse(url)
+        with urllib.request.urlopen(req, timeout=timeout_s) as resp:
+            return resp.read()
     except Exception:
         return None
-    host = p.hostname or ''
-    if not host:
-        return None
-    port = p.port if p.port else (443 if p.scheme == 'https' else 80)
-    path = p.path or '/'
-    if p.query:
-        path += '?' + p.query
-    req = (f"GET {path} HTTP/1.0\r\n"
-           f"Host: {host}\r\n"
-           f"User-Agent: holOS\r\n"
-           f"Accept: image/jpeg, */*\r\n"
-           f"Connection: close\r\n\r\n").encode()
-    s = None
-    try:
-        s = _socket.create_connection((host, port), timeout=timeout_s)
-        s.settimeout(timeout_s)
-        s.setsockopt(_socket.IPPROTO_TCP, _socket.TCP_NODELAY, 1)
-        s.sendall(req)
-        # Phase 1: read until end-of-headers (\r\n\r\n).
-        buf = bytearray()
-        sep = -1
-        while sep < 0:
-            chunk = s.recv(4096)
-            if not chunk:
-                return None
-            buf.extend(chunk)
-            sep = buf.find(b'\r\n\r\n')
-            if len(buf) > 32768:
-                return None
-        # Phase 2: parse Content-Length from the response headers.
-        headers_blob = bytes(buf[:sep]).decode('latin-1', errors='replace')
-        content_length = None
-        for line in headers_blob.split('\r\n')[1:]:  # skip status line
-            k, _, v = line.partition(':')
-            if k.strip().lower() == 'content-length':
-                try:
-                    content_length = int(v.strip())
-                except Exception:
-                    pass
-                break
-        # Phase 3: read exactly content_length body bytes (if known),
-        # otherwise drain until peer closes.
-        body = bytearray(buf[sep + 4:])
-        if content_length is not None:
-            remaining = content_length - len(body)
-            while remaining > 0:
-                chunk = s.recv(min(16384, remaining))
-                if not chunk:
-                    break
-                body.extend(chunk)
-                remaining -= len(chunk)
-            return bytes(body[:content_length])
-        while True:
-            chunk = s.recv(16384)
-            if not chunk:
-                break
-            body.extend(chunk)
-        return bytes(body)
-    except Exception:
-        return None
-    finally:
-        if s is not None:
-            try: s.close()
-            except Exception: pass
 
 
 def fetch_frame() -> Optional['np.ndarray']:
