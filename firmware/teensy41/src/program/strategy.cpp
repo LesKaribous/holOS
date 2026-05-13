@@ -104,7 +104,7 @@ namespace GrabGeom {
     constexpr float    APPROACH_OFFSET = 260.0f;
     constexpr float    GRAB_OFFSET     = 100;//180.0f;
     constexpr uint32_t GRAB_DELAY_MS   = 1000;
-    constexpr float    SIDE_OFFSET     = 20.0f;
+    constexpr float    SIDE_OFFSET     = -20.0f;
 }
 
 // Grab-only sequence: vision auto-correction + forward into grab pose
@@ -131,8 +131,8 @@ void grabStockHere(Vec2 target, TableCompass tc, RobotCompass rc) {
     bool connected = false;
 
     {
-        constexpr int      MAX_RETRY        = 3;
-        constexpr uint32_t ATTEMPT_TO_MS    = 8000;
+        constexpr int      MAX_RETRY        = 2;
+        constexpr uint32_t ATTEMPT_TO_MS    = 2000;
         constexpr uint32_t RETRY_DELAY_MS   = 400;
         constexpr float    PARTIAL_STEP_MM  = 60.0f;
         // Camera "+X = right" in image frame maps to compass(tc) - 90° in
@@ -176,7 +176,8 @@ void grabStockHere(Vec2 target, TableCompass tc, RobotCompass rc) {
             if (attempt < MAX_RETRY) waitMs(RETRY_DELAY_MS);
         }
         if (got) {
-            Vec2 lateral_vec = PolarVec(lateral_dir_rad, lateral_mm).toVec2();
+            PolarVec lateral_vec_polar = PolarVec(lateral_dir_rad, lateral_mm);
+            Vec2 lateral_vec = lateral_vec_polar.toVec2();
             Vec2 corrected = approach + lateral_vec;
             async motion.goAlign(corrected, rc, getCompassOrientation(tc));
             Vec3 ref(approach_planned.a, approach_planned.b, localisation.getPosition().z);
@@ -206,7 +207,7 @@ void grabStockHere(Vec2 target, TableCompass tc, RobotCompass rc) {
             return;
         }
     }
-
+    /*
     if(!connected || got){
         RuntimeConfig::setInt("motion.timeout_ms", 2000);
         motion.collide(true);
@@ -227,7 +228,7 @@ void grabStockHere(Vec2 target, TableCompass tc, RobotCompass rc) {
         waitMs(GrabGeom::GRAB_DELAY_MS);
         actuators.moveElevator(rc, ElevatorPose::STORE);
     }
-
+    /**/
     motion.collide(false);
     safety.enable();
     motion.setFeedrate(1.0f);
@@ -276,11 +277,13 @@ void autoGrab() {
     actuators.grab(rc); //wide open
     grabStockHere(target, tc, rc);
     
+    /*
     actuators.moveElevator(rc, ElevatorPose::DOWN);
     waitMs(GrabGeom::GRAB_DELAY_MS);
     actuators.grab(rc);//wide open
     waitMs(GrabGeom::GRAB_DELAY_MS);
     actuators.moveElevator(rc, ElevatorPose::UP);
+    /**/
 }
 
 // Offset commun factored

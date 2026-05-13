@@ -489,12 +489,26 @@ def _detect_tags(frame: 'np.ndarray',
 
 def _annotate(frame: 'np.ndarray', tags: list[dict],
               spread_px: float, scale_mm_per_px: float,
-              offset_mm: float, dominant_team: str) -> 'np.ndarray':
-    """Overlay ArUco corners + ID + summary line on a copy of `frame`."""
+              offset_mm: float, dominant_team: str,
+              row_center_px: 'Optional[float]' = None,
+              bias: int = 0) -> 'np.ndarray':
+    """Overlay ArUco corners + ID + summary line on a copy of `frame`.
+
+    Three vertical lines, mapped to what the strategy actually does:
+      GRAY   — image centre. Where the robot/gripper IS pointed.
+      ORANGE — centroid of detected tags (informational only — NOT
+               what the strategy targets; useful to spot occlusions).
+      GREEN  — computed `row_center_px`, the actual point the strategy
+               drives toward. `offset = (green - gray) * scale`. For
+               n=4 it sits between the two inner tags; for n=2/3 it's
+               between the two appropriate visible tags per the
+               missing-side heuristic (arrow shows which side the
+               missing tag is on).
+    """
     img = frame.copy()
     h, w = img.shape[:2]
     cx_img = w / 2.0
-    # Vertical centre line for the operator to eyeball alignment.
+    # Image-centre reference line.
     cv2.line(img, (int(cx_img), 0), (int(cx_img), h), (60, 60, 60), 1)
     for i, t in enumerate(tags):
         # Team-coloured box (blue for id 36, yellow for id 47).
@@ -507,9 +521,31 @@ def _annotate(frame: 'np.ndarray', tags: list[dict],
                     (p[0] + 8, p[1] - 8),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, col, 1, cv2.LINE_AA)
     if tags:
+        # Orange — centroid of detections. Informational. Diverges
+        # from the green line for n=3 (centroid ≈ middle-tag centre,
+        # green ≈ midpoint between two adjacent tags).
         cx_tags = sum(t['cx'] for t in tags) / len(tags)
         cv2.line(img, (int(cx_tags), 0), (int(cx_tags), h),
-                 (40, 120, 255), 2)
+                 (40, 120, 255), 1)
+        # Green — actual row-centre target the strategy navigates to.
+        if row_center_px is not None:
+            rc = int(row_center_px)
+            cv2.line(img, (rc, 0), (rc, h), (60, 220, 60), 2)
+            cv2.putText(img, 'target', (rc + 6, 18),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5,
+                        (60, 220, 60), 1, cv2.LINE_AA)
+            # Arrow on the green line pointing toward the missing side
+            # so the operator can read the n=2/n=3 selection at a glance.
+            if bias != 0:
+                yc = h // 2
+                dx = 18 * (1 if bias > 0 else -1)
+                cv2.arrowedLine(img, (rc, yc), (rc + dx, yc),
+                                (60, 220, 60), 2, tipLength=0.4)
+                tag_txt = 'missing →' if bias > 0 else '← missing'
+                cv2.putText(img, tag_txt, (rc - 60 if bias > 0 else rc + 8,
+                                            yc - 8),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.4,
+                            (60, 220, 60), 1, cv2.LINE_AA)
         cv2.putText(img,
                     f"n={len(tags)} team={dominant_team} "
                     f"offset={offset_mm:+.0f}mm "
@@ -610,11 +646,20 @@ def analyze_frame(frame: 'np.ndarray',
             row_center_px = tags[0]['cx'] + single_off_mm * px_per_mm
             bias = +1
     elif n == 2:
+        # Two visible tags. Two interpretations:
+        #   opt_left  (visible = T3,T4) → T1+T2 missing on LEFT  → row
+        #              middle sits one half-gap LEFT of tags[0].
+        #   opt_right (visible = T1,T2) → T3+T4 missing on RIGHT → row
+        #              middle sits one half-gap RIGHT of tags[1].
+        # Each candidate is measured against ITS expected off-edge
+        # (left edge for opt_left, right edge for opt_right) — closer
+        # = more consistent. `min(opt, w-opt)` (nearest-of-any-edge)
+        # mis-picks when both candidates land on the same image half.
         gap_px = tags[1]['cx'] - tags[0]['cx']
-        opt_left  = tags[0]['cx'] - gap_px / 2.0   # visible = (T3,T4)
-        opt_right = tags[1]['cx'] + gap_px / 2.0   # visible = (T1,T2)
-        dist_left  = min(opt_left,  w - opt_left)
-        dist_right = min(opt_right, w - opt_right)
+        opt_left  = tags[0]['cx'] - gap_px / 2.0
+        opt_right = tags[1]['cx'] + gap_px / 2.0
+        dist_left  = opt_left           # → LEFT image edge
+        dist_right = w - opt_right      # → RIGHT image edge
         if dist_left <= dist_right:
             row_center_px = opt_left
             bias = -1
@@ -622,10 +667,18 @@ def analyze_frame(frame: 'np.ndarray',
             row_center_px = opt_right
             bias = +1
     elif n == 3:
-        opt_left  = (tags[0]['cx'] + tags[1]['cx']) / 2.0  # visible = (T2,T3,T4)
-        opt_right = (tags[1]['cx'] + tags[2]['cx']) / 2.0  # visible = (T1,T2,T3)
-        dist_left  = min(opt_left,  w - opt_left)
-        dist_right = min(opt_right, w - opt_right)
+        # Three visible tags. Two interpretations:
+        #   opt_left  (visible = T2,T3,T4) → T1 missing on LEFT  → row
+        #              middle = midpoint(T2,T3) = midpoint(tags[0..1]).
+        #   opt_right (visible = T1,T2,T3) → T4 missing on RIGHT → row
+        #              middle = midpoint(T2,T3) = midpoint(tags[1..2]).
+        # Same edge-pinned picker as n=2 (see comment above) — using
+        # nearest-of-any-edge was wrong when both candidates landed
+        # on the same image half (e.g. row shifted entirely off-centre).
+        opt_left  = (tags[0]['cx'] + tags[1]['cx']) / 2.0
+        opt_right = (tags[1]['cx'] + tags[2]['cx']) / 2.0
+        dist_left  = opt_left           # → LEFT image edge
+        dist_right = w - opt_right      # → RIGHT image edge
         if dist_left <= dist_right:
             row_center_px = opt_left
             bias = -1
@@ -639,7 +692,8 @@ def analyze_frame(frame: 'np.ndarray',
     # n == 0 → leave row_center_px=cx_img, bias=0 (offset_mm = 0).
     offset_mm = (row_center_px - cx_img) * scale
     valid = (n >= 1) and (scale is not None) and (scale > 0)
-    preview = _annotate(frame, tags, spread_px, scale, offset_mm, dominant_team)
+    preview = _annotate(frame, tags, spread_px, scale, offset_mm,
+                        dominant_team, row_center_px, bias)
     return {
         'n':           n,
         'expected':    expected,
