@@ -145,9 +145,9 @@ void grabStockHere(Vec2 target, TableCompass tc, RobotCompass rc) {
         int   bias_hint  = 0;
 
         for (int attempt = 1; attempt <= MAX_RETRY; ++attempt) {
-            connected = getEmbedCamOffset(lateral_mm, n_tags, bias_hint, nullptr, ATTEMPT_TO_MS);
+            connected = connected || getEmbedCamOffset(lateral_mm, n_tags, bias_hint, nullptr, ATTEMPT_TO_MS);
 
-            if(connected){http://10.42.0.78:5000/vision_debug
+            if(connected){
                 if (n_tags >= 1) {
                     got = true;
                     Console::info("Strategy")
