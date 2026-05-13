@@ -4445,17 +4445,38 @@ def _do_connect(port: str):
                     threading.Thread(target=_do_cal, daemon=True,
                                      name='vis-cal').start()
                 elif line.startswith('pose_request'):
-                    # Don't log every single pose_request — they fire
-                    # every time the strategy queries vision (potentially
-                    # 5-10 Hz during match), would drown the buffer.
-                    # We DO surface a rate-limited warning to the
-                    # vision-debug log when the pipeline keeps returning
-                    # no own pose (firmware retries on valid=0, so a real
-                    # tag occlusion would otherwise be silent).
-                    def _do_pose():
+                    # syncToVision design — the firmware blocks while
+                    # the robot is stationary; holOS spends the whole
+                    # budget polling the live pipeline locally and
+                    # replies exactly once. This avoids the previous
+                    # XBee-retry pattern (one round-trip per attempt,
+                    # ~50-100 ms each), which only fit 3-4 chances into
+                    # a 500 ms budget.
+                    #
+                    # Polling the pipeline directly: rec.outputs is
+                    # replaced every tick (pipeline.py:360), so a non-
+                    # None return from _get_latest_own_pose() always
+                    # means the tag was visible in the LATEST completed
+                    # tick — at most one pipeline period (~62 ms at
+                    # 16 fps) old. No need for explicit freshness
+                    # timestamping.
+                    #
+                    # Backward compat: requests without `timeout=` keep
+                    # the old immediate-snapshot semantics (single read,
+                    # no wait), so any external tool that pings
+                    # pose_request still sees no behavior change.
+                    timeout_ms = _kv(line, 'timeout', int, 0)
+                    def _do_pose(_timeout_ms=timeout_ms):
                         global _pose_request_invalid_streak
                         global _pose_request_invalid_last_warn_mono
+                        deadline = time.monotonic() + max(0, _timeout_ms) / 1000.0
                         pose = _get_latest_own_pose()
+                        # Half-tick poll interval keeps the response
+                        # latency bounded to ~30-60 ms after the tag
+                        # reappears, without burning CPU.
+                        while pose is None and time.monotonic() < deadline:
+                            time.sleep(0.03)
+                            pose = _get_latest_own_pose()
                         if pose is None:
                             _pose_request_invalid_streak += 1
                             now_mono = time.monotonic()
@@ -4463,17 +4484,15 @@ def _do_connect(port: str):
                                     _pose_request_invalid_last_warn_mono
                                     >= 1.0):
                                 _pose_request_invalid_last_warn_mono = now_mono
+                                suffix = (f' after {_timeout_ms} ms wait'
+                                          if _timeout_ms > 0 else '')
                                 _vlog(
                                     f'pose_request → valid=0 '
-                                    f'(no own pose in last pipeline tick, '
+                                    f'(no own pose visible{suffix}, '
                                     f'streak={_pose_request_invalid_streak})',
                                     'warn')
                             _send('vis_pose(valid=0)')
                             return
-                        # valid=1 — log every successful syncToVision answer
-                        # so the operator can see the vision→OTOS hand-off
-                        # firing in real time. Includes a recovery suffix
-                        # when this reply ended a valid=0 streak.
                         theta_rad = pose.get('theta_rad') or 0.0
                         recovery = (f' (recovered after '
                                     f'{_pose_request_invalid_streak} miss(es))'

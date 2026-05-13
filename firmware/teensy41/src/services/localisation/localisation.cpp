@@ -247,11 +247,18 @@ FLASHMEM void Localisation::requestVisionCalibration(Vec3 known_pos) {
     m_visionCalibrationReplyReceived = false;
 }
 
-// Block (with timeout) waiting for the next pose reply from holOS.
-// Retries on valid=0 replies (own tag not in latest pipeline tick) as long
-// as time remains — the pipeline emits an 'own' pose only on ticks where
-// the camera actually sees the OWN-range tag, so a single miss can happen
-// even when the system is fully healthy.
+// Block (with timeout) waiting for a pose reply from holOS. holOS-side
+// owns the wait: we send ONE pose_request carrying our budget, holOS
+// polls the live pipeline locally (at ~30 ms cadence) until either an
+// own-tag pose lands or the budget expires, then replies exactly once.
+// This is much tighter than the previous XBee-retry pattern — every
+// 100 ms retry from here cost ~50-100 ms of XBee round-trip on top of
+// the pipeline tick we were actually waiting for.
+//
+// The caller's contract is unchanged: the robot must be stationary
+// for the whole call (vision has its own ~50-100 ms processing
+// latency), and the returned pose is fresh-from-the-latest-tick when
+// valid=1 lands.
 FLASHMEM bool Localisation::queryVisionPose(Vec3& out_pose,
                                             unsigned long timeout_ms) {
     if (!m_visionCalibrated) {
@@ -261,39 +268,34 @@ FLASHMEM bool Localisation::queryVisionPose(Vec3& out_pose,
         return false;
     }
     unsigned long t0 = millis();
-    int attempts = 0;
-    while ((millis() - t0) < timeout_ms) {
-        ++attempts;
-        m_pendingPoseReply = true;
-        m_lastPoseValid    = false;
-        jetsonBridge.pushVisionFrame("T:vis pose_request");
-
-        // Spin-wait for this attempt's reply (or remaining time budget).
-        while (m_pendingPoseReply && (millis() - t0) < timeout_ms) {
-            jetsonBridge.run();
-            delay(2);
-        }
-        if (m_pendingPoseReply) {
-            // Whole budget consumed before a reply landed.
-            m_pendingPoseReply = false;
-            Console::warn("Localisation")
-                << "queryVisionPose timeout after " << long(timeout_ms)
-                << "ms (" << attempts << " attempts)"
-                << Console::endl;
-            return false;
-        }
-        if (m_lastPoseValid) {
-            out_pose = m_lastVisionPose;
-            return true;
-        }
-        // valid=0: holOS replied but no own pose in the latest tick.
-        // Give the pipeline a couple of camera ticks to catch the tag
-        // before re-asking.
-        delay(100);
+    m_pendingPoseReply = true;
+    m_lastPoseValid    = false;
+    // Pass our entire budget so holOS polls for the same duration we'd
+    // wait for the reply. The +200 ms slack below absorbs bridge jitter.
+    char frame[40];
+    snprintf(frame, sizeof(frame),
+             "T:vis pose_request timeout=%lu", timeout_ms);
+    jetsonBridge.pushVisionFrame(frame);
+    // Allow holOS the full budget plus a bridge round-trip slack.
+    const unsigned long wait_budget_ms = timeout_ms + 200UL;
+    while (m_pendingPoseReply && (millis() - t0) < wait_budget_ms) {
+        jetsonBridge.run();
+        delay(2);
+    }
+    if (m_pendingPoseReply) {
+        m_pendingPoseReply = false;
+        Console::warn("Localisation")
+            << "queryVisionPose timeout after " << long(wait_budget_ms)
+            << "ms (no reply from holOS)" << Console::endl;
+        return false;
+    }
+    if (m_lastPoseValid) {
+        out_pose = m_lastVisionPose;
+        return true;
     }
     Console::warn("Localisation")
-        << "queryVisionPose: no valid pose after " << long(timeout_ms)
-        << "ms (" << attempts << " attempts, all valid=0)"
+        << "queryVisionPose: holOS reported valid=0 after "
+        << long(timeout_ms) << "ms wait (tag not visible)"
         << Console::endl;
     return false;
 }
