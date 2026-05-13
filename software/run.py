@@ -1884,12 +1884,36 @@ def api_embed_cam_config():
         return jsonify({'ok': False, 'error': 'embed_cam unavailable'}), 503
     if request.method == 'POST':
         body = request.get_json(silent=True) or {}
-        # Detect changes to streamer-affecting knobs so we can restart it.
         before = _embed_cam.get_config()
+        # IP-rotation convenience: when the Detection-tab URL field
+        # changes host (e.g. 192.168.1.81 → 192.168.1.42) and the
+        # streamer URLs were tracking the old host, auto-update them
+        # so the operator doesn't have to retype URLs in three places.
+        # Skipped if the user explicitly passes mjpeg_url / stream_url
+        # in the same request.
+        if 'url' in body and 'mjpeg_url' not in body and 'stream_url' not in body:
+            try:
+                from urllib.parse import urlparse, urlunparse
+                old_cap = urlparse(str(before.get('url', '')))
+                new_cap = urlparse(str(body.get('url', '')))
+                if (old_cap.hostname and new_cap.hostname
+                        and old_cap.hostname != new_cap.hostname):
+                    for k in ('mjpeg_url', 'stream_url'):
+                        old = urlparse(str(before.get(k, '')))
+                        if old.hostname == old_cap.hostname:
+                            port = f":{old.port}" if old.port else ''
+                            body[k] = urlunparse((
+                                old.scheme or new_cap.scheme,
+                                f"{new_cap.hostname}{port}",
+                                old.path, '', '', ''))
+            except Exception:
+                pass
         _embed_cam.set_config(body)
-        after  = _embed_cam.get_config()
+        after = _embed_cam.get_config()
+        # `url` joins the streamer-restart key list: changing the IP
+        # via the Detection-tab URL field must restart the grabber.
         streamer_keys = ('use_streamer', 'stream_url', 'mjpeg_url',
-                         'fetch_timeout_s')
+                         'fetch_timeout_s', 'url')
         if any(before.get(k) != after.get(k) for k in streamer_keys):
             try:
                 _embed_cam.start_streamer()  # idempotent restart
