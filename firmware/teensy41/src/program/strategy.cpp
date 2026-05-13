@@ -104,7 +104,7 @@ namespace GrabGeom {
     constexpr float    APPROACH_OFFSET = 260.0f;
     constexpr float    GRAB_OFFSET     = 100;//180.0f;
     constexpr uint32_t GRAB_DELAY_MS   = 1000;
-    constexpr float    SIDE_OFFSET     = 0.0f;
+    constexpr float    SIDE_OFFSET     = 20.0f;
 }
 
 // Grab-only sequence: vision auto-correction + forward into grab pose

@@ -43,8 +43,15 @@ class OutputNode(Node):
         'feed_id':      {'type': 'str', 'default': '',
                          'help': 'dashboard tile id (defaults to node id when empty)'},
         'label':        {'type': 'str', 'default': ''},
-        'jpeg_quality': {'type': 'int', 'default': 70, 'min': 30, 'max': 95},
+        'jpeg_quality': {'type': 'int', 'default': 50, 'min': 30, 'max': 95},
         'fps_limit':    {'type': 'int', 'default': 25},
+        'stream_max_width': {'type': 'int', 'default': 720, 'min': 0, 'max': 4096,
+                             'label': 'max width on the wire (0 = no shrink)',
+                             'description': 'downscale the frame to at most this '
+                                            'width before JPEG encode. Pipeline '
+                                            'still receives the native-res frame; '
+                                            'this only affects the bytes pushed '
+                                            'over SocketIO to the dashboard.'},
         'encode_grayscale': {'type': 'bool', 'default': False,
                              'label': 'encode JPEG as grayscale',
                              'description': 'convert BGR frame to single-'
@@ -105,13 +112,22 @@ class OutputNode(Node):
         # the bytes for the duration of the call.
         try:
             safe = frame.copy() if hasattr(frame, 'copy') else frame
+            # Downscale before encode — wire-only. Anything downstream
+            # already consumed the upstream frame at native resolution.
+            max_w = int(self._params.get('stream_max_width', 0) or 0)
+            if max_w > 0 and hasattr(safe, 'shape') and safe.ndim >= 2:
+                h, w = safe.shape[:2]
+                if w > max_w:
+                    new_h = int(round(h * (max_w / float(w))))
+                    safe = cv2.resize(safe, (max_w, new_h),
+                                      interpolation=cv2.INTER_AREA)
             if bool(self._params.get('encode_grayscale', False)) \
                     and safe.ndim == 3 and safe.shape[2] == 3:
                 # Drop to single-channel just before encode — preserves BGR
                 # overlays (they fold into the luminance) while halving the
                 # JPEG payload + cutting encode CPU.
                 safe = cv2.cvtColor(safe, cv2.COLOR_BGR2GRAY)
-            q = int(self._params.get('jpeg_quality', 70))
+            q = int(self._params.get('jpeg_quality', 50))
             ok, buf = cv2.imencode('.jpg', safe, [cv2.IMWRITE_JPEG_QUALITY, q])
         except Exception as e:
             self._last_error = f'imencode: {type(e).__name__}: {e}'
