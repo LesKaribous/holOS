@@ -227,7 +227,7 @@ void grabStockHere(Vec2 target, TableCompass tc, RobotCompass rc) {
         waitMs(GrabGeom::GRAB_DELAY_MS);
         actuators.moveElevator(rc, ElevatorPose::STORE);
     }
-    
+
     motion.collide(false);
     safety.enable();
     motion.setFeedrate(1.0f);
@@ -354,6 +354,8 @@ static BlockResult blockCollectA() {
     } else {
         collectStock(POI::stockYellow_01 + Vec2(0,0), TableCompass::WEST, RobotCompass::AB);
     }
+
+    
 
     return BlockResult::SUCCESS;
 }

@@ -22,8 +22,8 @@
     "bottom_left":  {"tag_id": 21, "x_mm": 2400, "y_mm":  600, "yaw_deg": 0}
   },
 
-  "cam_yellow_xyz_mm": [1275.0, -100.0, 1400.0],
-  "cam_blue_xyz_mm":   [1725.0, -100.0, 1400.0],
+  "cam_yellow_xyz_mm": [1275.0, -10.0, 1400.0],
+  "cam_blue_xyz_mm":   [1725.0, -10.0, 1400.0],
   "robot_z_mm":      455.0,
   "opp_object_z_mm": 455.0
 }
