@@ -106,12 +106,20 @@
   <span class="badge">connected to holOS</span>
   <span class="badge phase-idle" id="phase-badge">homography: idle</span>
   <span style="flex:1"></span>
-  <button id="btn-force-recalage" onclick="forceRecalage()"
-          title="Run OWN-tag pick + heading-offset capture using the robot's CURRENT OTOS pose, without firing the firmware motion routine. Useful to debug the snapshot pipeline independently."
+  <button id="btn-force-homography" onclick="forceHomography()"
+          title="Force the active rectify node to re-fit and lock its homography on the next frame, without involving the firmware recalage routine. Use when working from a recorded video input."
           style="padding:4px 10px; background:rgba(255,255,255,0.18); color:#fff;
                  border:1px solid rgba(255,255,255,0.25); border-radius:4px;
                  cursor:pointer; font:12px ui-monospace,monospace;">
-    ⌖ Force recalage (otos pose)
+    ⌖ Force homography
+  </button>
+  <button id="btn-playback" onclick="togglePlayback()" disabled
+          title="Freeze the FrameSource on its latest video frame (video input only) so the pipeline sees a static input — useful to iterate on detection params without scrubbing back to the same moment."
+          style="padding:4px 10px; background:rgba(255,255,255,0.18); color:#fff;
+                 border:1px solid rgba(255,255,255,0.25); border-radius:4px;
+                 cursor:pointer; font:12px ui-monospace,monospace;
+                 opacity:0.5;">
+    ⏸ Pause
   </button>
   <span class="badge" id="last-update">—</span>
 </header>
@@ -249,6 +257,7 @@ socket.on('state', s => {
 
 let _visionPose = null;
 let _calibInfo  = null;   // /api/vision/calibration response
+let _sourceInfo = null;   // /api/vision_camera/status response
 
 let _calibPairs = {count: 0, pairs: []};
 
@@ -273,11 +282,17 @@ async function pollVision() {
     if (r3.ok) _calibPairs = await r3.json();
   } catch (_) { /* leave previous */ }
 
+  try {
+    const r4 = await fetch('/api/vision_camera/status');
+    if (r4.ok) _sourceInfo = await r4.json();
+  } catch (_) { /* leave previous */ }
+
   renderCompare();
   renderCalib();
   renderSolver();
   renderLog();
   updatePhaseBadge();
+  updatePlaybackBtn();
 }
 setInterval(pollVision, 500);
 pollVision();
@@ -305,24 +320,24 @@ async function solveParallax() {
 
 let _solverResult = null;
 
-async function forceRecalage() {
-  const btn = document.getElementById('btn-force-recalage');
-  if (btn) { btn.disabled = true; btn.textContent = '⌖ Running…'; }
+async function forceHomography() {
+  const btn = document.getElementById('btn-force-homography');
+  if (btn) { btn.disabled = true; btn.textContent = '⌖ Locking…'; }
   try {
-    const r = await fetch('/api/vision/force_recalage',
+    const r = await fetch('/api/vision/force_homography',
                           {method: 'POST', headers: {'Content-Type':'application/json'},
                            body: '{}'});
     const j = await r.json();
     if (j.ok) {
-      console.log('[VISION] force_recalage OK', j);
+      console.log('[VISION] force_homography OK', j);
     } else {
-      console.warn('[VISION] force_recalage failed:', j);
+      console.warn('[VISION] force_homography failed:', j);
     }
   } catch (e) {
-    console.error('[VISION] force_recalage error:', e);
+    console.error('[VISION] force_homography error:', e);
   }
   pollVision();   // refresh tiles + log immediately
-  if (btn) { btn.disabled = false; btn.textContent = '⌖ Force recalage (otos pose)'; }
+  if (btn) { btn.disabled = false; btn.textContent = '⌖ Force homography'; }
 }
 
 function renderSolver() {
@@ -332,7 +347,7 @@ function renderSolver() {
   meta.textContent = `${pairs.length} pair${pairs.length===1?'':'s'} collected`;
 
   if (!pairs.length) {
-    el.innerHTML = '<div class="empty">No pairs yet — click <code>⌖ Force recalage</code> at several robot positions, then hit <code>⚙ Solve</code></div>';
+    el.innerHTML = '<div class="empty">No pairs yet — fire the firmware recalage routine at several robot positions, then hit <code>⚙ Solve</code></div>';
     return;
   }
 
@@ -616,6 +631,47 @@ function updatePhaseBadge() {
   const phase = _calibInfo && _calibInfo.rectify && _calibInfo.rectify.capture_phase;
   b.className = 'badge phase-' + (phase || 'idle');
   b.textContent = 'homography: ' + (phase || 'idle');
+}
+
+function updatePlaybackBtn() {
+  const btn = document.getElementById('btn-playback');
+  if (!btn) return;
+  const kind = _sourceInfo && _sourceInfo.source_kind;
+  // Live camera has no paused state — disable + grey out so the
+  // operator doesn't try to use it on a non-video source.
+  if (kind !== 'video') {
+    btn.disabled = true;
+    btn.style.opacity = '0.5';
+    btn.style.cursor = 'not-allowed';
+    btn.textContent = `⏸ Pause (${kind || 'no source'})`;
+    return;
+  }
+  btn.disabled = false;
+  btn.style.opacity = '1';
+  btn.style.cursor = 'pointer';
+  const paused = _sourceInfo.playback === 'pause';
+  btn.textContent = paused ? '▶ Play' : '⏸ Pause';
+}
+
+async function togglePlayback() {
+  const btn = document.getElementById('btn-playback');
+  const paused = _sourceInfo && _sourceInfo.playback === 'pause';
+  const mode = paused ? 'play' : 'pause';
+  if (btn) { btn.disabled = true; }
+  try {
+    const r = await fetch('/api/vision_camera/playback',
+                          {method: 'POST', headers: {'Content-Type':'application/json'},
+                           body: JSON.stringify({mode})});
+    const j = await r.json();
+    if (j.ok) {
+      _sourceInfo = j.status;
+    } else {
+      console.warn('[VISION] playback toggle failed:', j);
+    }
+  } catch (e) {
+    console.error('[VISION] playback toggle error:', e);
+  }
+  updatePlaybackBtn();
 }
 
 /* ── Drift heatmap (vision − OTOS) ─────────────────────────────────────── */

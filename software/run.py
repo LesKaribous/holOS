@@ -1977,6 +1977,33 @@ def api_vision_camera_source():
         return jsonify({'ok': False, 'error': str(e)}), 500
 
 
+@app.route('/api/vision_camera/playback', methods=['POST'])
+def api_vision_camera_playback():
+    """Forward a playback mode (play | pause) to the FrameSource. Only
+    valid when source_kind is 'video' — for live camera there is no
+    paused state to enter. Used by the vision_debug page to freeze the
+    pipeline on a single frame while iterating on detection params."""
+    data = request.get_json(silent=True) or {}
+    mode = str(data.get('mode', '')).strip()
+    if mode not in ('play', 'pause'):
+        return jsonify({'ok': False,
+                        'error': f'bad mode: {mode!r} (expected play|pause)'}), 400
+    try:
+        import vision_source as _vs
+        src = _vs.get()
+        if src is None:
+            return jsonify({'ok': False, 'error': 'FrameSource not started'}), 503
+        st = src.status()
+        if str(st.get('source_kind', '')) != 'video':
+            return jsonify({'ok': False,
+                            'error': 'playback control is video-only '
+                                     f'(source_kind={st.get("source_kind")!r})'}), 400
+        src.set_playback(mode)
+        return jsonify({'ok': True, 'status': src.status()})
+    except Exception as e:
+        return jsonify({'ok': False, 'error': str(e)}), 500
+
+
 @app.route('/api/vision_camera/source/clear', methods=['POST'])
 def api_vision_camera_source_clear():
     """Drop the runtime override and re-open on the disk config."""
@@ -2980,35 +3007,52 @@ def api_vision_calibration_solve():
     return jsonify(res)
 
 
-@app.route('/api/vision/force_recalage', methods=['POST'])
-def api_vision_force_recalage():
-    """Debug aid — runs the OWN-tag pick + heading-offset capture using
-    the robot's current OTOS pose, WITHOUT firing the firmware motion
-    routine. Useful to debug `_recalage_pick_own_tag` independently
-    when the snapshot isn't populating: position the robot manually at
-    a known pose, hit this endpoint, watch the vision log.
+@app.route('/api/vision/force_homography', methods=['POST'])
+def api_vision_force_homography():
+    """Debug aid — forces the active rectify node to re-fit and lock its
+    homography on the next available frame, WITHOUT involving the
+    firmware recalage routine. Useful when replaying a recorded video
+    input or developing against a static scene: the homography is
+    normally locked once at the start of the firmware recalage flow,
+    so there is no other way to recompute it without restarting holOS.
 
-    Body (optional JSON): {x_mm, y_mm, theta_rad} to override the OTOS
-    pose. Defaults to robot.pos.x / robot.pos.y / robot.theta.
+    Mirrors the firmware `homography_capture` handler: drops any cached
+    heading offset / calibration snapshot, resets track_ids on the
+    localization node, then arms a capture and waits up to 2 s for
+    the worker to fit H.
     """
-    try:
-        body = request.get_json(silent=True) or {}
-    except Exception:
-        body = {}
-    try:
-        kx = float(body.get('x_mm', robot.pos.x))
-        ky = float(body.get('y_mm', robot.pos.y))
-        kt = float(body.get('theta_rad', robot.theta))
-    except (TypeError, ValueError, AttributeError) as e:
-        return jsonify({'ok': False, 'error': f'pose unavailable: {e}'}), 400
+    global _vision_heading_offset_rad, _vision_calibration_snapshot
+    rect_node, _ = _get_rectify_node()
+    if rect_node is None:
+        _vlog('force_homography: no rectify node in active pipeline', 'err')
+        return jsonify({'ok': False, 'error': 'no_rectify_node'}), 400
 
-    _vlog(f'force_recalage: triggered manually (x={kx:.0f} y={ky:.0f} '
-          f't={math.degrees(kt):+.1f}°)')
-    result = _recalage_pick_own_tag(kx, ky, known_theta_rad=kt)
-    if result is None:
-        return jsonify({'ok': False,
-                        'error': 'see vision log for the failure reason'})
-    return jsonify({'ok': True, **result})
+    _vlog('force_homography: triggered from vision_debug')
+    _vision_heading_offset_rad = None
+    _vision_calibration_snapshot = None
+    loc_inst, _ = _get_localization_node()
+    if loc_inst is not None:
+        try:
+            loc_inst.set_params({'track_ids': list(range(1, 11))})
+        except Exception as e:
+            _vlog(f'track_ids reset failed: {e}', 'warn')
+
+    rect_node.request_capture()
+    deadline = time.monotonic() + 2.0
+    result = None
+    while time.monotonic() < deadline:
+        result = rect_node.get_capture_result()
+        if result is not None:
+            break
+        time.sleep(0.05)
+    if result and result.get('ok'):
+        _vlog(f"homography locked (mode={result.get('mode','?')}, "
+              f"anchors={result.get('detected_anchor_ids', [])})")
+        return jsonify({'ok': True, **result})
+    rect_node.release_capture()
+    reason = (result or {}).get('reason', 'timeout_no_anchors')
+    _vlog(f'force_homography: lock failed — {reason}', 'err')
+    return jsonify({'ok': False, 'error': reason})
 
 
 @app.route('/api/vision/calibration', methods=['GET'])
