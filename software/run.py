@@ -3086,6 +3086,53 @@ def api_vision_force_homography():
     return jsonify({'ok': False, 'error': reason})
 
 
+@app.route('/api/vision/capture_heading_offset', methods=['POST'])
+def api_vision_capture_heading_offset():
+    """Snap the tag-vs-robot heading offset from the live scene. The tag
+    is glued on top of the robot at an arbitrary angle (centered but
+    randomly rotated), so the raw vision theta needs a constant offset
+    to match the robot frame: theta_robot = wrap_pi(theta_tag + offset).
+
+    Captures with the robot stationary at a known heading: the operator
+    aligns the robot to a known orientation (or just trusts the current
+    OTOS theta), the tag is in view, and one click records:
+        offset = wrap_pi(robot.theta - tag.theta_raw)
+
+    Stored in `_vision_heading_offset_rad` exactly like the cal_request
+    path — the same global is consumed by `_get_latest_own_pose()` so
+    every subsequent pose_request / robot_pose reply uses it."""
+    global _vision_heading_offset_rad
+    pose = _get_latest_own_pose()
+    if pose is None:
+        _vlog('capture_heading_offset: no own pose visible — '
+              'aim the camera at the robot first', 'warn')
+        return jsonify({'ok': False,
+                        'error': 'no own-team pose visible (tag not detected)'}), 400
+    tag_theta = pose.get('theta_tag_rad')
+    if tag_theta is None:
+        return jsonify({'ok': False, 'error': 'pose has no theta'}), 400
+    try:
+        robot_theta = float(robot.theta)
+    except (TypeError, ValueError, AttributeError) as e:
+        return jsonify({'ok': False,
+                        'error': f'robot.theta unavailable: {e}'}), 400
+    offset = _wrap_pi(robot_theta - float(tag_theta))
+    _vision_heading_offset_rad = offset
+    _vlog(
+        f"heading offset captured: Δ={math.degrees(offset):+.1f}° "
+        f"(tag={math.degrees(tag_theta):+.1f}°, "
+        f"robot={math.degrees(robot_theta):+.1f}°, "
+        f"tag=#{pose.get('tag_id','?')})")
+    return jsonify({
+        'ok':                 True,
+        'heading_offset_rad': offset,
+        'heading_offset_deg': math.degrees(offset),
+        'tag_theta_rad':      float(tag_theta),
+        'robot_theta_rad':    robot_theta,
+        'tag_id':             pose.get('tag_id'),
+    })
+
+
 @app.route('/api/vision/calibration', methods=['GET'])
 def api_vision_calibration():
     """Snapshot of the recalage handshake: known robot pose, raw vision

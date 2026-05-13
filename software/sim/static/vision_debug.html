@@ -129,6 +129,14 @@
                  opacity:0.5;">
     ⤓ Set robot pose from vision
   </button>
+  <button id="btn-capture-heading" onclick="captureHeadingOffset()" disabled
+          title="Snap the tag↔robot angular offset using the robot's CURRENT OTOS theta vs the tag's CURRENT vision theta. The tag is mounted on top of the robot at an arbitrary angle — this calibrates it so subsequent vision queries return the robot's heading instead of the tag's. Aim the camera at the robot, leave it still, click."
+          style="padding:4px 10px; background:rgba(255,255,255,0.18); color:#fff;
+                 border:1px solid rgba(255,255,255,0.25); border-radius:4px;
+                 cursor:pointer; font:12px ui-monospace,monospace;
+                 opacity:0.5;">
+    ∡ Capture heading offset
+  </button>
   <span class="badge" id="last-update">—</span>
 </header>
 
@@ -314,6 +322,7 @@ async function pollVision() {
   updatePlaybackBtn();
   updateSeekSlider();
   updatePushPoseBtn();
+  updateCaptureHeadingBtn();
 }
 setInterval(pollVision, 500);
 pollVision();
@@ -740,6 +749,39 @@ function updatePushPoseBtn() {
   btn.disabled = !ok;
   btn.style.opacity = ok ? '1' : '0.5';
   btn.style.cursor  = ok ? 'pointer' : 'not-allowed';
+}
+
+function updateCaptureHeadingBtn() {
+  const btn = document.getElementById('btn-capture-heading');
+  if (!btn) return;
+  // Need the raw tag theta — that's what the offset is computed from.
+  const ok = _visionPose && _visionPose.theta_tag_rad != null;
+  btn.disabled = !ok;
+  btn.style.opacity = ok ? '1' : '0.5';
+  btn.style.cursor  = ok ? 'pointer' : 'not-allowed';
+}
+
+async function captureHeadingOffset() {
+  const btn = document.getElementById('btn-capture-heading');
+  if (btn) { btn.disabled = true; btn.textContent = '∡ Capturing…'; }
+  try {
+    const r = await fetch('/api/vision/capture_heading_offset',
+                          {method: 'POST', headers: {'Content-Type':'application/json'},
+                           body: '{}'});
+    const j = await r.json();
+    if (j.ok) {
+      console.log(`[VISION] heading offset captured: Δ=${j.heading_offset_deg.toFixed(1)}° `
+                  + `(tag=${(j.tag_theta_rad * 180 / Math.PI).toFixed(1)}°, `
+                  + `robot=${(j.robot_theta_rad * 180 / Math.PI).toFixed(1)}°, `
+                  + `tag #${j.tag_id})`);
+    } else {
+      console.warn('[VISION] capture_heading_offset failed:', j);
+    }
+  } catch (e) {
+    console.error('[VISION] capture_heading_offset error:', e);
+  }
+  if (btn) { btn.textContent = '∡ Capture heading offset'; }
+  pollVision();   // refresh tiles (calibration tile shows the new offset)
 }
 
 function pushVisionPoseToRobot() {
