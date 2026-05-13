@@ -321,9 +321,10 @@ def probe_now() -> dict:
 
 def _fetch_jpeg(url: str, timeout_s: float) -> Optional[bytes]:
     """GET `url`, return the response body. Raw HTTP/1.0 over a raw
-    socket — same architecture as the prober. Avoids urllib's HTTP/1.1
-    keep-alive negotiation + per-recv timeout quirks that were tripping
-    on the ESP's 1-2 s capture latency."""
+    socket. Parses Content-Length and reads exactly that many body
+    bytes — the ESP doesn't always close the connection after the
+    response, so a naive read-until-EOF hangs on the next recv() for
+    the full timeout."""
     try:
         p = _urlparse(url)
     except Exception:
@@ -346,18 +347,46 @@ def _fetch_jpeg(url: str, timeout_s: float) -> Optional[bytes]:
         s.settimeout(timeout_s)
         s.setsockopt(_socket.IPPROTO_TCP, _socket.TCP_NODELAY, 1)
         s.sendall(req)
-        # Read until peer closes (HTTP/1.0 + Connection: close).
+        # Phase 1: read until end-of-headers (\r\n\r\n).
         buf = bytearray()
+        sep = -1
+        while sep < 0:
+            chunk = s.recv(4096)
+            if not chunk:
+                return None
+            buf.extend(chunk)
+            sep = buf.find(b'\r\n\r\n')
+            if len(buf) > 32768:
+                return None
+        # Phase 2: parse Content-Length from the response headers.
+        headers_blob = bytes(buf[:sep]).decode('latin-1', errors='replace')
+        content_length = None
+        for line in headers_blob.split('\r\n')[1:]:  # skip status line
+            k, _, v = line.partition(':')
+            if k.strip().lower() == 'content-length':
+                try:
+                    content_length = int(v.strip())
+                except Exception:
+                    pass
+                break
+        # Phase 3: read exactly content_length body bytes (if known),
+        # otherwise drain until peer closes.
+        body = bytearray(buf[sep + 4:])
+        if content_length is not None:
+            remaining = content_length - len(body)
+            while remaining > 0:
+                chunk = s.recv(min(16384, remaining))
+                if not chunk:
+                    break
+                body.extend(chunk)
+                remaining -= len(chunk)
+            return bytes(body[:content_length])
         while True:
             chunk = s.recv(16384)
             if not chunk:
                 break
-            buf.extend(chunk)
-        # Split headers / body at the blank line.
-        sep = buf.find(b'\r\n\r\n')
-        if sep < 0:
-            return None
-        return bytes(buf[sep + 4:])
+            body.extend(chunk)
+        return bytes(body)
     except Exception:
         return None
     finally:
