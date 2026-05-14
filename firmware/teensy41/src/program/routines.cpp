@@ -46,10 +46,13 @@ FLASHMEM void programAuto() {
     // non-fatal — we keep the previous offsets and log a warning.
     motion.engage();
     waitMs(1000);
+    
+
     if (!localisation.calibrate()) {
         Console::warn("OS") << "Match-start IMU re-calibration failed — "
                             << "keeping previous offsets" << Console::endl;
     }
+    localisation.syncHeading();
 
     ihm.setPage(IHM::Page::MATCH);
     lidar.enable();

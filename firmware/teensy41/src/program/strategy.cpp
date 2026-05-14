@@ -117,6 +117,8 @@ void grabStockHere(Vec2 target, TableCompass tc, RobotCompass rc) {
     Vec2 approach = target - PolarVec(compass_rad, GrabGeom::APPROACH_OFFSET).toVec2();
     Vec2 grab     = target - PolarVec(compass_rad, GrabGeom::GRAB_OFFSET).toVec2();
 
+    localisation.syncToVision();
+
     float sidewiseoffset_dir = compass_rad + 90.0f; // perpendicular to approach
     approach += PolarVec(sidewiseoffset_dir * DEG_TO_RAD, GrabGeom::SIDE_OFFSET).toVec2();
     grab     += PolarVec(sidewiseoffset_dir * DEG_TO_RAD, GrabGeom::SIDE_OFFSET).toVec2();
@@ -210,6 +212,7 @@ void grabStockHere(Vec2 target, TableCompass tc, RobotCompass rc) {
     
     //if(!connected || got){
         RuntimeConfig::setInt("motion.timeout_ms", 2000);
+        localisation.syncToVision();
         motion.collide(true);
         async motion.goAlign(grab, rc, getCompassOrientation(tc));
         motion.collide(false);
@@ -245,6 +248,7 @@ static void collectStock(Vec2 target, TableCompass tc, RobotCompass rc) {
                          GrabGeom::SIDE_OFFSET).toVec2();
 
     actuators.grab(rc); //wide open
+    localisation.syncToVision();
     async motion.goAlign(approach, rc, getCompassOrientation(tc));
     grabStockHere(target, tc, rc);
 }
@@ -303,6 +307,10 @@ static void storeStock(Vec2 target, TableCompass tc, RobotCompass rc) {
     grabrecal += PolarVec(sidewiseoffset_dir * DEG_TO_RAD, sideOffset).toVec2(); // Offset latéral pour compenser la largeur du préhenseur
 
     RuntimeConfig::setInt("motion.timeout_ms", 6000); // 5 secondes
+    async motion.goAlign(approach, rc, getCompassOrientation(tc));
+
+    localisation.syncToVision();
+
     async motion.goAlign(approach, rc, getCompassOrientation(tc));
 
     safety.disable();
@@ -414,6 +422,8 @@ static BlockResult blockStoreB() {
 static BlockResult blockCollectC() {
     waitMs(800);
 
+    localisation.syncToVision();
+
     if(ihm.isColor(Settings::BLUE)) {
         async motion.goAlign(POI::stockBlue_04 + Vec2(0, +550), RobotCompass::AB, getCompassOrientation(TableCompass::NORTH));
     } else {
@@ -432,6 +442,8 @@ static BlockResult blockCollectC() {
 static BlockResult blockStoreC() {
     waitMs(800);
 
+    localisation.syncToVision();
+
     if(ihm.isColor(Settings::BLUE)) {
         storeStock(POI::pantry_06 + Vec2(-30,-250) + pantryEmpty * Vec2(0, 50), TableCompass::SOUTH, RobotCompass::AB);
     } else {
@@ -448,6 +460,8 @@ static BlockResult thermometer_set() {
     motion.snap(false);
     motion.yield(true);
     
+    localisation.syncToVision();
+
     waitMs(500); // Attente avant de démarrer (stabilisation éventuelle)
     
     actuators.getActuatorGroup(RobotCompass::CA).moveServoToPose((int)ServoIDs::ELEVATOR, (int) ElevatorPose::UP, 100);
@@ -460,7 +474,7 @@ static BlockResult thermometer_set() {
         probeBorder(TableCompass::SOUTH, RobotCompass::BC, 200, 100);
         //probeBorder(TableCompass::EAST, RobotCompass::CA, 100, 300);
         
-        async motion.go(POI::thermometer_hot_blue_approach);
+        //async motion.go(POI::thermometer_hot_blue_approach);
         
 
         RuntimeConfig::setInt("motion.timeout_ms", 2000); // 5 secondes
@@ -476,7 +490,7 @@ static BlockResult thermometer_set() {
         probeBorder(TableCompass::SOUTH, RobotCompass::CA, 200, 100);
         //probeBorder(TableCompass::WEST, RobotCompass::C, 100, 300);
 
-        async motion.go(POI::thermometer_hot_yellow_approach);
+        //async motion.go(POI::thermometer_hot_yellow_approach);
         async motion.align(RobotCompass::C, getCompassOrientation(TableCompass::WEST));
 
         RuntimeConfig::setInt("motion.timeout_ms", 2000); // 5 secondes
