@@ -175,27 +175,26 @@ void grabStockHere(Vec2 target, TableCompass tc, RobotCompass rc) {
                 }
             }
             if (attempt < MAX_RETRY) waitMs(RETRY_DELAY_MS);
-        
-            if (got) {
-                PolarVec lateral_vec_polar = PolarVec(lateral_dir_rad, lateral_mm*1.75);
-                Vec2 lateral_vec = lateral_vec_polar.toVec2();
-                Vec2 corrected = approach + lateral_vec;
-                async motion.goAlign(corrected, rc, getCompassOrientation(tc));
-                Vec3 ref(approach_planned.a, approach_planned.b, localisation.getPosition().z);
-                motion.setAbsPosition(ref);
-                Console::info("Strategy")
-                    << "[vision] reset pose to planned approach ("
-                    << approach_planned.a << "," << approach_planned.b
-                    << ") — offset " << lateral_mm
-                    << "mm absorbed" << Console::endl;
-            }else {
+        }
 
-                Console::warn("Strategy")
-                    << "[vision] no tags after " << MAX_RETRY
-                    << " tries — empty stock or camera fail, skipping grab"
-                    << Console::endl;
-                ihm.playTone(200, 400);
-            }
+        if (got) {
+            PolarVec lateral_vec_polar = PolarVec(lateral_dir_rad, lateral_mm*1.75);
+            Vec2 lateral_vec = lateral_vec_polar.toVec2();
+            Vec2 corrected = approach + lateral_vec;
+            async motion.goAlign(corrected, rc, getCompassOrientation(tc));
+            Vec3 ref(approach_planned.a, approach_planned.b, localisation.getPosition().z);
+            motion.setAbsPosition(ref);
+            Console::info("Strategy")
+                << "[vision] reset pose to planned approach ("
+                << approach_planned.a << "," << approach_planned.b
+                << ") — offset " << lateral_mm
+                << "mm absorbed" << Console::endl;
+        } else {
+            Console::warn("Strategy")
+                << "[vision] no tags after " << MAX_RETRY
+                << " tries — skipping correction, grabbing blind"
+                << Console::endl;
+            ihm.playTone(200, 400);
         }
     }/**/
     
