@@ -334,6 +334,16 @@ _hw_connecting      = False  # True while a connection attempt is in progress
 _hw_serial_port     = None   # Serial port in use (e.g. 'COM6' or '/dev/ttyACM0')
 _hw_serial_mode     = 'wired' # 'wired' | 'xbee'
 
+# ── Auto-reconnect ─────────────────────────────────────────────────────────────
+# When the XBee link drops (heartbeat timeout, often caused by RF noise / range),
+# a background loop keeps retrying _do_connect on RECONNECT_PORT until the link
+# is back up or the user explicitly disconnects via the UI.
+RECONNECT_PORT       = '/dev/ttyUSB0'
+RECONNECT_INTERVAL_S = 3.0
+_reconnect_lock      = threading.Lock()
+_reconnect_thread    = None
+_user_disconnected   = False  # True if user explicitly disconnected via UI
+
 # ── Match state (server-authoritative, broadcast to all clients) ──────────────
 _match_running = False
 _match_paused  = False
@@ -4213,6 +4223,82 @@ def on_reload_strategy():
         emit('reload', {'msg': 'strategy/match.py reloaded ✓'})
 
 
+# ── Auto-reconnect loop ──────────────────────────────────────────────────────
+
+def _start_auto_reconnect():
+    """Spawn the auto-reconnect background loop if it isn't already running.
+
+    Idempotent — multiple disconnect events while the loop is alive collapse
+    into a single attempt thread."""
+    global _reconnect_thread
+    with _reconnect_lock:
+        if _reconnect_thread is not None and _reconnect_thread.is_alive():
+            return
+        _reconnect_thread = threading.Thread(
+            target=_auto_reconnect_loop, daemon=True, name='hw-reconnect')
+        _reconnect_thread.start()
+
+
+def _auto_reconnect_loop():
+    """Retry _do_connect on RECONNECT_PORT until link is back up or the user
+    cancels via on_serial_disconnect.
+
+    Runs forever (with backoff) for the typical "robot drove out of XBee
+    range" scenario — the user expects the link to recover on its own as
+    soon as they bring the robot back closer."""
+    global _hw_connecting
+    attempt = 0
+    while not _user_disconnected:
+        if _hw_transport is not None and _hw_transport.is_connected:
+            return  # someone reconnected manually
+        if _hw_connecting:
+            time.sleep(1.0)
+            continue
+
+        attempt += 1
+        socketio.emit('serial_status', {
+            'ok': False,
+            'msg': f'Reconnexion auto sur {RECONNECT_PORT} (essai {attempt})…',
+            'connecting': True,
+        })
+        try:
+            brain.log(f'[HW] Auto-reconnect attempt {attempt} on {RECONNECT_PORT}')
+        except Exception:
+            pass
+
+        _hw_connecting = True
+        try:
+            _do_connect(RECONNECT_PORT)
+        except Exception as e:
+            print(f"[reconnect] _do_connect raised: {e}")
+        finally:
+            # _do_connect's own finally clears this, but be defensive in
+            # case it never reached the try-block (import error etc).
+            _hw_connecting = False
+
+        # Race: user clicked Disconnect while we were mid-connect. Tear
+        # down the freshly-opened link so we honour their intent.
+        if _user_disconnected and _hw_transport is not None and _hw_transport.is_connected:
+            try:
+                _hw_transport.disconnect()
+            except Exception:
+                pass
+            return
+
+        if _hw_transport is not None and _hw_transport.is_connected:
+            try:
+                brain.log(f'[HW] Auto-reconnect succeeded after {attempt} try(s)')
+            except Exception:
+                pass
+            return
+
+        # Cancellable backoff
+        for _ in range(int(RECONNECT_INTERVAL_S * 10)):
+            if _user_disconnected:
+                return
+            time.sleep(0.1)
+
+
 # ── Serial connection logic (shared between SocketIO handler and --connect) ──
 
 def _do_connect(port: str):
@@ -4733,10 +4819,15 @@ def _do_connect(port: str):
                 _hw_tel_data    = {k: None for k in _hw_tel_data}
                 _connection_mode = 'idle'
                 socketio.emit('serial_status', {
-                    'ok': False, 'msg': '⚠ Connexion perdue — reconnexion possible…'
+                    'ok': False, 'msg': '⚠ Connexion perdue — reconnexion auto…'
                 })
                 socketio.emit('tests_catalog_changed', {'mode': 'idle'})
-                brain.log('[HW] Connexion perdue (déconnexion inattendue)')
+                brain.log('[HW] Connexion perdue — démarrage reconnexion auto')
+                # Fire the background reconnect loop unless the user explicitly
+                # disconnected via the UI (in which case the on_serial_disconnect
+                # handler set _user_disconnected = True before this fired).
+                if not _user_disconnected:
+                    _start_auto_reconnect()
 
             t.on_disconnect(_on_hw_disconnect)
 
@@ -4816,7 +4907,9 @@ def _do_connect(port: str):
 
 @socketio.on('serial_connect')
 def on_serial_connect(data):
-    global _hw_transport, _hw_brain, _hw_connecting
+    global _hw_transport, _hw_brain, _hw_connecting, _user_disconnected
+    # Manual connect re-enables the auto-reconnect path for any future drop
+    _user_disconnected = False
     port = (data.get('port') or '').strip()
 
     if not port:
@@ -4846,7 +4939,11 @@ def on_serial_connect(data):
 @socketio.on('serial_disconnect')
 def on_serial_disconnect():
     global _hw_transport, _hw_brain, _hw_test_runner, _hw_serial_port, _hw_tel_data
-    global _connection_mode
+    global _connection_mode, _user_disconnected
+    # Mark BEFORE disconnect so the transport's _on_hw_disconnect callback
+    # (which fires synchronously inside disconnect()) sees the flag and
+    # skips spawning the auto-reconnect loop.
+    _user_disconnected = True
     if _hw_transport is not None:
         try:
             _hw_transport.disconnect()
@@ -5497,6 +5594,11 @@ def main():
                 time.sleep(0.5)
                 print("  [holOS] Auto-starting match strategy…")
                 _active_brain().run_match(on_done=_on_match_done)
+            # If the initial attempt didn't bring the link up (robot off,
+            # XBee out of range, …), hand off to the auto-reconnect loop
+            # so we keep retrying without requiring a UI click.
+            elif _hw_transport is None or not _hw_transport.is_connected:
+                _start_auto_reconnect()
         socketio.start_background_task(_auto_connect)
 
     plat_tag = 'Jetson' if IS_JETSON else 'PC'

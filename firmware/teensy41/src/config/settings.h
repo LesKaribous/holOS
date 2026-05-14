@@ -284,11 +284,11 @@ namespace Settings {
         // JetsonBridge telemetry channel initial state.
         // Disable high-rate channels when debugging without holOS (e.g. plain serial).
         namespace Telemetry {
-            constexpr bool POS    = true;
+            constexpr bool POS    = false;
             constexpr bool MOTION = true;
             constexpr bool SAFETY = true;
             constexpr bool CHRONO = true;
-            constexpr bool OCC    = true;
+            constexpr bool OCC    = false;  // path planning unused — re-enable via tel(occ,1)
         }
 
     }  // namespace Log
