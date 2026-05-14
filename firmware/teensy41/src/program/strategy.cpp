@@ -131,10 +131,10 @@ void grabStockHere(Vec2 target, TableCompass tc, RobotCompass rc) {
     const Vec2 approach_planned = approach;
     bool  got        = false;
     bool connected = false;
-
+    /**/
     {
-        constexpr int      MAX_RETRY        = 3;
-        constexpr uint32_t ATTEMPT_TO_MS    = 1500;
+        constexpr int      MAX_RETRY        = 2;
+        constexpr uint32_t ATTEMPT_TO_MS    = 4000;
         constexpr uint32_t RETRY_DELAY_MS   = 400;
         constexpr float    PARTIAL_STEP_MM  = 30.0f;
         // Camera "+X = right" in image frame maps to compass(tc) - 90° in
@@ -161,8 +161,7 @@ void grabStockHere(Vec2 target, TableCompass tc, RobotCompass rc) {
                 }
 
                 if (bias_hint != 0) {
-                    async motion.goPolar(lateral_dir_deg,
-                                        float(bias_hint) * PARTIAL_STEP_MM);
+                    async motion.goPolar(lateral_dir_deg, float(bias_hint) * PARTIAL_STEP_MM);
                     Console::warn("Strategy")
                         << "[vision] try " << attempt << "/" << MAX_RETRY
                         << " no tags → probe "
@@ -176,45 +175,36 @@ void grabStockHere(Vec2 target, TableCompass tc, RobotCompass rc) {
                 }
             }
             if (attempt < MAX_RETRY) waitMs(RETRY_DELAY_MS);
+        
+            if (got) {
+                PolarVec lateral_vec_polar = PolarVec(lateral_dir_rad, lateral_mm*1.75);
+                Vec2 lateral_vec = lateral_vec_polar.toVec2();
+                Vec2 corrected = approach + lateral_vec;
+                async motion.goAlign(corrected, rc, getCompassOrientation(tc));
+                Vec3 ref(approach_planned.a, approach_planned.b, localisation.getPosition().z);
+                motion.setAbsPosition(ref);
+                Console::info("Strategy")
+                    << "[vision] reset pose to planned approach ("
+                    << approach_planned.a << "," << approach_planned.b
+                    << ") — offset " << lateral_mm
+                    << "mm absorbed" << Console::endl;
+            }else {
+
+                Console::warn("Strategy")
+                    << "[vision] no tags after " << MAX_RETRY
+                    << " tries — empty stock or camera fail, skipping grab"
+                    << Console::endl;
+                ihm.playTone(200, 400);
+            }
         }
-        if (got) {
-            PolarVec lateral_vec_polar = PolarVec(lateral_dir_rad, lateral_mm*1.75);
-            Vec2 lateral_vec = lateral_vec_polar.toVec2();
-            Vec2 corrected = approach + lateral_vec;
-            async motion.goAlign(corrected, rc, getCompassOrientation(tc));
-            Vec3 ref(approach_planned.a, approach_planned.b, localisation.getPosition().z);
-            motion.setAbsPosition(ref);
-            Console::info("Strategy")
-                << "[vision] reset pose to planned approach ("
-                << approach_planned.a << "," << approach_planned.b
-                << ") — offset " << lateral_mm
-                << "mm absorbed" << Console::endl;
-        } else {
-            // No tags after MAX_RETRY → either the stock is empty OR
-            // the camera failed to fetch a frame (likely if you never
-            // saw the picture refresh in the Detection tab). Caller-
-            // level block returns SUCCESS regardless; we just skip the
-            // grab choreography so the planner moves on instead of
-            // replaying this mission against empty air. A low beep
-            // (200 Hz, well below the 440 Hz button tone) alerts the
-            // operator that vision came up empty — check the streamer
-            // pill in the webapp Detection tab.
-            Console::warn("Strategy")
-                << "[vision] no tags after " << MAX_RETRY
-                << " tries — empty stock or camera fail, skipping grab"
-                << Console::endl;
-            ihm.playTone(200, 400);
-            safety.enable();
-            motion.setFeedrate(1.0f);
-            return;
-        }
-    }
+    }/**/
     
     //if(!connected || got){
         RuntimeConfig::setInt("motion.timeout_ms", 2000);
         localisation.syncToVision();
         motion.collide(true);
-        async motion.goAlign(grab, rc, getCompassOrientation(tc));
+        async motion.align(rc, getCompassOrientation(tc));
+        async motion.go(grab);
         motion.collide(false);
 
         actuators.moveElevator(rc, ElevatorPose::DOWN);
@@ -229,6 +219,8 @@ void grabStockHere(Vec2 target, TableCompass tc, RobotCompass rc) {
         waitMs(GrabGeom::GRAB_DELAY_MS);
         actuators.store(rc);
         waitMs(GrabGeom::GRAB_DELAY_MS);
+
+        async motion.goPolar(getCompassOrientation(tc), -100);
         actuators.moveElevator(rc, ElevatorPose::STORE);
     //}
     
@@ -249,7 +241,8 @@ static void collectStock(Vec2 target, TableCompass tc, RobotCompass rc) {
 
     actuators.grab(rc); //wide open
     localisation.syncToVision();
-    async motion.goAlign(approach, rc, getCompassOrientation(tc));
+    async motion.go(approach);
+    async motion.align(rc, getCompassOrientation(tc));
     grabStockHere(target, tc, rc);
 }
 
@@ -307,29 +300,29 @@ static void storeStock(Vec2 target, TableCompass tc, RobotCompass rc) {
     grabrecal += PolarVec(sidewiseoffset_dir * DEG_TO_RAD, sideOffset).toVec2(); // Offset latéral pour compenser la largeur du préhenseur
 
     RuntimeConfig::setInt("motion.timeout_ms", 6000); // 5 secondes
-    async motion.goAlign(approach, rc, getCompassOrientation(tc));
+    async motion.go(approach);
+    async motion.align(rc, getCompassOrientation(tc));
 
     localisation.syncToVision();
 
-    async motion.goAlign(approach, rc, getCompassOrientation(tc));
+    async motion.go(approach);
 
     safety.disable();
     motion.setFeedrate(0.3f);
     RuntimeConfig::setInt("motion.timeout_ms", 5000); // 5 secondes
     motion.collide(true);
-    async motion.goAlign(grab,     rc, getCompassOrientation(tc));
+    async motion.go(grab);
     
-
     waitMs(GRAB_DELAY_MS);
     actuators.drop(rc);//release just enough
     waitMs(GRAB_DELAY_MS);
     actuators.grab(rc);//Grab means wide open
 
     motion.setFeedrate(0.3f);
-    async motion.goAlign(grabrecal,     rc, getCompassOrientation(tc));
+    async motion.go(grabrecal);
     motion.setFeedrate(1.0f);
     motion.collide(false);
-    async motion.goAlign(approach,     rc, getCompassOrientation(tc));
+    async motion.go(approach);
     actuators.store(rc); //close gripper avoid collision
 
     RuntimeConfig::setInt("motion.timeout_ms", 10000); // 5 secondes
@@ -360,12 +353,6 @@ static bool pantryEmpty = false;
 static BlockResult blockCollectA() {
     waitMs(800);
 
-    // Example syncToVision call — robot has been still for ~800 ms so
-    // a vision pose snapshot now is the freshest possible, and the
-    // strategic value of correcting OTOS drift here is high (the next
-    // move is a delicate stock-row alignment). Falls through on failure
-    // (vision not seeing the tag): we keep the OTOS-only pose and
-    // continue the block. 1 s timeout keeps the worst-case wait bounded.
     localisation.syncToVision(1000);
 
     if(ihm.isColor(Settings::BLUE)) {
@@ -374,13 +361,13 @@ static BlockResult blockCollectA() {
         collectStock(POI::stockYellow_01 + Vec2(0,0), TableCompass::WEST, RobotCompass::AB);
     }
 
-
-
     return BlockResult::SUCCESS;
 }
 
 static BlockResult blockStoreA() {
     waitMs(800);
+
+    localisation.syncToVision(1000);
 
     if(ihm.isColor(Settings::BLUE)) {
         storeStock(POI::pantry_07 + Vec2(0,0) + pantryEmpty * Vec2(30,0), TableCompass::EAST, RobotCompass::AB);
@@ -388,13 +375,14 @@ static BlockResult blockStoreA() {
         storeStock(POI::pantry_03 + Vec2(0,0) + pantryEmpty * Vec2(30,0), TableCompass::WEST, RobotCompass::AB);
     }
     
-    
     pantryEmpty = true;
     return BlockResult::SUCCESS;
 }
 
 static BlockResult blockCollectB() {
     waitMs(800);
+
+    localisation.syncToVision(1000);
 
     if(ihm.isColor(Settings::BLUE)) {
         collectStock(POI::stockBlue_02+ Vec2(0,0), TableCompass::EAST, RobotCompass::AB);
@@ -407,6 +395,8 @@ static BlockResult blockCollectB() {
 
 static BlockResult blockStoreB() {
     waitMs(800);
+
+    localisation.syncToVision(1000);
 
     if(ihm.isColor(Settings::BLUE)) {
         storeStock(POI::pantry_07 + Vec2(0,0) + pantryEmpty * Vec2(30,0), TableCompass::EAST, RobotCompass::AB);
@@ -425,9 +415,11 @@ static BlockResult blockCollectC() {
     localisation.syncToVision();
 
     if(ihm.isColor(Settings::BLUE)) {
-        async motion.goAlign(POI::stockBlue_04 + Vec2(0, +550), RobotCompass::AB, getCompassOrientation(TableCompass::NORTH));
+        async motion.go(POI::stockBlue_04 + Vec2(0, +550));
+        async motion.align(RobotCompass::AB, getCompassOrientation(TableCompass::NORTH));
     } else {
-        async motion.goAlign(POI::stockYellow_04 + Vec2(0, +550), RobotCompass::AB, getCompassOrientation(TableCompass::NORTH));
+        async motion.go(POI::stockYellow_04 + Vec2(0, +550));
+        async motion.align(RobotCompass::AB, getCompassOrientation(TableCompass::NORTH));
     }
 
     if(ihm.isColor(Settings::BLUE)) {
@@ -467,11 +459,12 @@ static BlockResult thermometer_set() {
     actuators.getActuatorGroup(RobotCompass::CA).moveServoToPose((int)ServoIDs::ELEVATOR, (int) ElevatorPose::UP, 100);
 
     if(ihm.isColor(Settings::BLUE)) {
-        async motion.goAlign(POI::thermometer_hot_blue_approach - Vec2(0,200), RobotCompass::C, getCompassOrientation(TableCompass::SOUTH));
-        //localisation.syncToVision(1000); // Sync initial localisation to vision (blocking, 2s timeout)
+        async motion.align(RobotCompass::C, getCompassOrientation(TableCompass::SOUTH));
+        async motion.go(POI::thermometer_hot_blue_approach - Vec2(0,200));
+        localisation.syncToVision(); // Sync initial localisation to vision (blocking, 2s timeout)
         motion.setFeedrate(0.5f);
         async motion.go(POI::thermometer_hot_blue_approach);
-        probeBorder(TableCompass::SOUTH, RobotCompass::BC, 200, 100);
+        probeBorder(TableCompass::SOUTH, RobotCompass::BC, 100, 100);
         //probeBorder(TableCompass::EAST, RobotCompass::CA, 100, 300);
         
         //async motion.go(POI::thermometer_hot_blue_approach);
@@ -479,23 +472,24 @@ static BlockResult thermometer_set() {
 
         RuntimeConfig::setInt("motion.timeout_ms", 2000); // 5 secondes
         async motion.go(POI::thermometer_hot_blue - Vec2(0,200));
-        probeBorder(TableCompass::EAST, RobotCompass::CA, 200, 100);
+        //probeBorder(TableCompass::EAST, RobotCompass::CA, 200, 100);
         async motion.align(RobotCompass::C, getCompassOrientation(TableCompass::SOUTH));
         async motion.go(POI::thermometer_hot_blue);
     } else {
-        async motion.goAlign(POI::thermometer_hot_yellow_approach - Vec2(0,200), RobotCompass::C, getCompassOrientation(TableCompass::WEST));
-        //localisation.syncToVision(1000); // Sync initial localisation to vision (blocking, 2s timeout)
+        async motion.align(RobotCompass::C, getCompassOrientation(TableCompass::WEST));
+        async motion.go(POI::thermometer_hot_yellow_approach - Vec2(0,200));
+        localisation.syncToVision();
         motion.setFeedrate(0.5f);
         async motion.go(POI::thermometer_hot_yellow_approach);
-        probeBorder(TableCompass::SOUTH, RobotCompass::CA, 200, 100);
+        probeBorder(TableCompass::SOUTH, RobotCompass::CA, 100, 100);
         //probeBorder(TableCompass::WEST, RobotCompass::C, 100, 300);
 
         //async motion.go(POI::thermometer_hot_yellow_approach);
         async motion.align(RobotCompass::C, getCompassOrientation(TableCompass::WEST));
 
         RuntimeConfig::setInt("motion.timeout_ms", 2000); // 5 secondes
-        async motion.go(POI::thermometer_hot_yellow - Vec2(0,200));
-        probeBorder(TableCompass::WEST, RobotCompass::C, 200, 100);
+        //async motion.go(POI::thermometer_hot_yellow - Vec2(0,200));
+        //probeBorder(TableCompass::WEST, RobotCompass::C, 200, 100);
         async motion.go(POI::thermometer_hot_yellow);
     }
 
@@ -509,9 +503,11 @@ static BlockResult thermometer_set() {
     os.wait(1000);
 
     if(ihm.isColor(Settings::BLUE)) {
-        async motion.goAlign(POI::thermometer_hot_blue, RobotCompass::CA, getCompassOrientation(TableCompass::SOUTH));
+        async motion.go(POI::thermometer_hot_blue);
+        async motion.align(RobotCompass::CA, getCompassOrientation(TableCompass::SOUTH));
     } else {
-        async motion.goAlign(POI::thermometer_hot_yellow, RobotCompass::CA, getCompassOrientation(TableCompass::SOUTH));
+        async motion.go(POI::thermometer_hot_yellow);
+        async motion.align(RobotCompass::CA, getCompassOrientation(TableCompass::SOUTH));
     }
 
     RuntimeConfig::setInt("motion.timeout_ms", 20000); // 5 secondes
@@ -536,25 +532,8 @@ static BlockResult thermometer_set() {
     actuators.getActuatorGroup(RobotCompass::CA).moveServoToPose((int)ServoIDs::ELEVATOR, (int) ElevatorPose::DOWN, 100);
 
     motion.setFeedrate(1);
-    if(ihm.isColor(Settings::BLUE)) {
-        async motion.goAlign(POI::thermometer_hot_blue, RobotCompass::BC, getCompassOrientation(TableCompass::EAST));
-    } else {
-        async motion.goAlign(POI::thermometer_hot_yellow, RobotCompass::BC, getCompassOrientation(TableCompass::WEST));
-    }
-
     return BlockResult::SUCCESS;
 }
-
-// ============================================================
-//  Conditions de faisabilité
-//  Appelées par Mission AVANT d'envoyer le robot vers un bloc.
-//  Retourne false → bloc skippé immédiatement, Mission tente le suivant.
-//
-//  ZONE_CHECK_RADIUS : rayon (mm) autour du POI vérifié dans l'occupancy map.
-//  ~450mm couvre le POI + la zone d'approche (offset 300mm).
-//  Si la carte est vide (lidar secondaire non connecté),
-//  isZoneOccupied retourne false → check passe et le robot tente quand même.
-// ============================================================
 
 namespace ZoneCheck {
     constexpr float RADIUS = 450.0f; // mm (~3 cellules de 150mm)
@@ -618,12 +597,6 @@ static bool isZoneThermoFree() {
     return !occupied;
 }
 
-// ============================================================
-//  registerBlocks() — Register individual blocks into BlockRegistry
-//  Called once at boot from onRobotBoot().
-//  Blocks remain discoverable from Jetson via blocks_list
-//  and individually executable via run_block(name).
-// ============================================================
 
 FLASHMEM void registerBlocks() {
     BlockRegistry& reg = BlockRegistry::instance();
@@ -637,17 +610,6 @@ FLASHMEM void registerBlocks() {
     // reg.add("collect_B", 8, 80, Timing::COLLECT_STOCK_B, blockCollectB, isZoneBFree);
     // reg.add("store_B",   8, 80, Timing::STORE_STOCK_B,   blockStoreB);
 }
-
-
-// ============================================================
-//  match() — point d'entrée du match (embedded fallback)
-//
-//  Utilise le Planner avec des Missions multi-étapes.
-//  Chaque Mission = un objectif complet (collect → store).
-//  Le Planner boucle tant qu'il reste du temps, retry les
-//  missions qui ont échoué, et skip celles dont la zone
-//  est occupée.
-// ============================================================
 
 FLASHMEM void match() {
     Console::info("Strategy") << "match() entry  SP=" << String(freeStack()) << Console::endl;
@@ -767,9 +729,11 @@ FLASHMEM void nearEnd(){
     waitMs(800);
 
     if(ihm.isColor(Settings::BLUE)) {
-        async motion.goAlign(Vec2(3000-350,700), RobotCompass::BC, getCompassOrientation(TableCompass::NORTH));
+        async motion.align(RobotCompass::BC, getCompassOrientation(TableCompass::NORTH));
+        async motion.go(Vec2(3000-350,700));
     } else {
-        async motion.goAlign(Vec2(350,700), RobotCompass::C, getCompassOrientation(TableCompass::NORTH));
+        async motion.align(RobotCompass::C, getCompassOrientation(TableCompass::NORTH));
+        async motion.go(Vec2(350,700));
     }
 
     if(ihm.isColor(Settings::BLUE)) {
