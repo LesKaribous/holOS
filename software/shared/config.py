@@ -66,9 +66,13 @@ TELEMETRY_RATE_HZ     = 5    # Hz — telemetry push rate from Jetson to Teensy
 BRIDGE_KIND           = 'wifi'
 
 # WiFi bridge (ESP Xiao TCP relay — firmware in firmware/esp_xiao/).
-# Hostname resolves via the home router's DHCP/mDNS; falls back to a static
-# IP if you've reserved one. Keep this in sync with firmware/esp_xiao/src/config.h.
-XIAO_HOST             = 'holos-xiao.local'
+# Prefer the raw IP over 'holos-xiao.local' — the Jetson stock image doesn't
+# ship with avahi-daemon, so mDNS resolution fails and the transport never
+# even opens the socket. Browsers on Mac/Win resolve mDNS natively which is
+# why the debug page works while the Jetson connection doesn't.
+# Either reserve the IP in the router's DHCP table, or `sudo apt install
+# avahi-daemon libnss-mdns` on the Jetson and revert to 'holos-xiao.local'.
+XIAO_HOST             = '192.168.0.103'
 XIAO_PORT             = 9000
 
 # ── Enums ─────────────────────────────────────────────────────────────────────

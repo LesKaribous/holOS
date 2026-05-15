@@ -30,6 +30,7 @@
 #include <WiFi.h>
 #include <ESPmDNS.h>
 #include <WebServer.h>
+#include <stdarg.h>
 
 #include "config.h"
 
@@ -62,6 +63,69 @@ static uint32_t statClientConnects = 0;
 static uint32_t statClientReplaced = 0;
 static uint32_t statWifiReboots    = 0;
 static uint32_t statLastClientMs   = 0;
+
+// ── In-RAM log ring ──────────────────────────────────────────────────────────
+// Drop-in replacement for the USB-CDC console when you can't plug in. The
+// most recent LOG_LINES entries are rendered on the debug page. Oldest gets
+// overwritten silently. Each entry is timestamped from millis() at push.
+constexpr int LOG_LINES    = 80;
+constexpr int LOG_LINE_LEN = 96;
+static char     logRing[LOG_LINES][LOG_LINE_LEN];
+static uint16_t logHead    = 0;     // next slot to write
+static uint16_t logCount   = 0;     // capped at LOG_LINES
+
+static void logPush(const char* line) {
+    // Prefix every line with hh:mm:ss.mmm (from boot, not wall clock).
+    uint32_t t  = millis();
+    uint32_t s  = t / 1000;
+    uint32_t ms = t % 1000;
+    uint32_t hh = s / 3600; s %= 3600;
+    uint32_t mm = s / 60;   s %= 60;
+    snprintf(logRing[logHead], LOG_LINE_LEN,
+             "[%02lu:%02lu:%02lu.%03lu] %s",
+             (unsigned long)hh, (unsigned long)mm,
+             (unsigned long)s,  (unsigned long)ms, line);
+    logHead = (logHead + 1) % LOG_LINES;
+    if (logCount < LOG_LINES) logCount++;
+}
+
+static void logf(const char* fmt, ...) {
+    char buf[LOG_LINE_LEN - 16];   // leave room for the timestamp prefix
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(buf, sizeof(buf), fmt, ap);
+    va_end(ap);
+    Serial.println(buf);   // still mirror to USB-CDC for when it's reachable
+    logPush(buf);
+}
+
+// Log a byte burst as hex + printable ASCII. tag = "tcp→" or "uart→". We log
+// only the first `previewLen` bytes of the burst — bursts can be hundreds of
+// bytes (occupancy maps) and we want the line to fit. `totalLen` is the full
+// burst size, included in the header so you see truncation when it happens.
+static void logBurst(const char* tag, const uint8_t* bytes,
+                     int previewLen, uint32_t totalLen) {
+    char buf[LOG_LINE_LEN - 16];
+    int n = snprintf(buf, sizeof(buf), "%s %lu B: ", tag, (unsigned long)totalLen);
+    for (int i = 0; i < previewLen && n < (int)sizeof(buf) - 4; ++i) {
+        n += snprintf(buf + n, sizeof(buf) - n, "%02x ", bytes[i]);
+    }
+    if (n < (int)sizeof(buf) - 3) {
+        // Append printable ASCII rendering — '.' for non-printable / non-7-bit.
+        buf[n++] = '"';
+        for (int i = 0; i < previewLen && n < (int)sizeof(buf) - 2; ++i) {
+            char c = (char)bytes[i];
+            if (c == '\n')       { if (n + 2 < (int)sizeof(buf)) { buf[n++] = '\\'; buf[n++] = 'n'; } }
+            else if (c == '\r')  { if (n + 2 < (int)sizeof(buf)) { buf[n++] = '\\'; buf[n++] = 'r'; } }
+            else if (c >= 0x20 && c < 0x7f) buf[n++] = c;
+            else                            buf[n++] = '.';
+        }
+        if (n < (int)sizeof(buf) - 1) buf[n++] = '"';
+        buf[n] = 0;
+    }
+    Serial.println(buf);
+    logPush(buf);
+}
 
 // ── Tiny ring helpers ────────────────────────────────────────────────────────
 
@@ -148,8 +212,8 @@ static void wifiWatchdog() {
     const uint32_t timeout = wifiFirstBoot ? WIFI_CONNECT_TIMEOUT_MS
                                            : WIFI_RETRY_REBOOT_MS;
     if (millis() - wifiAttemptStartMs > timeout) {
-        Serial.printf("[xiao] WiFi down %lums, restarting…\n",
-                      (unsigned long)(millis() - wifiAttemptStartMs));
+        logf("WiFi down %lums — restarting",
+             (unsigned long)(millis() - wifiAttemptStartMs));
         statWifiReboots++;
         delay(50);
         ESP.restart();
@@ -180,109 +244,150 @@ static uint16_t ringFill(uint16_t head, uint16_t tail, uint16_t cap) {
     return (uint16_t)((head + cap - tail) % cap);
 }
 
+// HTML-escape into the buffer. ESP `String` doesn't escape — and we render
+// raw UART bytes into <pre>, so '<', '>', '&' would break the layout.
+static void escAppend(String& dst, const char* s) {
+    while (*s) {
+        char c = *s++;
+        if      (c == '<') dst += "&lt;";
+        else if (c == '>') dst += "&gt;";
+        else if (c == '&') dst += "&amp;";
+        else                dst += c;
+    }
+}
+
 static void handleHttpRoot() {
-    // Static skeleton — values are filled in by a tiny JS poller that
-    // hits /stats.json every 2 s. No full-page reloads.
-    static const char PAGE[] PROGMEM =
-        "<!doctype html><html><head><meta charset=utf-8>"
-        "<title>holOS Xiao bridge</title>"
-        "<style>"
-        "body{font-family:ui-monospace,Menlo,monospace;background:#111;color:#eee;margin:24px;max-width:560px}"
-        "h1{font-size:18px;margin:0 0 16px}"
-        "table{width:100%;border-collapse:collapse;margin-bottom:18px}"
-        "th{text-align:left;font-weight:normal;color:#888;padding:4px 8px 4px 0;width:160px;vertical-align:top}"
-        "td{padding:4px 0}"
-        ".ok{color:#5f5}.warn{color:#fa0}.err{color:#f55}"
-        ".bar{display:inline-block;width:200px;height:8px;background:#222;vertical-align:middle;margin-left:8px;border:1px solid #333}"
-        ".fill{display:block;height:100%;background:#5f5}"
-        "h2{font-size:14px;color:#888;margin:16px 0 4px;border-top:1px solid #222;padding-top:12px}"
-        "</style></head><body>"
-        "<h1>holOS — Xiao WiFi bridge <span id=live style='color:#555;font-size:11px;font-weight:normal'>•</span></h1>"
+    const bool wifiUp   = (WiFi.status() == WL_CONNECTED);
+    const bool clientUp = (tcpClient && tcpClient.connected());
+    const uint16_t rxFill = ringFill(rxHead, rxTail, RX_RING_BYTES);
+    const uint16_t txFill = ringFill(txHead, txTail, TX_RING_BYTES);
 
-        "<h2>WiFi</h2><table>"
-        "<tr><th>State</th>   <td id=wifi>-</td></tr>"
-        "<tr><th>SSID</th>    <td id=ssid>-</td></tr>"
-        "<tr><th>IP</th>      <td id=ip>-</td></tr>"
-        "<tr><th>MAC</th>     <td id=mac>-</td></tr>"
-        "<tr><th>Hostname</th><td id=host>-</td></tr>"
-        "<tr><th>RSSI</th>    <td id=rssi>-</td></tr>"
-        "<tr><th>Reboots (WiFi)</th><td id=reboots>-</td></tr>"
-        "</table>"
+    String h;
+    h.reserve(6144);   // grows to fit log; no realloc thrashing under 6 KB
+    h += F("<!doctype html><html><head><meta charset=utf-8>"
+           "<title>holOS Xiao bridge</title>"
+           "<style>"
+           "body{font-family:ui-monospace,Menlo,monospace;background:#111;color:#eee;margin:24px;max-width:720px}"
+           "h1{font-size:18px;margin:0 0 16px}"
+           "table{width:100%;border-collapse:collapse;margin-bottom:18px}"
+           "th{text-align:left;font-weight:normal;color:#888;padding:4px 8px 4px 0;width:160px;vertical-align:top}"
+           "td{padding:4px 0}"
+           ".ok{color:#5f5} .warn{color:#fa0} .err{color:#f55}"
+           ".bar{display:inline-block;width:200px;height:8px;background:#222;vertical-align:middle;margin-left:8px;border:1px solid #333}"
+           ".fill{display:block;height:100%;background:#5f5}"
+           "h2{font-size:14px;color:#888;margin:16px 0 4px;border-top:1px solid #222;padding-top:12px}"
+           "pre.log{background:#000;border:1px solid #222;padding:8px;font-size:11px;line-height:1.35;color:#bbb;max-height:360px;overflow:auto;white-space:pre-wrap;word-break:break-all;margin:0}"
+           ".hint{color:#555;font-size:11px;margin:6px 0 0}"
+           "</style></head><body>");
+    h += F("<h1>holOS — Xiao WiFi bridge "
+           "<a href='/' style='color:#5f5;font-size:11px;font-weight:normal;text-decoration:none'>[↻ refresh]</a></h1>");
 
-        "<h2>TCP relay</h2><table>"
-        "<tr><th>Port</th>            <td id=port>-</td></tr>"
-        "<tr><th>Client</th>          <td id=client>-</td></tr>"
-        "<tr><th>Total connects</th>  <td id=connects>-</td></tr>"
-        "<tr><th>Replaced</th>        <td id=replaced>-</td></tr>"
-        "<tr><th>Since last connect</th><td id=since>-</td></tr>"
-        "</table>"
+    h += F("<h2>WiFi</h2><table>");
+    h += "<tr><th>State</th><td>";
+    h += wifiUp ? F("<span class=ok>connected</span>") : F("<span class=err>disconnected</span>");
+    h += "</td></tr>";
+    h += "<tr><th>SSID</th><td>"; h += WiFi.SSID(); h += "</td></tr>";
+    h += "<tr><th>IP</th><td>";   h += WiFi.localIP().toString(); h += "</td></tr>";
+    h += "<tr><th>MAC</th><td>";  h += WiFi.macAddress(); h += "</td></tr>";
+    h += "<tr><th>Hostname</th><td>"; h += WIFI_HOSTNAME; h += ".local</td></tr>";
+    h += "<tr><th>RSSI</th><td>";
+    if (wifiUp) { h += String(WiFi.RSSI()); h += " dBm"; } else { h += "-"; }
+    h += "</td></tr>";
+    h += "<tr><th>Reboots (WiFi)</th><td>"; h += String(statWifiReboots); h += "</td></tr>";
+    h += F("</table>");
 
-        "<h2>UART (Teensy)</h2><table>"
-        "<tr><th>Baud</th>        <td id=baud>-</td></tr>"
-        "<tr><th>Pins</th>        <td id=pins>-</td></tr>"
-        "<tr><th>UART → TCP</th><td id=rx>-</td></tr>"
-        "<tr><th>TCP → UART</th><td id=tx>-</td></tr>"
-        "<tr><th>RX overflows</th><td id=rxov>-</td></tr>"
-        "<tr><th>TX overflows</th><td id=txov>-</td></tr>"
-        "</table>"
+    h += F("<h2>TCP relay</h2><table>");
+    h += "<tr><th>Port</th><td>"; h += String(TCP_PORT); h += "</td></tr>";
+    h += "<tr><th>Client</th><td>";
+    if (clientUp) {
+        h += F("<span class=ok>");
+        h += tcpClient.remoteIP().toString();
+        h += F("</span>");
+    } else {
+        h += F("<span class=warn>none</span>");
+    }
+    h += "</td></tr>";
+    h += "<tr><th>Total connects</th><td>"; h += String(statClientConnects); h += "</td></tr>";
+    h += "<tr><th>Replaced</th><td>";       h += String(statClientReplaced); h += "</td></tr>";
+    if (statLastClientMs) {
+        h += "<tr><th>Since last connect</th><td>";
+        h += fmtUptime(millis() - statLastClientMs);
+        h += "</td></tr>";
+    }
+    h += F("</table>");
 
-        "<h2>Ring buffers</h2><table>"
-        "<tr><th>UART → TCP</th><td id=rxring>-</td></tr>"
-        "<tr><th>TCP → UART</th><td id=txring>-</td></tr>"
-        "</table>"
+    h += F("<h2>UART (Teensy)</h2><table>");
+    h += "<tr><th>Baud</th><td>"; h += String(UART_BAUD); h += " (8N1)</td></tr>";
+    h += "<tr><th>Pins</th><td>TX D6 (GPIO";
+    h += String(UART_TX_PIN);
+    h += ") · RX D7 (GPIO";
+    h += String(UART_RX_PIN);
+    h += ")</td></tr>";
+    h += "<tr><th>UART → TCP</th><td>"; h += fmtBytes(statBytesRx); h += "</td></tr>";
+    h += "<tr><th>TCP → UART</th><td>"; h += fmtBytes(statBytesTx); h += "</td></tr>";
+    h += "<tr><th>RX overflows</th><td>";
+    h += String(statRxOverflows);
+    if (statRxOverflows) h += F(" <span class=warn>(byte drops!)</span>");
+    h += "</td></tr>";
+    h += "<tr><th>TX overflows</th><td>";
+    h += String(statTxOverflows);
+    if (statTxOverflows) h += F(" <span class=warn>(byte drops!)</span>");
+    h += "</td></tr>";
+    h += F("</table>");
 
-        "<h2>System</h2><table>"
-        "<tr><th>Uptime</th>      <td id=up>-</td></tr>"
-        "<tr><th>Free heap</th>   <td id=heap>-</td></tr>"
-        "<tr><th>Reset reason</th><td id=rst>-</td></tr>"
-        "<tr><th>Chip</th>        <td id=chip>-</td></tr>"
-        "</table>"
+    auto bar = [&](uint16_t fill, uint16_t cap) {
+        int pct = cap ? (int)((uint32_t)fill * 100 / cap) : 0;
+        h += "<span class=bar><span class=fill style='width:";
+        h += String(pct);
+        h += "%'></span></span> ";
+        h += String(fill);
+        h += " / ";
+        h += String(cap);
+        h += " B";
+    };
+    h += F("<h2>Ring buffers</h2><table>");
+    h += "<tr><th>UART → TCP</th><td>"; bar(rxFill, RX_RING_BYTES); h += "</td></tr>";
+    h += "<tr><th>TCP → UART</th><td>"; bar(txFill, TX_RING_BYTES); h += "</td></tr>";
+    h += F("</table>");
 
-        "<p style='color:#555;font-size:11px'>Live • polls /stats.json every 2s • "
-        "<a href='/stats.json' style='color:#888'>JSON</a></p>"
+    // ── Recent log ───────────────────────────────────────────────────────
+    // Snapshot oldest→newest into a <pre>. Drop-in replacement for the
+    // USB-CDC console for environments where it's not reachable.
+    h += F("<h2>Recent log <a href='/log' style='color:#888;font-size:11px;font-weight:normal'>[raw]</a></h2>"
+           "<pre class=log>");
+    if (logCount == 0) {
+        h += F("(empty)");
+    } else {
+        const uint16_t start = (logCount < LOG_LINES) ? 0 : logHead;
+        for (uint16_t i = 0; i < logCount; ++i) {
+            uint16_t idx = (start + i) % LOG_LINES;
+            escAppend(h, logRing[idx]);
+            h += '\n';
+        }
+    }
+    h += F("</pre>"
+           "<p class=hint>Manual refresh — hit F5 or use the [↻ refresh] link. "
+           "Bursts are logged as <code>tcp-&gt; N B: &lt;hex&gt; \"&lt;ascii&gt;\"</code> "
+           "and <code>uart-&gt;</code>.</p>"
+           "</body></html>");
 
-        "<script>"
-        "const $=id=>document.getElementById(id);"
-        "function fb(b){if(b<1024)return b+' B';if(b<1048576)return (b/1024).toFixed(1)+' KB';return (b/1048576).toFixed(2)+' MB'}"
-        "function fu(ms){let s=Math.floor(ms/1000);const h=Math.floor(s/3600);s%=3600;const m=Math.floor(s/60);s%=60;return h+'h '+String(m).padStart(2,'0')+'m '+String(s).padStart(2,'0')+'s'}"
-        "function bar(fill,cap){const p=cap?Math.floor(fill*100/cap):0;return \"<span class=bar><span class=fill style='width:\"+p+\"%'></span></span> \"+fill+' / '+cap+' B'}"
-        "let blink=false;"
-        "async function tick(){"
-        " try{"
-        "  const r=await fetch('/stats.json',{cache:'no-store'});"
-        "  if(!r.ok)throw 0;"
-        "  const d=await r.json();"
-        "  $('wifi').innerHTML=d.wifi_ok?\"<span class=ok>connected</span>\":\"<span class=err>disconnected</span>\";"
-        "  $('ssid').textContent=d.ssid||'-';"
-        "  $('ip').textContent=d.ip||'-';"
-        "  $('mac').textContent=d.mac||'-';"
-        "  $('host').textContent=(d.hostname||'-')+'.local';"
-        "  $('rssi').textContent=d.wifi_ok?(d.rssi+' dBm'):'-';"
-        "  $('reboots').textContent=d.wifi_reboots;"
-        "  $('port').textContent=d.tcp_port;"
-        "  $('client').innerHTML=d.client_up?(\"<span class=ok>\"+d.client_ip+\"</span>\"):\"<span class=warn>none</span>\";"
-        "  $('connects').textContent=d.connects;"
-        "  $('replaced').textContent=d.replaced;"
-        "  $('since').textContent=d.since_last_ms?fu(d.since_last_ms):'-';"
-        "  $('baud').textContent=d.uart_baud+' (8N1)';"
-        "  $('pins').textContent='TX D6 (GPIO'+d.uart_tx+') · RX D7 (GPIO'+d.uart_rx+')';"
-        "  $('rx').textContent=fb(d.bytes_rx);"
-        "  $('tx').textContent=fb(d.bytes_tx);"
-        "  $('rxov').innerHTML=d.rx_overflow+(d.rx_overflow?\" <span class=warn>(byte drops!)</span>\":'');"
-        "  $('txov').innerHTML=d.tx_overflow+(d.tx_overflow?\" <span class=warn>(byte drops!)</span>\":'');"
-        "  $('rxring').innerHTML=bar(d.rx_ring,d.rx_ring_cap);"
-        "  $('txring').innerHTML=bar(d.tx_ring,d.tx_ring_cap);"
-        "  $('up').textContent=fu(d.uptime_ms);"
-        "  $('heap').textContent=fb(d.free_heap);"
-        "  $('rst').textContent=d.reset_reason;"
-        "  $('chip').textContent=d.chip+' rev '+d.chip_rev;"
-        "  blink=!blink;$('live').style.color=blink?'#5f5':'#555';"
-        " }catch(e){$('live').style.color='#f55'}"
-        "}"
-        "tick();setInterval(tick,2000);"
-        "</script>"
-        "</body></html>";
-    httpServer.send_P(200, "text/html; charset=utf-8", PAGE);
+    httpServer.send(200, "text/html; charset=utf-8", h);
+}
+
+// Raw log endpoint — plain text, no markup. Useful for `curl http://xiao/log`.
+static void handleHttpLogRaw() {
+    String out;
+    out.reserve(logCount * 64);
+    if (logCount == 0) out = "(empty)\n";
+    else {
+        const uint16_t start = (logCount < LOG_LINES) ? 0 : logHead;
+        for (uint16_t i = 0; i < logCount; ++i) {
+            uint16_t idx = (start + i) % LOG_LINES;
+            out += logRing[idx];
+            out += '\n';
+        }
+    }
+    httpServer.send(200, "text/plain; charset=utf-8", out);
 }
 
 static void handleHttpStatsJson() {
@@ -331,10 +436,12 @@ void setup() {
 
     // USB-CDC for logs (totally independent from Serial1 which talks to Teensy).
     Serial.begin(115200);
-    Serial.println("\n=== holOS Xiao WiFi bridge ===");
+    logf("=== holOS Xiao WiFi bridge boot ===");
 
     // UART to Teensy.
     Serial1.begin(UART_BAUD, SERIAL_8N1, UART_RX_PIN, UART_TX_PIN);
+    logf("UART Serial1 @ %lu baud, TX=GPIO%d, RX=GPIO%d",
+         (unsigned long)UART_BAUD, UART_TX_PIN, UART_RX_PIN);
 
     // WiFi.
     wifiBegin();
@@ -347,22 +454,25 @@ void setup() {
         delay(10);
     }
     if (WiFi.status() == WL_CONNECTED) {
-        Serial.printf("[xiao] WiFi ok: %s\n", WiFi.localIP().toString().c_str());
+        logf("WiFi ok: SSID=%s IP=%s",
+             WiFi.SSID().c_str(),
+             WiFi.localIP().toString().c_str());
         MDNS.begin(WIFI_HOSTNAME);
         wifiFirstBoot = false;
     } else {
-        Serial.println("[xiao] WiFi still connecting — watchdog will reboot if needed");
+        logf("WiFi still connecting — watchdog will reboot if needed");
     }
 
     tcpServer.begin();
     tcpServer.setNoDelay(true);   // disable Nagle — telemetry frames are tiny
-    Serial.printf("[xiao] TCP listening on :%d\n", TCP_PORT);
+    logf("TCP listening on :%d", TCP_PORT);
 
     // Debug page on port 80 — http://<xiao-ip>/ or http://holos-xiao.local/
     httpServer.on("/",           HTTP_GET, handleHttpRoot);
+    httpServer.on("/log",        HTTP_GET, handleHttpLogRaw);
     httpServer.on("/stats.json", HTTP_GET, handleHttpStatsJson);
     httpServer.begin();
-    Serial.println("[xiao] HTTP debug on :80");
+    logf("HTTP debug on :80");
 }
 
 // ── Loop ─────────────────────────────────────────────────────────────────────
@@ -374,7 +484,7 @@ void loop() {
     if (tcpServer.hasClient()) {
         WiFiClient incoming = tcpServer.available();
         if (tcpClient && tcpClient.connected()) {
-            Serial.println("[xiao] Replacing existing TCP client");
+            logf("Replacing existing TCP client");
             tcpClient.stop();
             statClientReplaced++;
         }
@@ -382,8 +492,8 @@ void loop() {
         tcpClient.setNoDelay(true);
         statClientConnects++;
         statLastClientMs = millis();
-        Serial.printf("[xiao] Client connected: %s\n",
-                      tcpClient.remoteIP().toString().c_str());
+        logf("Client connected: %s",
+             tcpClient.remoteIP().toString().c_str());
         // Drop any stale bytes queued from a previous link — the new peer
         // starts the protocol from scratch (ping/pong handshake).
         rxHead = rxTail = 0;
@@ -391,24 +501,36 @@ void loop() {
     }
 
     // ── UART → ring ───────────────────────────────────────────────────────
-    while (Serial1.available()) {
-        uint8_t b = (uint8_t)Serial1.read();
-        if (!ringPush(rxRing, RX_RING_BYTES, rxHead, rxTail, b)) {
-            // Overflow — drop oldest, push newest. Telemetry recovers; the
-            // protocol's CRC catches any half-frame fallout downstream.
-            rxTail = (uint16_t)((rxTail + 1) % RX_RING_BYTES);
-            ringPush(rxRing, RX_RING_BYTES, rxHead, rxTail, b);
-            statRxOverflows++;
+    {
+        uint8_t  snap[32];
+        int      snapN = 0;
+        uint32_t before = statBytesRx;
+        while (Serial1.available()) {
+            uint8_t b = (uint8_t)Serial1.read();
+            if (snapN < (int)sizeof(snap)) snap[snapN++] = b;
+            if (!ringPush(rxRing, RX_RING_BYTES, rxHead, rxTail, b)) {
+                // Overflow — drop oldest, push newest. Telemetry recovers; the
+                // protocol's CRC catches any half-frame fallout downstream.
+                rxTail = (uint16_t)((rxTail + 1) % RX_RING_BYTES);
+                ringPush(rxRing, RX_RING_BYTES, rxHead, rxTail, b);
+                statRxOverflows++;
+            }
+            statBytesRx++;
         }
-        statBytesRx++;
+        uint32_t got = statBytesRx - before;
+        if (got > 0) logBurst("uart->", snap, snapN, got);
     }
 
     // ── TCP → ring ────────────────────────────────────────────────────────
     if (tcpClient && tcpClient.connected()) {
+        uint8_t  snap[32];
+        int      snapN  = 0;
+        uint32_t before = statBytesTx;
         int avail = tcpClient.available();
         while (avail-- > 0) {
             int v = tcpClient.read();
             if (v < 0) break;
+            if (snapN < (int)sizeof(snap)) snap[snapN++] = (uint8_t)v;
             if (!ringPush(txRing, TX_RING_BYTES, txHead, txTail, (uint8_t)v)) {
                 txTail = (uint16_t)((txTail + 1) % TX_RING_BYTES);
                 ringPush(txRing, TX_RING_BYTES, txHead, txTail, (uint8_t)v);
@@ -416,6 +538,8 @@ void loop() {
             }
             statBytesTx++;
         }
+        uint32_t got = statBytesTx - before;
+        if (got > 0) logBurst("tcp->", snap, snapN, got);
     } else {
         // No client — drain rxRing so UART traffic doesn't pile up indefinitely
         // when the Jetson is disconnected (e.g. during the pre-match boot).
