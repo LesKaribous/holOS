@@ -181,131 +181,144 @@ static uint16_t ringFill(uint16_t head, uint16_t tail, uint16_t cap) {
 }
 
 static void handleHttpRoot() {
-    const bool wifiUp   = (WiFi.status() == WL_CONNECTED);
-    const bool clientUp = (tcpClient && tcpClient.connected());
-    const uint16_t rxFill = ringFill(rxHead, rxTail, RX_RING_BYTES);
-    const uint16_t txFill = ringFill(txHead, txTail, TX_RING_BYTES);
+    // Static skeleton — values are filled in by a tiny JS poller that
+    // hits /stats.json every 2 s. No full-page reloads.
+    static const char PAGE[] PROGMEM =
+        "<!doctype html><html><head><meta charset=utf-8>"
+        "<title>holOS Xiao bridge</title>"
+        "<style>"
+        "body{font-family:ui-monospace,Menlo,monospace;background:#111;color:#eee;margin:24px;max-width:560px}"
+        "h1{font-size:18px;margin:0 0 16px}"
+        "table{width:100%;border-collapse:collapse;margin-bottom:18px}"
+        "th{text-align:left;font-weight:normal;color:#888;padding:4px 8px 4px 0;width:160px;vertical-align:top}"
+        "td{padding:4px 0}"
+        ".ok{color:#5f5}.warn{color:#fa0}.err{color:#f55}"
+        ".bar{display:inline-block;width:200px;height:8px;background:#222;vertical-align:middle;margin-left:8px;border:1px solid #333}"
+        ".fill{display:block;height:100%;background:#5f5}"
+        "h2{font-size:14px;color:#888;margin:16px 0 4px;border-top:1px solid #222;padding-top:12px}"
+        "</style></head><body>"
+        "<h1>holOS — Xiao WiFi bridge <span id=live style='color:#555;font-size:11px;font-weight:normal'>•</span></h1>"
 
-    String h;
-    h.reserve(2048);
-    h += F("<!doctype html><html><head><meta charset=utf-8>"
-           "<meta http-equiv=refresh content=2>"
-           "<title>holOS Xiao bridge</title>"
-           "<style>"
-           "body{font-family:ui-monospace,Menlo,monospace;background:#111;color:#eee;margin:24px;max-width:560px}"
-           "h1{font-size:18px;margin:0 0 16px}"
-           "table{width:100%;border-collapse:collapse;margin-bottom:18px}"
-           "th{text-align:left;font-weight:normal;color:#888;padding:4px 8px 4px 0;width:160px;vertical-align:top}"
-           "td{padding:4px 0}"
-           ".ok{color:#5f5} .warn{color:#fa0} .err{color:#f55}"
-           ".bar{display:inline-block;width:200px;height:8px;background:#222;vertical-align:middle;margin-left:8px;border:1px solid #333}"
-           ".fill{display:block;height:100%;background:#5f5}"
-           "h2{font-size:14px;color:#888;margin:16px 0 4px;border-top:1px solid #222;padding-top:12px}"
-           "</style></head><body>");
-    h += F("<h1>holOS — Xiao WiFi bridge</h1>");
+        "<h2>WiFi</h2><table>"
+        "<tr><th>State</th>   <td id=wifi>-</td></tr>"
+        "<tr><th>SSID</th>    <td id=ssid>-</td></tr>"
+        "<tr><th>IP</th>      <td id=ip>-</td></tr>"
+        "<tr><th>MAC</th>     <td id=mac>-</td></tr>"
+        "<tr><th>Hostname</th><td id=host>-</td></tr>"
+        "<tr><th>RSSI</th>    <td id=rssi>-</td></tr>"
+        "<tr><th>Reboots (WiFi)</th><td id=reboots>-</td></tr>"
+        "</table>"
 
-    h += F("<h2>WiFi</h2><table>");
-    h += "<tr><th>State</th><td>";
-    h += wifiUp ? F("<span class=ok>connected</span>") : F("<span class=err>disconnected</span>");
-    h += "</td></tr>";
-    h += "<tr><th>SSID</th><td>"; h += WiFi.SSID(); h += "</td></tr>";
-    h += "<tr><th>IP</th><td>";   h += WiFi.localIP().toString(); h += "</td></tr>";
-    h += "<tr><th>MAC</th><td>";  h += WiFi.macAddress(); h += "</td></tr>";
-    h += "<tr><th>Hostname</th><td>"; h += WIFI_HOSTNAME; h += ".local</td></tr>";
-    h += "<tr><th>RSSI</th><td>";
-    if (wifiUp) { h += String(WiFi.RSSI()); h += " dBm"; } else { h += "-"; }
-    h += "</td></tr>";
-    h += "<tr><th>Reboots (WiFi)</th><td>"; h += String(statWifiReboots); h += "</td></tr>";
-    h += F("</table>");
+        "<h2>TCP relay</h2><table>"
+        "<tr><th>Port</th>            <td id=port>-</td></tr>"
+        "<tr><th>Client</th>          <td id=client>-</td></tr>"
+        "<tr><th>Total connects</th>  <td id=connects>-</td></tr>"
+        "<tr><th>Replaced</th>        <td id=replaced>-</td></tr>"
+        "<tr><th>Since last connect</th><td id=since>-</td></tr>"
+        "</table>"
 
-    h += F("<h2>TCP relay</h2><table>");
-    h += "<tr><th>Port</th><td>"; h += String(TCP_PORT); h += "</td></tr>";
-    h += "<tr><th>Client</th><td>";
-    if (clientUp) {
-        h += F("<span class=ok>");
-        h += tcpClient.remoteIP().toString();
-        h += F("</span>");
-    } else {
-        h += F("<span class=warn>none</span>");
-    }
-    h += "</td></tr>";
-    h += "<tr><th>Total connects</th><td>"; h += String(statClientConnects); h += "</td></tr>";
-    h += "<tr><th>Replaced</th><td>";       h += String(statClientReplaced); h += "</td></tr>";
-    if (statLastClientMs) {
-        h += "<tr><th>Since last connect</th><td>";
-        h += fmtUptime(millis() - statLastClientMs);
-        h += "</td></tr>";
-    }
-    h += F("</table>");
+        "<h2>UART (Teensy)</h2><table>"
+        "<tr><th>Baud</th>        <td id=baud>-</td></tr>"
+        "<tr><th>Pins</th>        <td id=pins>-</td></tr>"
+        "<tr><th>UART → TCP</th><td id=rx>-</td></tr>"
+        "<tr><th>TCP → UART</th><td id=tx>-</td></tr>"
+        "<tr><th>RX overflows</th><td id=rxov>-</td></tr>"
+        "<tr><th>TX overflows</th><td id=txov>-</td></tr>"
+        "</table>"
 
-    h += F("<h2>UART (Teensy)</h2><table>");
-    h += "<tr><th>Baud</th><td>"; h += String(UART_BAUD); h += " (8N1)</td></tr>";
-    h += "<tr><th>Pins</th><td>TX D6 (GPIO";
-    h += String(UART_TX_PIN);
-    h += ") · RX D7 (GPIO";
-    h += String(UART_RX_PIN);
-    h += ")</td></tr>";
-    h += "<tr><th>UART → TCP</th><td>"; h += fmtBytes(statBytesRx); h += "</td></tr>";
-    h += "<tr><th>TCP → UART</th><td>"; h += fmtBytes(statBytesTx); h += "</td></tr>";
-    h += "<tr><th>RX overflows</th><td>";
-    h += String(statRxOverflows);
-    if (statRxOverflows) h += F(" <span class=warn>(byte drops!)</span>");
-    h += "</td></tr>";
-    h += "<tr><th>TX overflows</th><td>";
-    h += String(statTxOverflows);
-    if (statTxOverflows) h += F(" <span class=warn>(byte drops!)</span>");
-    h += "</td></tr>";
-    h += F("</table>");
+        "<h2>Ring buffers</h2><table>"
+        "<tr><th>UART → TCP</th><td id=rxring>-</td></tr>"
+        "<tr><th>TCP → UART</th><td id=txring>-</td></tr>"
+        "</table>"
 
-    auto bar = [&](uint16_t fill, uint16_t cap) {
-        int pct = cap ? (int)((uint32_t)fill * 100 / cap) : 0;
-        h += "<span class=bar><span class=fill style='width:";
-        h += String(pct);
-        h += "%'></span></span> ";
-        h += String(fill);
-        h += " / ";
-        h += String(cap);
-        h += " B";
-    };
-    h += F("<h2>Ring buffers</h2><table>");
-    h += "<tr><th>UART → TCP</th><td>"; bar(rxFill, RX_RING_BYTES); h += "</td></tr>";
-    h += "<tr><th>TCP → UART</th><td>"; bar(txFill, TX_RING_BYTES); h += "</td></tr>";
-    h += F("</table>");
+        "<h2>System</h2><table>"
+        "<tr><th>Uptime</th>      <td id=up>-</td></tr>"
+        "<tr><th>Free heap</th>   <td id=heap>-</td></tr>"
+        "<tr><th>Reset reason</th><td id=rst>-</td></tr>"
+        "<tr><th>Chip</th>        <td id=chip>-</td></tr>"
+        "</table>"
 
-    h += F("<h2>System</h2><table>");
-    h += "<tr><th>Uptime</th><td>";   h += fmtUptime(millis()); h += "</td></tr>";
-    h += "<tr><th>Free heap</th><td>"; h += fmtBytes(ESP.getFreeHeap()); h += "</td></tr>";
-    h += "<tr><th>Reset reason</th><td>"; h += String((int)esp_reset_reason()); h += "</td></tr>";
-    h += "<tr><th>Chip</th><td>"; h += ESP.getChipModel(); h += " rev "; h += String(ESP.getChipRevision()); h += "</td></tr>";
-    h += F("</table>");
+        "<p style='color:#555;font-size:11px'>Live • polls /stats.json every 2s • "
+        "<a href='/stats.json' style='color:#888'>JSON</a></p>"
 
-    h += F("<p style='color:#555;font-size:11px'>Auto-refresh every 2 s · "
-           "<a href='/stats.json' style='color:#888'>JSON</a></p>"
-           "</body></html>");
-
-    httpServer.send(200, "text/html; charset=utf-8", h);
+        "<script>"
+        "const $=id=>document.getElementById(id);"
+        "function fb(b){if(b<1024)return b+' B';if(b<1048576)return (b/1024).toFixed(1)+' KB';return (b/1048576).toFixed(2)+' MB'}"
+        "function fu(ms){let s=Math.floor(ms/1000);const h=Math.floor(s/3600);s%=3600;const m=Math.floor(s/60);s%=60;return h+'h '+String(m).padStart(2,'0')+'m '+String(s).padStart(2,'0')+'s'}"
+        "function bar(fill,cap){const p=cap?Math.floor(fill*100/cap):0;return \"<span class=bar><span class=fill style='width:\"+p+\"%'></span></span> \"+fill+' / '+cap+' B'}"
+        "let blink=false;"
+        "async function tick(){"
+        " try{"
+        "  const r=await fetch('/stats.json',{cache:'no-store'});"
+        "  if(!r.ok)throw 0;"
+        "  const d=await r.json();"
+        "  $('wifi').innerHTML=d.wifi_ok?\"<span class=ok>connected</span>\":\"<span class=err>disconnected</span>\";"
+        "  $('ssid').textContent=d.ssid||'-';"
+        "  $('ip').textContent=d.ip||'-';"
+        "  $('mac').textContent=d.mac||'-';"
+        "  $('host').textContent=(d.hostname||'-')+'.local';"
+        "  $('rssi').textContent=d.wifi_ok?(d.rssi+' dBm'):'-';"
+        "  $('reboots').textContent=d.wifi_reboots;"
+        "  $('port').textContent=d.tcp_port;"
+        "  $('client').innerHTML=d.client_up?(\"<span class=ok>\"+d.client_ip+\"</span>\"):\"<span class=warn>none</span>\";"
+        "  $('connects').textContent=d.connects;"
+        "  $('replaced').textContent=d.replaced;"
+        "  $('since').textContent=d.since_last_ms?fu(d.since_last_ms):'-';"
+        "  $('baud').textContent=d.uart_baud+' (8N1)';"
+        "  $('pins').textContent='TX D6 (GPIO'+d.uart_tx+') · RX D7 (GPIO'+d.uart_rx+')';"
+        "  $('rx').textContent=fb(d.bytes_rx);"
+        "  $('tx').textContent=fb(d.bytes_tx);"
+        "  $('rxov').innerHTML=d.rx_overflow+(d.rx_overflow?\" <span class=warn>(byte drops!)</span>\":'');"
+        "  $('txov').innerHTML=d.tx_overflow+(d.tx_overflow?\" <span class=warn>(byte drops!)</span>\":'');"
+        "  $('rxring').innerHTML=bar(d.rx_ring,d.rx_ring_cap);"
+        "  $('txring').innerHTML=bar(d.tx_ring,d.tx_ring_cap);"
+        "  $('up').textContent=fu(d.uptime_ms);"
+        "  $('heap').textContent=fb(d.free_heap);"
+        "  $('rst').textContent=d.reset_reason;"
+        "  $('chip').textContent=d.chip+' rev '+d.chip_rev;"
+        "  blink=!blink;$('live').style.color=blink?'#5f5':'#555';"
+        " }catch(e){$('live').style.color='#f55'}"
+        "}"
+        "tick();setInterval(tick,2000);"
+        "</script>"
+        "</body></html>";
+    httpServer.send_P(200, "text/html; charset=utf-8", PAGE);
 }
 
 static void handleHttpStatsJson() {
+    const bool clientUp = (tcpClient && tcpClient.connected());
     String j;
-    j.reserve(512);
+    j.reserve(768);
     j += "{";
-    j += "\"uptime_ms\":";   j += String(millis()); j += ",";
-    j += "\"wifi_ok\":";     j += (WiFi.status() == WL_CONNECTED ? "true" : "false"); j += ",";
-    j += "\"rssi\":";        j += String(WiFi.RSSI()); j += ",";
-    j += "\"ip\":\"";        j += WiFi.localIP().toString(); j += "\",";
-    j += "\"client_up\":";   j += (tcpClient && tcpClient.connected() ? "true" : "false"); j += ",";
-    j += "\"client_ip\":\""; j += (tcpClient && tcpClient.connected() ? tcpClient.remoteIP().toString() : String("")); j += "\",";
-    j += "\"bytes_rx\":";    j += String(statBytesRx); j += ",";
-    j += "\"bytes_tx\":";    j += String(statBytesTx); j += ",";
-    j += "\"rx_overflow\":"; j += String(statRxOverflows); j += ",";
-    j += "\"tx_overflow\":"; j += String(statTxOverflows); j += ",";
-    j += "\"rx_ring\":";     j += String(ringFill(rxHead, rxTail, RX_RING_BYTES)); j += ",";
-    j += "\"tx_ring\":";     j += String(ringFill(txHead, txTail, TX_RING_BYTES)); j += ",";
-    j += "\"connects\":";    j += String(statClientConnects); j += ",";
-    j += "\"replaced\":";    j += String(statClientReplaced); j += ",";
-    j += "\"wifi_reboots\":";j += String(statWifiReboots); j += ",";
-    j += "\"free_heap\":";   j += String(ESP.getFreeHeap());
+    j += "\"uptime_ms\":";    j += String(millis()); j += ",";
+    j += "\"wifi_ok\":";      j += (WiFi.status() == WL_CONNECTED ? "true" : "false"); j += ",";
+    j += "\"ssid\":\"";       j += WiFi.SSID(); j += "\",";
+    j += "\"ip\":\"";         j += WiFi.localIP().toString(); j += "\",";
+    j += "\"mac\":\"";        j += WiFi.macAddress(); j += "\",";
+    j += "\"hostname\":\"";   j += WIFI_HOSTNAME; j += "\",";
+    j += "\"rssi\":";         j += String(WiFi.RSSI()); j += ",";
+    j += "\"wifi_reboots\":"; j += String(statWifiReboots); j += ",";
+    j += "\"tcp_port\":";     j += String(TCP_PORT); j += ",";
+    j += "\"client_up\":";    j += (clientUp ? "true" : "false"); j += ",";
+    j += "\"client_ip\":\"";  j += (clientUp ? tcpClient.remoteIP().toString() : String("")); j += "\",";
+    j += "\"connects\":";     j += String(statClientConnects); j += ",";
+    j += "\"replaced\":";     j += String(statClientReplaced); j += ",";
+    j += "\"since_last_ms\":";j += String(statLastClientMs ? (millis() - statLastClientMs) : 0UL); j += ",";
+    j += "\"uart_baud\":";    j += String(UART_BAUD); j += ",";
+    j += "\"uart_tx\":";      j += String(UART_TX_PIN); j += ",";
+    j += "\"uart_rx\":";      j += String(UART_RX_PIN); j += ",";
+    j += "\"bytes_rx\":";     j += String(statBytesRx); j += ",";
+    j += "\"bytes_tx\":";     j += String(statBytesTx); j += ",";
+    j += "\"rx_overflow\":";  j += String(statRxOverflows); j += ",";
+    j += "\"tx_overflow\":";  j += String(statTxOverflows); j += ",";
+    j += "\"rx_ring\":";      j += String(ringFill(rxHead, rxTail, RX_RING_BYTES)); j += ",";
+    j += "\"tx_ring\":";      j += String(ringFill(txHead, txTail, TX_RING_BYTES)); j += ",";
+    j += "\"rx_ring_cap\":";  j += String(RX_RING_BYTES); j += ",";
+    j += "\"tx_ring_cap\":";  j += String(TX_RING_BYTES); j += ",";
+    j += "\"free_heap\":";    j += String(ESP.getFreeHeap()); j += ",";
+    j += "\"reset_reason\":"; j += String((int)esp_reset_reason()); j += ",";
+    j += "\"chip\":\"";       j += ESP.getChipModel(); j += "\",";
+    j += "\"chip_rev\":";     j += String(ESP.getChipRevision());
     j += "}";
     httpServer.send(200, "application/json", j);
 }
@@ -449,13 +462,8 @@ void loop() {
     httpServer.handleClient();
 
     // ── LED state ─────────────────────────────────────────────────────────
-    LedState s;
-    if (WiFi.status() != WL_CONNECTED) {
-        s = LED_ERROR;
-    } else if (!tcpClient || !tcpClient.connected()) {
-        s = LED_CONNECTING;
-    } else {
-        s = LED_CONNECTED;
-    }
-    ledTick(s);
+    // WiFi down → error blink; WiFi up → heartbeat. The TCP-client state is
+    // visible on the /debug page; tying the LED to it would leave the Xiao
+    // stuck on "connecting" whenever holOS happens to not be running.
+    ledTick(WiFi.status() == WL_CONNECTED ? LED_CONNECTED : LED_ERROR);
 }
