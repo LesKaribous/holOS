@@ -231,6 +231,21 @@ function cgSetConnectionMode(mode, hwType, hwPort) {
   // Right-side node label flips: "Simulator" in sim mode, "Robot" otherwise.
   if (lbl) lbl.textContent = (mode === 'sim') ? 'Simulator' : 'Robot';
 
+  // Xiao node — only "lit" when the active transport is the wifi bridge.
+  // For xbee/usb the Xiao isn't in the chain at all, so we show it idle.
+  const xDot = document.getElementById('cg-dot-xiao');
+  const xSub = document.getElementById('cg-sub-xiao');
+  const xLnk = document.getElementById('cg-lnk-xiao');
+  if (mode === 'wifi') {
+    if (xDot) xDot.className = 'cg-dot connected';
+    if (xSub) { xSub.className = 'cg-sub hw'; xSub.textContent = 'TCP'; }
+    if (xLnk) xLnk.className = 'cg-link hw';
+  } else {
+    if (xDot) xDot.className = 'cg-dot';
+    if (xSub) { xSub.className = 'cg-sub'; xSub.textContent = '—'; }
+    if (xLnk) xLnk.className = 'cg-link';
+  }
+
   if (mode === 'usb' || mode === 'xbee' || mode === 'wifi') {
     const label   = mode === 'xbee' ? 'XBee'
                   : mode === 'wifi' ? 'WiFi (Xiao)'
@@ -396,20 +411,47 @@ function togglePanel(id) {
 // FrameSource state on the "Cam" pill in the topbar + the click-through
 // details panel. URL kept for back-compat — backend now serves the
 // FrameSource's status() dict (no PID/port, has frame_age_s + has_frame).
-function _camDotClass(state) {
-  switch (state) {
-    case 'running':   return 'cg-dot connected';
-    case 'failed':    return 'cg-dot disconnected';
-    case 'idle':      return 'cg-dot';
-    default:          return 'cg-dot';
-  }
+// Cam dot semantics (per user request, May 2026):
+//   red    — frame source failed
+//   gray   — frame source idle
+//   orange — source is delivering frames but vision isn't fully calibrated
+//            yet (no homography lock OR no theta sync)
+//   green  — source ok + homography locked + heading offset synced (i.e.
+//            the full vision-based localisation pipeline is usable)
+// _vd_calibState is filled in by pollVisionCalibration() below.
+let _vd_calibState = { homography_locked: false, heading_synced: false };
+
+function _camDotClass(s) {
+  if (s.state === 'failed')                 return 'cg-dot disconnected';
+  if (s.state !== 'running' || !s.has_frame) return 'cg-dot';
+  const c = _vd_calibState;
+  if (c.homography_locked && c.heading_synced) return 'cg-dot connected';
+  return 'cg-dot partial';
 }
 function _camSubLabel(s) {
   if (s.state === 'failed') return 'fail';
   if (s.state === 'idle')   return 'idle';
   if (!s.has_frame)         return 'wait';
-  return s.playback === 'pause' ? 'paused' : 'live';
+  if (s.playback === 'pause') return 'paused';
+  const c = _vd_calibState;
+  if (!c.homography_locked) return 'no homog';
+  if (!c.heading_synced)    return 'no sync';
+  return 'live';
 }
+async function pollVisionCalibration() {
+  try {
+    const r = await fetch('/api/vision/calibration', {cache: 'no-store'});
+    if (!r.ok) return;
+    const c = await r.json();
+    _vd_calibState = {
+      homography_locked: !!(c.rectify && c.rectify.capture_phase === 'locked'),
+      heading_synced:    c.heading_offset_rad !== null
+                         && c.heading_offset_rad !== undefined,
+    };
+  } catch (e) { /* network blip — try again next tick */ }
+}
+setInterval(pollVisionCalibration, 2000);
+
 async function pollVisionCamera() {
   try {
     const r = await fetch('/api/vision_camera/status', {cache: 'no-store'});
@@ -417,7 +459,7 @@ async function pollVisionCamera() {
     const s = await r.json();
     const dot = document.getElementById('cg-dot-cam');
     const sub = document.getElementById('cg-sub-cam');
-    if (dot) dot.className = _camDotClass(s.state);
+    if (dot) dot.className = _camDotClass(s);
     if (sub) sub.textContent = _camSubLabel(s);
     const node = document.getElementById('cg-node-cam');
     if (node) {

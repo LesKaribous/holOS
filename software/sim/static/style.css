@@ -140,6 +140,9 @@ html, body { height: 100%; overflow: hidden; margin: 0;
 .cg-dot.disconnected { background: #ef4444; }
 .cg-dot.hw-active    { background: #fbbf24; }
 .cg-dot.sim-active   { background: #7ec8f0; }
+/* Partial: dependency is healthy but a downstream step hasn't completed
+ * (e.g. Cam: frames are arriving but homography isn't locked yet). */
+.cg-dot.partial      { background: #fb923c; }
 @keyframes cg-blink { 0%,100%{opacity:1} 50%{opacity:.35} }
 
 /* Labels */

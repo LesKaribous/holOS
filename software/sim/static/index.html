@@ -54,7 +54,21 @@
       <span class="cg-sub" id="cg-sub-server">local</span>
     </button>
 
-    <!-- Link holOS → Robot -->
+    <!-- Link holOS → Xiao -->
+    <div class="cg-link" id="cg-lnk-xiao"></div>
+
+    <!-- Node: ESP32-S3 Xiao WiFi bridge. Only relevant when BRIDGE_KIND=wifi.
+         Click → opens the same robot connection panel (it's where the
+         bridge selector lives). Dot tracks whether the wifi bridge is the
+         active transport AND is currently connected. -->
+    <button class="cg-node cg-node-btn" id="cg-node-xiao"
+            onclick="togglePanel('robot-panel')" title="ESP32-S3 Xiao WiFi bridge — TCP relay between Teensy and Jetson">
+      <span class="cg-dot" id="cg-dot-xiao"></span>
+      <span class="cg-lbl">Xiao</span>
+      <span class="cg-sub" id="cg-sub-xiao">—</span>
+    </button>
+
+    <!-- Link Xiao → Robot -->
     <div class="cg-link" id="cg-lnk-robot"></div>
 
     <!-- Node: Robot / Simulator (clickable → connect / sim-control panel)
