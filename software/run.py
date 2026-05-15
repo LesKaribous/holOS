@@ -4141,7 +4141,7 @@ def _start_hw_team_poller():
         while True:
             time.sleep(3.0)
             try:
-                if _connection_mode not in ('usb', 'xbee'):
+                if _connection_mode not in _HW_MODES:
                     continue   # sim / idle: topbar UI drives team
                 # Match input freeze on the robot side: once the strategy is
                 # running, the IHM color switch is locked and team_get would
