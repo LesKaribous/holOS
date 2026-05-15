@@ -58,6 +58,19 @@ JETSON_TIMEOUT_S      = 2.0   # s before Teensy considers Jetson lost
 CMD_TIMEOUT_MS        = 30000 # ms — max time to wait for a motion command to complete
 TELEMETRY_RATE_HZ     = 5    # Hz — telemetry push rate from Jetson to Teensy
 
+# ── Bridge selection ─────────────────────────────────────────────────────────
+# Default bridge used when --bridge is not passed and the UI doesn't override.
+# Values: 'xbee'  → XBeeTransport on a USB-XBee dongle (serial)
+#         'wifi'  → WiFiTransport over the ESP32-S3 Xiao TCP relay
+# The UI's connection panel can flip this at runtime per session.
+BRIDGE_KIND           = 'wifi'
+
+# WiFi bridge (ESP Xiao TCP relay — firmware in firmware/esp_xiao/).
+# Hostname resolves via the home router's DHCP/mDNS; falls back to a static
+# IP if you've reserved one. Keep this in sync with firmware/esp_xiao/src/config.h.
+XIAO_HOST             = 'holos-xiao.local'
+XIAO_PORT             = 9000
+
 # ── Enums ─────────────────────────────────────────────────────────────────────
 
 class Team(Enum):

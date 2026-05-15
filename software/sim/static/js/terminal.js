@@ -84,12 +84,58 @@ function serialRefreshPorts() {
     .catch(err => console.error('[serial] port list fetch failed:', err));
 }
 
+// Persisted default fetched from the server (shared.config.BRIDGE_KIND).
+// `null` until /api/bridge/default resolves, then 'xbee' or 'wifi'.
+let _bridgeDefault = null;
+
+function _bridgeApplyDefault(kind) {
+  if (!kind) return;
+  ['bridge-kind-sel','t-bridge-kind-sel'].forEach(id => {
+    const sel = document.getElementById(id); if (sel) sel.value = kind;
+  });
+  // Re-run the help-blurb visibility logic.
+  if (typeof onBridgeKindChange === 'function') onBridgeKindChange();
+}
+
+// Fired once at startup. Quietly fails on dev builds without the endpoint —
+// the UI keeps whatever default is in the HTML.
+function bridgeInitDefault() {
+  fetch('/api/bridge/default')
+    .then(r => r.ok ? r.json() : null)
+    .then(d => { if (d && d.kind) { _bridgeDefault = d.kind; _bridgeApplyDefault(d.kind); } })
+    .catch(() => {});
+}
+
+document.addEventListener('DOMContentLoaded', bridgeInitDefault);
+
+// Keep both panels' bridge-kind selectors in sync, fetch its current value.
+function _bridgeKind() {
+  const a = document.getElementById('bridge-kind-sel');
+  const b = document.getElementById('t-bridge-kind-sel');
+  return (a && a.value) || (b && b.value) || _bridgeDefault || 'xbee';
+}
+
+function onBridgeKindChange() {
+  const k = _bridgeKind();
+  // Mirror the change to whichever selector wasn't the source.
+  ['bridge-kind-sel','t-bridge-kind-sel'].forEach(id => {
+    const sel = document.getElementById(id); if (sel) sel.value = k;
+  });
+  // Show the matching help blurb (sidebar only — terminal panel is compact).
+  const helpX = document.getElementById('bridge-help-xbee');
+  const helpW = document.getElementById('bridge-help-wifi');
+  if (helpX) helpX.style.display = (k === 'xbee') ? '' : 'none';
+  if (helpW) helpW.style.display = (k === 'wifi') ? '' : 'none';
+}
+
 function serialConnect() {
+  const bridge = _bridgeKind();
   const port = (document.getElementById('serial-port-sel') || document.getElementById('t-port-sel'))?.value;
-  if (!port) { showToast('Select a serial port first'); return; }
+  // For WiFi, an empty port is fine — the server falls back to XIAO_HOST/PORT.
+  if (!port && bridge !== 'wifi') { showToast('Select a serial port first'); return; }
   cgSetRobotConnecting();
   setSerialStatus('Connecting…', '');
-  socket.emit('serial_connect', {port});
+  socket.emit('serial_connect', {port, bridge});
 }
 
 function serialDisconnect() {

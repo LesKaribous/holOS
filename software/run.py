@@ -335,14 +335,16 @@ _hw_serial_port     = None   # Serial port in use (e.g. 'COM6' or '/dev/ttyACM0'
 _hw_serial_mode     = 'wired' # 'wired' | 'xbee'
 
 # ── Auto-reconnect ─────────────────────────────────────────────────────────────
-# When the XBee link drops (heartbeat timeout, often caused by RF noise / range),
-# a background loop keeps retrying _do_connect on RECONNECT_PORT until the link
-# is back up or the user explicitly disconnects via the UI.
+# When the link drops (XBee RF blip, WiFi reconnect, Xiao reboot, …), a
+# background loop keeps retrying _do_connect with the same bridge/target until
+# it comes back or the user explicitly disconnects via the UI.
 RECONNECT_PORT       = '/dev/ttyUSB0'
 RECONNECT_INTERVAL_S = 3.0
 _reconnect_lock      = threading.Lock()
 _reconnect_thread    = None
 _user_disconnected   = False  # True if user explicitly disconnected via UI
+_last_bridge_kind    = None   # 'xbee' | 'wifi' — set by _do_connect for reuse
+_last_connect_port   = None   # last 'port' arg to _do_connect — reused on reconnect
 
 # ── Match state (server-authoritative, broadcast to all clients) ──────────────
 _match_running = False
@@ -3753,6 +3755,20 @@ def _vision_correction_loop():
 
 # ── Serial ports API ───────────────────────────────────────────────────────────
 
+@app.route('/api/bridge/default')
+def api_bridge_default():
+    """Expose the persistent bridge default so the UI can pre-select it.
+
+    Returns: {kind: 'xbee'|'wifi', host: str, port: int}
+    """
+    from shared.config import BRIDGE_KIND, XIAO_HOST, XIAO_PORT
+    return jsonify({
+        'kind': BRIDGE_KIND,
+        'host': XIAO_HOST,
+        'port': XIAO_PORT,
+    })
+
+
 @app.route('/api/serial/ports')
 def api_serial_ports():
     import glob as _glob
@@ -4256,19 +4272,28 @@ def _auto_reconnect_loop():
             continue
 
         attempt += 1
+        # Re-use the last successful bridge/target if we have one; otherwise
+        # fall back to the historical XBee path.
+        rc_bridge = _last_bridge_kind or 'xbee'
+        rc_port   = _last_connect_port if _last_connect_port is not None else RECONNECT_PORT
+        if rc_bridge == 'wifi':
+            from shared.config import XIAO_HOST as _XH, XIAO_PORT as _XP
+            rc_label = rc_port or f'{_XH}:{_XP}'
+        else:
+            rc_label = rc_port or RECONNECT_PORT
         socketio.emit('serial_status', {
             'ok': False,
-            'msg': f'Reconnexion auto sur {RECONNECT_PORT} (essai {attempt})…',
+            'msg': f'Reconnexion auto sur {rc_label} (essai {attempt})…',
             'connecting': True,
         })
         try:
-            brain.log(f'[HW] Auto-reconnect attempt {attempt} on {RECONNECT_PORT}')
+            brain.log(f'[HW] Auto-reconnect attempt {attempt} on {rc_label} ({rc_bridge})')
         except Exception:
             pass
 
         _hw_connecting = True
         try:
-            _do_connect(RECONNECT_PORT)
+            _do_connect(rc_port, bridge=rc_bridge)
         except Exception as e:
             print(f"[reconnect] _do_connect raised: {e}")
         finally:
@@ -4301,17 +4326,49 @@ def _auto_reconnect_loop():
 
 # ── Serial connection logic (shared between SocketIO handler and --connect) ──
 
-def _do_connect(port: str):
-    """Connect to the robot over serial. Called from a background thread.
-    Transport type (USB vs XBee) is auto-detected from the firmware pong response.
-    Updates globals and emits SocketIO status events."""
+def _do_connect(port: str, bridge: str = None):
+    """Connect to the robot. Called from a background thread.
+
+    `bridge` selects the transport:
+      • 'xbee'  → XBeeTransport over pyserial (the historical XBee/USB path)
+      • 'wifi'  → WiFiTransport over a TCP socket to the ESP32-S3 Xiao relay
+                  (firmware in firmware/esp_xiao/). `port` becomes 'host:port'
+                  or '' to use XIAO_HOST/XIAO_PORT from shared.config.
+
+    `bridge=None` falls back to shared.config.BRIDGE_KIND so the auto-connect
+    path keeps working when the UI hasn't picked anything explicitly.
+
+    Updates globals and emits SocketIO status events.
+    """
     global _hw_transport, _hw_brain, _hw_connecting, _hw_serial_port, _hw_serial_mode
-    global _hw_tel_data, _connection_mode
+    global _hw_tel_data, _connection_mode, _last_bridge_kind, _last_connect_port
     t = None
     try:
-        from shared.config import BRIDGE_BAUDRATE
-        from transport.xbee import XBeeTransport
-        t = XBeeTransport(port=port, baudrate=BRIDGE_BAUDRATE)
+        from shared.config import (BRIDGE_BAUDRATE, BRIDGE_KIND,
+                                   XIAO_HOST, XIAO_PORT)
+        kind = (bridge or BRIDGE_KIND).strip().lower()
+        # Remember the chosen target so _auto_reconnect_loop can re-use it
+        # after an unexpected drop.
+        _last_bridge_kind  = kind
+        _last_connect_port = port
+        if kind == 'wifi':
+            # 'host:port' or empty → use defaults from shared.config.
+            host, tcp_port = XIAO_HOST, XIAO_PORT
+            if port:
+                if ':' in port:
+                    h, _, p = port.partition(':')
+                    if h: host = h
+                    try: tcp_port = int(p)
+                    except ValueError: pass
+                else:
+                    host = port
+            from transport.wifi import WiFiTransport
+            t = WiFiTransport(host=host, port=tcp_port)
+            # Display label uses host:port so the UI doesn't say "(wifi)".
+            port = f"{host}:{tcp_port}"
+        else:
+            from transport.xbee import XBeeTransport
+            t = XBeeTransport(port=port, baudrate=BRIDGE_BAUDRATE)
 
         # Subscribe raw UART feed BEFORE connect() so handshake bytes are visible.
         def _on_raw_rx(line):
@@ -4323,13 +4380,21 @@ def _do_connect(port: str):
         t.subscribe_telemetry('_raw',    _on_raw_rx)
         t.subscribe_telemetry('_raw_tx', _on_raw_tx)
         t.subscribe_telemetry('_debug',  _on_debug)
-        socketio.emit('uart_raw', {'dir': 'sys', 'line': f'[connect] {port} @ {BRIDGE_BAUDRATE} bps'})
+        if kind == 'wifi':
+            socketio.emit('uart_raw', {'dir': 'sys', 'line': f'[connect] {port} (WiFi via Xiao)'})
+        else:
+            socketio.emit('uart_raw', {'dir': 'sys', 'line': f'[connect] {port} @ {BRIDGE_BAUDRATE} bps'})
 
         ok = t.connect()
         if ok:
             global _hw_test_runner
-            bridge_type     = t.bridge_type or 'xbee'
-            transport_label = f'{"USB Wired" if bridge_type == "usb" else "XBee"} ({port})'
+            bridge_type     = t.bridge_type or kind or 'xbee'
+            if bridge_type == 'wifi':
+                transport_label = f'WiFi via Xiao ({port})'
+            elif bridge_type == 'usb':
+                transport_label = f'USB Wired ({port})'
+            else:
+                transport_label = f'XBee ({port})'
             _hw_transport   = t
             _hw_serial_port = port
             # Reset live telemetry on new connection
@@ -4803,9 +4868,16 @@ def _do_connect(port: str):
                 })
             t.subscribe_telemetry('_console', _on_console)
 
-            # Transport type is auto-detected from pong response ('usb' or 'xbee')
-            _hw_serial_mode  = 'wired' if t.bridge_type == 'usb' else 'xbee'
-            _connection_mode = t.bridge_type if t.bridge_type in ('usb', 'xbee') else 'xbee'
+            # Transport type:
+            #   • WiFi: forced 'wifi' regardless of pong (Teensy answers 'xbee'
+            #     since it's still its Serial2 UART).
+            #   • Else: auto-detected from pong response ('usb' or 'xbee').
+            if kind == 'wifi':
+                _hw_serial_mode  = 'wifi'
+                _connection_mode = 'wifi'
+            else:
+                _hw_serial_mode  = 'wired' if t.bridge_type == 'usb' else 'xbee'
+                _connection_mode = t.bridge_type if t.bridge_type in ('usb', 'xbee') else 'xbee'
 
             # ── Unexpected disconnect handler ─────────────────────────────
             # Do NOT clear _hw_transport — the transport object may reconnect
@@ -4910,9 +4982,11 @@ def on_serial_connect(data):
     global _hw_transport, _hw_brain, _hw_connecting, _user_disconnected
     # Manual connect re-enables the auto-reconnect path for any future drop
     _user_disconnected = False
-    port = (data.get('port') or '').strip()
+    port   = (data.get('port')   or '').strip()
+    bridge = (data.get('bridge') or '').strip().lower() or None
 
-    if not port:
+    # WiFi bridge: empty port is fine, _do_connect falls back to XIAO_HOST/PORT.
+    if not port and bridge != 'wifi':
         emit('serial_status', {'ok': False, 'msg': 'No port selected'})
         return
 
@@ -4930,9 +5004,10 @@ def on_serial_connect(data):
         _hw_brain     = None
 
     _hw_connecting = True
-    emit('serial_status', {'ok': False, 'msg': f'Connecting to {port}…', 'connecting': True})
+    label = port if port else f'{bridge or "xbee"} default'
+    emit('serial_status', {'ok': False, 'msg': f'Connecting to {label}…', 'connecting': True})
 
-    threading.Thread(target=_do_connect, args=(port,),
+    threading.Thread(target=_do_connect, args=(port, bridge),
                      daemon=True, name='serial-connect').start()
 
 
@@ -5484,25 +5559,38 @@ def main():
                         help='Auto-start match strategy after connecting')
     parser.add_argument('--no-auto-connect', action='store_true',
                         help='On Jetson, skip automatic hardware connection')
+    parser.add_argument('--bridge', choices=('xbee', 'wifi'), default=None,
+                        help='Transport bridge: xbee (USB-XBee dongle) or '
+                             'wifi (TCP via ESP Xiao). Default: shared.config.BRIDGE_KIND.')
     args = parser.parse_args()
 
     # ── Platform-aware defaults ──────────────────────────────────────────────
-    # On Jetson (Linux): auto-connect to /dev/ttyUSB0 unless --sim or --no-auto-connect
+    # Bridge: explicit --bridge wins, else fall back to shared.config.BRIDGE_KIND.
+    from shared.config import BRIDGE_KIND as _CFG_BRIDGE
+    connect_bridge = args.bridge or _CFG_BRIDGE
+
+    # On Jetson (Linux): auto-connect unless --sim or --no-auto-connect.
+    # In WiFi mode we don't need a serial port — the empty string makes
+    # _do_connect fall back to XIAO_HOST/PORT from shared.config.
     connect_port = None
     connect_baud = args.baud
 
     if args.connect == '__auto__':
-        # --connect with no argument: use platform default
-        connect_port = _DEFAULT_JETSON_PORT if IS_JETSON else None
+        # --connect with no argument: use platform default (irrelevant for WiFi)
+        connect_port = '' if connect_bridge == 'wifi' \
+                       else (_DEFAULT_JETSON_PORT if IS_JETSON else None)
         if connect_port is None:
             print("  [holOS] --connect with no port on Windows — use --connect COMx")
     elif args.connect:
-        # --connect COMx  or  --connect /dev/ttyUSB0
+        # --connect COMx  or  --connect /dev/ttyUSB0  or  --connect 192.168.1.42:9000
         connect_port = args.connect
     elif IS_JETSON and not args.sim and not args.no_auto_connect:
         # Jetson with no flags: auto-connect by default
-        connect_port = _DEFAULT_JETSON_PORT
-        print(f"  [holOS] Jetson detected — auto-connecting to {connect_port}")
+        connect_port = '' if connect_bridge == 'wifi' else _DEFAULT_JETSON_PORT
+        if connect_bridge == 'wifi':
+            print(f"  [holOS] Jetson detected — auto-connecting via WiFi (Xiao)")
+        else:
+            print(f"  [holOS] Jetson detected — auto-connecting to {connect_port}")
 
     # Default baud: use BRIDGE_BAUDRATE from config if not specified
     if connect_baud == 0:
@@ -5581,14 +5669,20 @@ def main():
     socketio.start_background_task(_vision_correction_loop)
 
     # ── Auto-connect to hardware ─────────────────────────────────────────────
-    if connect_port:
+    # WiFi mode auto-connects even when connect_port == '' (host comes from config).
+    if connect_port is not None and (connect_port or connect_bridge == 'wifi'):
         def _auto_connect():
             global _hw_connecting
             time.sleep(1.0)  # Let Flask/SocketIO initialize
             from shared.config import BRIDGE_BAUDRATE as _AB
+            from shared.config import XIAO_HOST as _XH, XIAO_PORT as _XP
             _hw_connecting = True
-            print(f"  [holOS] Auto-connecting to {connect_port} @ {_AB} bps…")
-            _do_connect(connect_port)
+            if connect_bridge == 'wifi':
+                tgt = connect_port or f'{_XH}:{_XP}'
+                print(f"  [holOS] Auto-connecting via WiFi (Xiao) → {tgt}…")
+            else:
+                print(f"  [holOS] Auto-connecting to {connect_port} @ {_AB} bps…")
+            _do_connect(connect_port, bridge=connect_bridge)
             # Auto-start match if requested and connected
             if args.auto_start and _hw_transport is not None and _hw_transport.is_connected:
                 time.sleep(0.5)
@@ -5602,7 +5696,16 @@ def main():
         socketio.start_background_task(_auto_connect)
 
     plat_tag = 'Jetson' if IS_JETSON else 'PC'
-    mode = 'sim' if args.sim else ('→ ' + connect_port if connect_port else 'idle')
+    if args.sim:
+        mode = 'sim'
+    elif connect_port is not None and (connect_port or connect_bridge == 'wifi'):
+        if connect_bridge == 'wifi':
+            from shared.config import XIAO_HOST as _XH, XIAO_PORT as _XP
+            mode = '→ wifi ' + (connect_port or f'{_XH}:{_XP}')
+        else:
+            mode = '→ ' + connect_port
+    else:
+        mode = 'idle'
     print(f"\n  holOS ({plat_tag})")
     print("  ┌────────────────────────────────┐")
     print(f"  │  http://localhost:{args.port:<14}│")

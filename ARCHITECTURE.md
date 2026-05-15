@@ -2,7 +2,8 @@
 
 ## Vue d'ensemble
 
-Le robot est piloté par deux cerveaux qui collaborent via XBee ou USB-CDC :
+Le robot est piloté par deux cerveaux qui collaborent via WiFi (ESP Xiao),
+XBee ou USB-CDC :
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
@@ -10,15 +11,25 @@ Le robot est piloté par deux cerveaux qui collaborent via XBee ou USB-CDC :
 │                                                                 │
 │  strategy/match.py   →  MotionService, SafetyService, …        │
 │  Brain (brain.py)        (services/ — API identique sim/réel)  │
-│  Transport abstrait  →  XBeeTransport (XBee radio)             │
+│  Transport abstrait  →  WiFiTransport (TCP via ESP Xiao)       │
+│                          XBeeTransport (XBee radio)             │
 │                          WiredTransport (USB-CDC direct)        │
 │                          VirtualTransport (sim Windows)         │
 │  run.py              →  Point d'entrée unifié (PC + Jetson)    │
-│                          Auto-détecte la plateforme             │
+│                          Sélection bridge: shared.config        │
+│                          BRIDGE_KIND ou --bridge {xbee,wifi}    │
 └─────────────────────────────┬───────────────────────────────────┘
-                              │  XBee 868 MHz ou USB-CDC
-                              │  57600 baud (configurable)
-                              │  protocole CRC8-SMBUS
+                              │  WiFi (TCP socket) OU
+                              │  XBee 868 MHz OU USB-CDC
+                              │  57600 baud (UART), CRC8-SMBUS
+                              │
+                              ▼
+                   ┌──────────────────────┐
+                   │  ESP32-S3 Xiao       │  (firmware/esp_xiao/)
+                   │  TCP↔UART transparent│  Bridge WiFi optionnel
+                   │  port 9000           │  remplace le XBee
+                   └──────────┬───────────┘
+                              │  UART D6/D7 @ 57600 (Teensy Serial2)
                               │
 ┌─────────────────────────────▼───────────────────────────────────┐
 │                      TEENSY 4.1  (firmware/teensy41/src/)        │

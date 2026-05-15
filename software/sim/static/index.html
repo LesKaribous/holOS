@@ -253,7 +253,11 @@
   <div id="robot-panel-hw" class="conn-panel-section">
     <div class="conn-panel-title">Robot — Teensy 4.1</div>
     <div class="conn-panel-row" style="gap:6px;flex-wrap:wrap">
-      <select id="serial-port-sel" class="input-sm" style="flex:1;min-width:160px">
+      <select id="bridge-kind-sel" class="input-sm" style="min-width:90px" onchange="onBridgeKindChange()">
+        <option value="wifi">WiFi (Xiao)</option>
+        <option value="xbee">XBee / USB</option>
+      </select>
+      <select id="serial-port-sel" class="input-sm" style="flex:1;min-width:140px">
         <option value="">— port —</option>
       </select>
       <button class="btn-tiny" onclick="serialRefreshPorts()" title="Refresh ports">↺</button>
@@ -263,8 +267,12 @@
       <button class="btn-tiny red"   onclick="serialDisconnect()">Disconnect</button>
       <span id="serial-status-val" style="font-size:11px;color:var(--text-dim)">not connected</span>
     </div>
-    <div class="conn-panel-row" style="font-size:10px;color:var(--text-dim);line-height:1.4">
+    <div id="bridge-help-xbee" class="conn-panel-row" style="font-size:10px;color:var(--text-dim);line-height:1.4;display:none">
       USB or XBee auto-detected from firmware pong response.
+    </div>
+    <div id="bridge-help-wifi" class="conn-panel-row" style="font-size:10px;color:var(--text-dim);line-height:1.4">
+      TCP via ESP32-S3 Xiao. Leave port blank to use the default host
+      from <code>shared.config.XIAO_HOST</code>, or type <code>host:port</code>.
     </div>
   </div>
 </div>
@@ -1066,8 +1074,12 @@
     <div id="view-terminal" class="view terminal-view">
 
       <div id="term-conn-bar">
-        <span class="mode-label">Serial port</span>
-        <select id="t-port-sel" class="input-sm" style="flex:1;max-width:220px">
+        <span class="mode-label">Bridge</span>
+        <select id="t-bridge-kind-sel" class="input-sm" style="max-width:120px" onchange="onBridgeKindChange()">
+          <option value="wifi">WiFi (Xiao)</option>
+          <option value="xbee">XBee / USB</option>
+        </select>
+        <select id="t-port-sel" class="input-sm" style="flex:1;max-width:200px">
           <option value="">— none —</option>
         </select>
         <button class="btn-tiny" onclick="serialRefreshPorts()">↺</button>
