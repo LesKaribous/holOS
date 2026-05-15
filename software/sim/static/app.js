@@ -189,7 +189,7 @@ function cgSetConnectionMode(mode, hwType, hwPort) {
   _currentConnectionMode = mode;
   // Team selection is only legal in sim mode — on real hardware the team
   // comes from a physical switch. Disable the topbar Y/B buttons in HW.
-  const isHw = (mode === 'usb' || mode === 'xbee');
+  const isHw = (mode === 'usb' || mode === 'xbee' || mode === 'wifi');
   const yBtn = document.getElementById('btn-yellow');
   const bBtn = document.getElementById('btn-blue');
   const teamWrap = document.querySelector('.team-toggle');
@@ -221,7 +221,7 @@ function cgSetConnectionMode(mode, hwType, hwPort) {
   const hwBtn = document.getElementById('serial-connect-btn');
   if (hwBtn) hwBtn.disabled = (mode === 'sim');
   const simStartBtn = document.getElementById('sim-bridge-start-btn');
-  if (simStartBtn) simStartBtn.disabled = (mode === 'usb' || mode === 'xbee');
+  if (simStartBtn) simStartBtn.disabled = isHw;
   const dot      = document.getElementById('cg-dot-robot');
   const link     = document.getElementById('cg-lnk-robot');
   const sub      = document.getElementById('cg-sub-robot');
@@ -231,11 +231,11 @@ function cgSetConnectionMode(mode, hwType, hwPort) {
   // Right-side node label flips: "Simulator" in sim mode, "Robot" otherwise.
   if (lbl) lbl.textContent = (mode === 'sim') ? 'Simulator' : 'Robot';
 
-  if (mode === 'usb' || mode === 'xbee') {
-    const label   = mode === 'xbee' ? 'XBee' : 'USB Wired';
-    const modeStr = mode === 'xbee'
-      ? `Hardware — XBee (${hwPort || '?'})`
-      : `Hardware — USB Wired (${hwPort || '?'})`;
+  if (mode === 'usb' || mode === 'xbee' || mode === 'wifi') {
+    const label   = mode === 'xbee' ? 'XBee'
+                  : mode === 'wifi' ? 'WiFi (Xiao)'
+                  : 'USB Wired';
+    const modeStr = `Hardware — ${label} (${hwPort || '?'})`;
     if (dot)       dot.className  = 'cg-dot hw-active';
     if (link)      link.className = 'cg-link hw';
     if (sub)       { sub.className = 'cg-sub hw'; sub.textContent = label; }
@@ -254,7 +254,12 @@ function cgSetConnectionMode(mode, hwType, hwPort) {
 }
 
 function cgSetRobot(hwConnected, hwType, hwPort) {
-  cgSetConnectionMode(hwConnected ? (hwType === 'xbee' ? 'xbee' : 'usb') : 'idle', hwType, hwPort);
+  // Pass 'wifi' through; collapse any other hw type to 'usb' (legacy callers
+  // sometimes pass an empty string or 'hw').
+  const m = !hwConnected ? 'idle'
+          : (hwType === 'xbee' || hwType === 'wifi') ? hwType
+          : 'usb';
+  cgSetConnectionMode(m, hwType, hwPort);
 }
 
 function cgSetRobotConnecting() {

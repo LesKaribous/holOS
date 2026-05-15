@@ -426,11 +426,14 @@ def _active_brain():
     return brain
 
 
+_HW_MODES = ('usb', 'xbee', 'wifi')
+
+
 def _is_hw_connected():
     """True if hardware transport is alive and connected."""
     return (_hw_transport is not None
             and _hw_transport.is_connected
-            and _connection_mode in ('usb', 'xbee'))
+            and _connection_mode in _HW_MODES)
 
 
 def _active_test_runner():
@@ -481,7 +484,7 @@ def _physics_loop():
 # ── State serialization ───────────────────────────────────────────────────────
 
 def _build_state() -> dict:
-    hw_on = _connection_mode in ('usb', 'xbee')
+    hw_on = _connection_mode in _HW_MODES
     sim_on = _connection_mode == 'sim'
 
     # ── Parse live hardware telemetry (when connected) ───────────────────────

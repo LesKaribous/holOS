@@ -198,7 +198,9 @@ socket.on('serial_status', d => {
   if (d.connecting) return;
   _serialSetConnectBusy(false);
   if (d.ok) {
-    const mode = d.bridge === 'xbee' ? 'xbee' : 'usb';
+    // bridge is 'xbee' | 'usb' | 'wifi'. Pass it through verbatim — the topbar
+    // and network view both know how to render the wifi state now.
+    const mode = (d.bridge === 'xbee' || d.bridge === 'wifi') ? d.bridge : 'usb';
     cgSetConnectionMode(mode, 'hw', d.port || '');
     loadCppBlocks();
   } else {

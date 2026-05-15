@@ -259,11 +259,12 @@ function _ncSetClientLabel(isJetson) {
 function updateNetworkFromState(state) {
   const mode = state.connection_mode || 'idle';
   const newHw    = state.hw_connecting ? 'connecting' :
-                   (mode==='usb'||mode==='xbee') ? 'connected' :
+                   (mode==='usb'||mode==='xbee'||mode==='wifi') ? 'connected' :
                    mode==='sim' ? 'sim' : 'idle';
   const newType  = mode;
   const newLabel = mode==='sim'  ? 'Virtual (SIM)' :
                    mode==='xbee' ? 'XBee 868 MHz'  :
+                   mode==='wifi' ? 'WiFi (Xiao TCP)' :
                    mode==='usb'  ? 'USB Wired'      : 'Not connected';
   const newPort  = state.hw_serial_port || null;
   const newT40   = state.hw_t40 || 'unknown';
