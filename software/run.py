@@ -291,6 +291,17 @@ _vision_log_buffer: '_collections.deque' = _collections.deque(maxlen=100)
 _pose_request_invalid_streak: int = 0
 _pose_request_invalid_last_warn_mono: float = 0.0
 
+# Latest rectified BEV JPEG passing through the `loc_corrected` vision feed.
+# Updated by every emit (in _rewire_feed_subscribers' tap). Used as the source
+# for the homography snapshot frozen at recalage completion.
+_last_loc_corrected_jpeg: 'Optional[bytes]' = None
+
+# Homography snapshot — the BEV view as it looked at the last successful
+# recalage. Served to the UI as a static image so the Vision Dashboard can
+# show the homography fit result without subscribing to the streaming feed.
+#   {'jpeg': bytes, 'ts': int millis}
+_homography_snapshot: 'Optional[dict]' = None
+
 
 def _vlog(msg: str, level: str = 'info') -> None:
     """Mirror an event to (a) the holOS console and (b) the rolling
@@ -2402,6 +2413,13 @@ def _wire_pipeline_feeds(p):
                     }
                     if isinstance(payload, (bytes, bytearray)):
                         msg['kind'] = 'frame'
+                        # Stash the latest rectified BEV bytes so we can
+                        # freeze a homography snapshot on recalage completion.
+                        # Assignment is atomic under the GIL; the recalage
+                        # handler reads the bytes ref without locking.
+                        if fid == 'loc_corrected':
+                            global _last_loc_corrected_jpeg
+                            _last_loc_corrected_jpeg = bytes(payload)
                         b64 = _b64.b64encode(bytes(payload)).decode()
                         msg['jpeg'] = b64
                         _net_stats_add(len(b64) + 64)   # +64 ≈ JSON envelope
@@ -2803,6 +2821,22 @@ def _get_latest_own_pose():
             'source':        source_kind,
         }
     return None   # no own pose in the latest tick
+
+
+@app.route('/api/vision/homography_snapshot.jpg', methods=['GET'])
+def api_vision_homography_snapshot():
+    """Static JPEG of the rectified BEV view, frozen at the last successful
+    recalage. Updates only when recalage runs — the Vision Dashboard polls
+    it on the `recalage_state` event (with a cache-busting `?t=<ts>` query)
+    so the user gets a stable image instead of the noisy live feed."""
+    snap = _homography_snapshot
+    if not snap:
+        return '', 404
+    from flask import Response
+    return Response(snap['jpeg'], mimetype='image/jpeg', headers={
+        'Cache-Control': 'no-store',
+        'X-Snapshot-Ts': str(snap['ts']),
+    })
 
 
 @app.route('/api/vision/robot_pose', methods=['GET'])
@@ -5372,8 +5406,18 @@ def on_recalage():
             _vlog(f'recalage: firmware reply OK ({res})')
         else:
             _vlog(f'recalage: firmware reply FAIL ({res})', 'err')
-        socketio.emit('recalage_state',
-                      {'running': False, 'ok': bool(ok), 'res': res})
+        # On success, freeze the last rectified BEV JPEG so the Vision
+        # Dashboard can render a static homography-fit preview without
+        # subscribing to the noisy live feed. _last_loc_corrected_jpeg
+        # is updated by the feed callback at PIPELINE_FPS; it may be
+        # None for a moment after a fresh boot (no frame yet emitted).
+        payload = {'running': False, 'ok': bool(ok), 'res': res}
+        if ok and _last_loc_corrected_jpeg is not None:
+            global _homography_snapshot
+            ts = int(time.time() * 1000)
+            _homography_snapshot = {'jpeg': _last_loc_corrected_jpeg, 'ts': ts}
+            payload['homography_snapshot_ts'] = ts
+        socketio.emit('recalage_state', payload)
 
     threading.Thread(target=_do, daemon=True, name='recalage-cmd').start()
 

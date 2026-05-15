@@ -6,6 +6,13 @@
 // ── Match state ────────────────────────────────────────────────────────────
 let _matchRunning = false;
 
+// Single source of truth for "is the UI talking to real hardware".
+// Add a new HW transport here when we grow another one.
+function _isHwMode() {
+  const m = _currentConnectionMode;
+  return m === 'usb' || m === 'xbee' || m === 'wifi';
+}
+
 // ── Match controls ─────────────────────────────────────────────────────────
 function runStrategy()  { socket.emit('run_strategy'); }
 function stopStrategy() { socket.emit('stop_strategy'); }
@@ -14,8 +21,7 @@ function matchStop()    { socket.emit('match_stop'); }
 function matchResume()  { socket.emit('match_resume'); }
 
 function unifiedStart() {
-  const isHw = _currentConnectionMode === 'usb' || _currentConnectionMode === 'xbee';
-  if (isHw) {
+  if (_isHwMode()) {
     socket.emit('match_start');
   } else {
     socket.emit('run_strategy');
@@ -25,8 +31,7 @@ function unifiedStart() {
 }
 
 function unifiedStop() {
-  const isHw = _currentConnectionMode === 'usb' || _currentConnectionMode === 'xbee';
-  if (isHw) socket.emit('match_stop');
+  if (_isHwMode()) socket.emit('match_stop');
   socket.emit('stop_strategy');
   _matchRunning = false;
   _updateStartStopUI();
@@ -54,8 +59,7 @@ function _updateStartStopUI() {
 let _recalageDone = false;
 
 function runRecalage() {
-  const isHw = _currentConnectionMode === 'usb' || _currentConnectionMode === 'xbee';
-  if (!isHw) {
+  if (!_isHwMode()) {
     showToast('Recalage is hardware only — connect to the robot first');
     return;
   }
@@ -64,6 +68,11 @@ function runRecalage() {
 
 socket.on('recalage_state', data => {
   const btn = document.getElementById('btn-recalage');
+  if (data && data.homography_snapshot_ts) {
+    // Server captured a fresh BEV snapshot — refresh the dashboard tile.
+    // `?t=<ts>` busts the browser cache; img stays static between recalages.
+    _updateHomographySnapshot(data.homography_snapshot_ts);
+  }
   if (!btn) return;
   if (data && data.running) {
     btn.disabled = true;
@@ -83,6 +92,34 @@ socket.on('recalage_state', data => {
       showToast('Recalage complete');
     }
   }
+});
+
+function _updateHomographySnapshot(ts) {
+  const img   = document.getElementById('vd-homography-img');
+  const empty = document.getElementById('vd-homography-empty');
+  const meta  = document.getElementById('vd-meta-homography');
+  if (!img) return;
+  img.onload  = () => { img.style.display = 'block'; if (empty) empty.style.display = 'none'; };
+  img.onerror = () => { img.style.display = 'none';  if (empty) empty.style.display = 'block'; };
+  img.src = `/api/vision/homography_snapshot.jpg?t=${ts}`;
+  if (meta) {
+    const d = new Date(ts);
+    meta.textContent = 'captured at ' + d.toLocaleTimeString();
+  }
+}
+
+// On page load, check whether the server already has a snapshot from a
+// prior recalage (server keeps it in RAM across browser refreshes, not
+// across server restarts). HEAD + read the timestamp from the header so
+// we don't download the JPEG twice.
+document.addEventListener('DOMContentLoaded', () => {
+  fetch('/api/vision/homography_snapshot.jpg', { method: 'HEAD' })
+    .then(r => {
+      if (!r.ok) return;
+      const ts = r.headers.get('X-Snapshot-Ts');
+      if (ts) _updateHomographySnapshot(parseInt(ts, 10));
+    })
+    .catch(() => { /* no snapshot yet, leave the empty state */ });
 });
 
 

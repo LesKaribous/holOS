@@ -1673,6 +1673,22 @@
             </div>
           </div>
         </section>
+
+        <!-- Homography snapshot — frozen rectified BEV captured at the last
+             recalage. Static so the main UI stays readable; the live feed
+             stays in /vision_debug. Updates whenever recalage completes. -->
+        <section class="vd-tile" style="grid-column: 1 / -1">
+          <header class="vd-tile-head">Homography (last recalage)
+            <span class="vd-tile-meta" id="vd-meta-homography">no snapshot yet</span>
+          </header>
+          <div class="vd-tile-body" id="vd-tile-homography">
+            <div class="vd-empty" id="vd-homography-empty">
+              run <strong>⌖ Recalage</strong> to capture the rectified BEV view here
+            </div>
+            <img id="vd-homography-img" alt="rectified BEV"
+                 style="display:none">
+          </div>
+        </section>
       </div>
     </div><!-- /view-vision-dashboard -->
 
